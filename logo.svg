@@ -1,0 +1,96 @@
+<svg viewBox="0 0 200 220" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Glow filter -->
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+    <filter id="softglow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="6" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+    <!-- Radial gradient for inner eye -->
+    <radialGradient id="pupilGrad" cx="50%" cy="45%">
+      <stop offset="0%" stop-color="#00ff88"/>
+      <stop offset="60%" stop-color="#00cc6a"/>
+      <stop offset="100%" stop-color="#008844"/>
+    </radialGradient>
+    <!-- Iris gradient -->
+    <radialGradient id="irisGrad" cx="50%" cy="50%">
+      <stop offset="0%" stop-color="#00ff88" stop-opacity="0.1"/>
+      <stop offset="100%" stop-color="#00ff88" stop-opacity="0.05"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Outer aura / ambient glow -->
+  <polygon points="100,8 18,190 182,190" fill="none" stroke="#00ff88" stroke-width="1" opacity="0.06" filter="url(#softglow)"/>
+
+  <!-- Outer triangle -->
+  <polygon points="100,18 24,186 176,186" fill="none" stroke="#00ff88" stroke-width="1.5" opacity="0.25"/>
+
+  <!-- Inner triangle -->
+  <polygon points="100,38 42,176 158,176" fill="none" stroke="#00ff88" stroke-width="1" opacity="0.15"/>
+
+  <!-- Subtle fill triangle -->
+  <polygon points="100,28 30,182 170,182" fill="#00ff88" opacity="0.03"/>
+
+  <!-- Horizontal line through eye (masonic style) -->
+  <line x1="38" y1="120" x2="162" y2="120" stroke="#00ff88" stroke-width="0.5" opacity="0.15"/>
+
+  <!-- Eye shape - almond -->
+  <path d="M55,120 Q100,75 145,120 Q100,165 55,120 Z" fill="#00ff88" opacity="0.04"/>
+  <path d="M55,120 Q100,75 145,120 Q100,165 55,120 Z" fill="none" stroke="#00ff88" stroke-width="2" opacity="0.7" filter="url(#glow)"/>
+
+  <!-- Upper eyelid detail -->
+  <path d="M62,118 Q100,82 138,118" fill="none" stroke="#00ff88" stroke-width="0.8" opacity="0.3"/>
+
+  <!-- Lower eyelid detail -->
+  <path d="M62,122 Q100,158 138,122" fill="none" stroke="#00ff88" stroke-width="0.8" opacity="0.3"/>
+
+  <!-- Iris outer ring -->
+  <circle cx="100" cy="120" r="22" fill="url(#irisGrad)" stroke="#00ff88" stroke-width="1.5" opacity="0.8"/>
+
+  <!-- Iris inner ring -->
+  <circle cx="100" cy="120" r="16" fill="none" stroke="#00ff88" stroke-width="0.8" opacity="0.4"/>
+
+  <!-- Iris texture lines (radial) -->
+  <line x1="100" y1="98" x2="100" y2="103" stroke="#00ff88" stroke-width="0.5" opacity="0.3"/>
+  <line x1="112" y1="100" x2="110" y2="105" stroke="#00ff88" stroke-width="0.5" opacity="0.25"/>
+  <line x1="88" y1="100" x2="90" y2="105" stroke="#00ff88" stroke-width="0.5" opacity="0.25"/>
+  <line x1="120" y1="110" x2="116" y2="112" stroke="#00ff88" stroke-width="0.5" opacity="0.2"/>
+  <line x1="80" y1="110" x2="84" y2="112" stroke="#00ff88" stroke-width="0.5" opacity="0.2"/>
+  <line x1="122" y1="120" x2="117" y2="120" stroke="#00ff88" stroke-width="0.5" opacity="0.2"/>
+  <line x1="78" y1="120" x2="83" y2="120" stroke="#00ff88" stroke-width="0.5" opacity="0.2"/>
+  <line x1="120" y1="130" x2="116" y2="128" stroke="#00ff88" stroke-width="0.5" opacity="0.2"/>
+  <line x1="80" y1="130" x2="84" y2="128" stroke="#00ff88" stroke-width="0.5" opacity="0.2"/>
+  <line x1="112" y1="140" x2="110" y2="135" stroke="#00ff88" stroke-width="0.5" opacity="0.25"/>
+  <line x1="88" y1="140" x2="90" y2="135" stroke="#00ff88" stroke-width="0.5" opacity="0.25"/>
+  <line x1="100" y1="142" x2="100" y2="137" stroke="#00ff88" stroke-width="0.5" opacity="0.3"/>
+
+  <!-- Pupil -->
+  <circle cx="100" cy="120" r="9" fill="url(#pupilGrad)" filter="url(#glow)"/>
+
+  <!-- Pupil inner dark -->
+  <circle cx="100" cy="120" r="4" fill="#003322" opacity="0.6"/>
+
+  <!-- Light reflections (makes it feel alive) -->
+  <circle cx="95" cy="115" r="3" fill="#ffffff" opacity="0.7"/>
+  <circle cx="105" cy="125" r="1.5" fill="#ffffff" opacity="0.4"/>
+
+  <!-- Top radiance rays (illumination) -->
+  <line x1="100" y1="0" x2="100" y2="12" stroke="#00ff88" stroke-width="1.5" opacity="0.3" filter="url(#glow)"/>
+  <line x1="72" y1="6" x2="78" y2="16" stroke="#00ff88" stroke-width="1" opacity="0.2"/>
+  <line x1="128" y1="6" x2="122" y2="16" stroke="#00ff88" stroke-width="1" opacity="0.2"/>
+  <line x1="50" y1="18" x2="58" y2="26" stroke="#00ff88" stroke-width="0.8" opacity="0.12"/>
+  <line x1="150" y1="18" x2="142" y2="26" stroke="#00ff88" stroke-width="0.8" opacity="0.12"/>
+
+  <!-- Corner accents on triangle -->
+  <circle cx="100" cy="18" r="2" fill="#00ff88" opacity="0.5"/>
+  <circle cx="24" cy="186" r="2" fill="#00ff88" opacity="0.3"/>
+  <circle cx="176" cy="186" r="2" fill="#00ff88" opacity="0.3"/>
+
+  <!-- Subtle scan lines (digital / surveillance feel) -->
+  <line x1="30" y1="200" x2="170" y2="200" stroke="#00ff88" stroke-width="0.5" opacity="0.1"/>
+  <line x1="40" y1="205" x2="160" y2="205" stroke="#00ff88" stroke-width="0.3" opacity="0.08"/>
+  <line x1="50" y1="210" x2="150" y2="210" stroke="#00ff88" stroke-width="0.3" opacity="0.05"/>
+</svg>
