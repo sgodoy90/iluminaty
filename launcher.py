@@ -6,17 +6,23 @@ El usuario hace doble click en ILUMINATY.exe y:
 1. Arranca el daemon de captura
 2. Arranca el API server
 3. Abre el dashboard en el browser
-4. Muestra icono en system tray (Windows)
 
 CERO instalacion. CERO dependencias. CERO terminal.
 """
 
 import sys
 import os
+import io
 import time
 import signal
 import threading
 import webbrowser
+
+# Fix para PyInstaller windowed mode: stdout/stderr pueden ser None
+if sys.stdout is None:
+    sys.stdout = io.StringIO()
+if sys.stderr is None:
+    sys.stderr = io.StringIO()
 
 # Fix para PyInstaller
 if getattr(sys, 'frozen', False):
