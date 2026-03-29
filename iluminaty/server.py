@@ -579,3 +579,61 @@ async def frame_annotated(x_api_key: Optional[str] = Header(None)):
 
     rendered = _vision.annotations.render_overlay(slot.frame_bytes)
     return Response(content=rendered, media_type="image/jpeg")
+
+
+# ─── AI Provider Endpoints ───
+
+@app.post("/ai/ask")
+async def ai_ask(
+    provider: str = Query(..., description="gemini, openai, claude, generic"),
+    prompt: str = Query("Describe what you see on this screen."),
+    api_key_param: Optional[str] = Query(None, alias="provider_api_key"),
+    model: Optional[str] = Query(None),
+    x_api_key: Optional[str] = Header(None),
+):
+    """
+    Envia el frame actual a un provider de IA y retorna la respuesta.
+    La IA VE tu pantalla y responde.
+    
+    Ejemplo: /ai/ask?provider=gemini&provider_api_key=AIza...&prompt=What bug do you see?
+    """
+    _check_auth(x_api_key)
+    if not _buffer:
+        raise HTTPException(503, "Not initialized")
+
+    slot = _buffer.get_latest()
+    if not slot:
+        raise HTTPException(404, "No frames in buffer")
+
+    if not api_key_param:
+        raise HTTPException(400, "provider_api_key is required")
+
+    from .adapters import create_adapter
+    try:
+        kwargs = {}
+        if model:
+            kwargs["model"] = model
+        adapter = create_adapter(provider, api_key_param, **kwargs)
+        adapter.connect()
+
+        # Build enriched prompt
+        enriched = _vision.enrich_frame(slot, run_ocr=False) if _vision else None
+        full_prompt = prompt
+        if enriched:
+            full_prompt = enriched.to_ai_prompt() + "\n\nUser question: " + prompt
+
+        response = adapter.send_frame(slot.frame_bytes, full_prompt, slot.mime_type)
+        adapter.disconnect()
+
+        if response:
+            return {
+                "text": response.text,
+                "provider": response.provider,
+                "model": response.model,
+                "latency_ms": response.latency_ms,
+                "tokens_used": response.tokens_used,
+            }
+        return {"text": "", "error": "No response from provider"}
+
+    except Exception as e:
+        raise HTTPException(500, f"AI provider error: {e}")
