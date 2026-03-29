@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ILUMINATY</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: system-ui, sans-serif;
+      background: #0a0a0f;
+      color: #e0e0e0;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    .loading {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      gap: 16px;
+    }
+    .loading h1 { color: #00ff88; font-size: 28px; letter-spacing: 3px; }
+    .loading p { color: #666; font-size: 14px; }
+    .loading .status { color: #ffcc00; font-size: 13px; }
+    .spinner {
+      width: 40px; height: 40px;
+      border: 3px solid #222;
+      border-top-color: #00ff88;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    iframe {
+      width: 100%;
+      height: 100%;
+      border: none;
+      flex: 1;
+    }
+    .error {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      gap: 12px;
+    }
+    .error h2 { color: #ff3333; }
+    .error p { color: #888; max-width: 400px; text-align: center; line-height: 1.6; }
+    .error button {
+      padding: 8px 24px;
+      background: #00ff8822;
+      border: 1px solid #00ff88;
+      color: #00ff88;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+  <div class="loading" id="loading">
+    <h1>ILUMINATY</h1>
+    <div class="spinner"></div>
+    <p>Connecting to vision daemon...</p>
+    <div class="status" id="status">Checking http://127.0.0.1:8420</div>
+  </div>
+
+  <div class="error" id="error" style="display:none">
+    <h2>Daemon Not Running</h2>
+    <p>ILUMINATY daemon is not running. Start it with:</p>
+    <code style="background:#111;padding:8px 16px;border-radius:4px;color:#00ff88">
+      python main.py start
+    </code>
+    <p style="margin-top:8px;font-size:12px">Then click retry below.</p>
+    <button onclick="checkDaemon()">Retry Connection</button>
+  </div>
+
+  <iframe id="dashboard" style="display:none" src=""></iframe>
+
+  <script>
+    const API = 'http://127.0.0.1:8420';
+    const statusEl = document.getElementById('status');
+
+    async function checkDaemon() {
+      document.getElementById('loading').style.display = 'flex';
+      document.getElementById('error').style.display = 'none';
+      document.getElementById('dashboard').style.display = 'none';
+      statusEl.textContent = 'Checking ' + API + '...';
+
+      for (let attempt = 1; attempt <= 10; attempt++) {
+        try {
+          statusEl.textContent = 'Attempt ' + attempt + '/10...';
+          const res = await fetch(API + '/health', { signal: AbortSignal.timeout(2000) });
+          if (res.ok) {
+            const data = await res.json();
+            if (data.status === 'alive') {
+              statusEl.textContent = 'Connected! Loading dashboard...';
+              setTimeout(() => {
+                document.getElementById('loading').style.display = 'none';
+                const iframe = document.getElementById('dashboard');
+                iframe.src = API;
+                iframe.style.display = 'block';
+              }, 500);
+              return;
+            }
+          }
+        } catch (e) {
+          // Not ready yet
+        }
+        await new Promise(r => setTimeout(r, 1000));
+      }
+
+      // Failed
+      document.getElementById('loading').style.display = 'none';
+      document.getElementById('error').style.display = 'flex';
+    }
+
+    checkDaemon();
+  </script>
+</body>
+</html>
