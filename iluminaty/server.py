@@ -33,6 +33,10 @@ from .vision import VisionIntelligence, Annotation
 from .dashboard import DASHBOARD_HTML
 from .smart_diff import SmartDiff
 from .audio import AudioRingBuffer, AudioCapture, TranscriptionEngine
+from .context import ContextEngine
+from .plugin_system import PluginManager
+from .monitors import MonitorManager
+from .memory import TemporalMemory
 
 
 # ─── Estado global (vive solo en RAM del proceso) ───
@@ -44,6 +48,10 @@ _diff: Optional[SmartDiff] = None
 _audio_buffer: Optional[AudioRingBuffer] = None
 _audio_capture: Optional[AudioCapture] = None
 _transcriber: Optional[TranscriptionEngine] = None
+_context: Optional[ContextEngine] = None
+_plugin_mgr: Optional[PluginManager] = None
+_monitor_mgr: Optional[MonitorManager] = None
+_memory: Optional[TemporalMemory] = None
 _ws_clients: set[WebSocket] = set()
 
 
@@ -295,6 +303,7 @@ def init_server(
     """Inyecta las dependencias al módulo del server."""
     global _buffer, _capture, _api_key, _vision, _diff
     global _audio_buffer, _audio_capture, _transcriber
+    global _context, _plugin_mgr, _monitor_mgr, _memory
     _buffer = buffer
     _capture = capture
     _api_key = api_key
@@ -303,6 +312,12 @@ def init_server(
     _audio_buffer = audio_buffer
     _audio_capture = audio_capture
     _transcriber = TranscriptionEngine()
+    _context = ContextEngine()
+    _plugin_mgr = PluginManager()
+    _plugin_mgr.load_from_directory()
+    _monitor_mgr = MonitorManager()
+    _monitor_mgr.refresh()
+    _memory = TemporalMemory(enabled=False)  # opt-in
 
 
 # ─── Vision / AI-ready endpoints ───
@@ -495,6 +510,129 @@ async def audio_devices(x_api_key: Optional[str] = Header(None)):
     if not _audio_capture:
         return {"devices": []}
     return {"devices": _audio_capture.get_devices()}
+
+
+# ─── Context Engine (F08) ───
+
+@app.get("/context/state")
+async def context_state(x_api_key: Optional[str] = Header(None)):
+    """Estado actual del workflow: que esta haciendo el usuario."""
+    _check_auth(x_api_key)
+    if not _context:
+        raise HTTPException(503, "Context engine not initialized")
+
+    # Update context with current window
+    from .vision import get_active_window_info
+    win = get_active_window_info()
+    _context.update(win.get("title", "unknown"), win.get("title", ""))
+
+    state = _context.get_state()
+    return {
+        "workflow": state.current_workflow,
+        "confidence": state.confidence,
+        "app": state.current_app,
+        "title": state.current_title[:100],
+        "time_in_workflow_seconds": state.time_in_workflow,
+        "time_in_app_seconds": state.time_in_app,
+        "switches_5min": state.switch_count_last_5min,
+        "is_focused": state.is_focused,
+        "summary": state.context_summary,
+    }
+
+
+@app.get("/context/apps")
+async def context_apps(x_api_key: Optional[str] = Header(None)):
+    """Stats de tiempo por app."""
+    _check_auth(x_api_key)
+    if not _context:
+        raise HTTPException(503, "Not initialized")
+    return _context.get_app_stats()
+
+
+@app.get("/context/workflows")
+async def context_workflows(x_api_key: Optional[str] = Header(None)):
+    """Stats de tiempo por workflow."""
+    _check_auth(x_api_key)
+    if not _context:
+        raise HTTPException(503, "Not initialized")
+    return _context.get_workflow_stats()
+
+
+@app.get("/context/timeline")
+async def context_timeline(
+    minutes: int = Query(30, ge=1, le=480),
+    x_api_key: Optional[str] = Header(None),
+):
+    """Timeline de actividad."""
+    _check_auth(x_api_key)
+    if not _context:
+        raise HTTPException(503, "Not initialized")
+    return {"timeline": _context.get_timeline(minutes)}
+
+
+# ─── Monitors (F10) ───
+
+@app.get("/monitors")
+async def monitors_info(x_api_key: Optional[str] = Header(None)):
+    """Info de todos los monitores."""
+    _check_auth(x_api_key)
+    if not _monitor_mgr:
+        raise HTTPException(503, "Not initialized")
+    _monitor_mgr.refresh()
+    return _monitor_mgr.to_dict()
+
+
+# ─── Plugins (F09) ───
+
+@app.get("/plugins")
+async def plugins_list(x_api_key: Optional[str] = Header(None)):
+    """Lista de plugins cargados."""
+    _check_auth(x_api_key)
+    if not _plugin_mgr:
+        return {"plugins": []}
+    return {
+        "plugins": _plugin_mgr.get_info(),
+        "event_log": _plugin_mgr.get_event_log(20),
+    }
+
+
+# ─── Memory (F11) ───
+
+@app.get("/memory/recent")
+async def memory_recent(
+    minutes: int = Query(30, ge=1, le=480),
+    x_api_key: Optional[str] = Header(None),
+):
+    """Entradas de memoria recientes."""
+    _check_auth(x_api_key)
+    if not _memory:
+        return {"entries": [], "enabled": False}
+    return {"entries": _memory.get_recent(minutes), "enabled": _memory.enabled}
+
+
+@app.get("/memory/search")
+async def memory_search(
+    q: str = Query(..., min_length=1),
+    x_api_key: Optional[str] = Header(None),
+):
+    """Buscar en la memoria temporal."""
+    _check_auth(x_api_key)
+    if not _memory or not _memory.enabled:
+        return {"results": [], "enabled": False}
+    return {"results": _memory.search(q), "query": q}
+
+
+@app.post("/memory/toggle")
+async def memory_toggle(
+    enabled: bool = Query(...),
+    x_api_key: Optional[str] = Header(None),
+):
+    """Habilitar/deshabilitar memoria temporal."""
+    _check_auth(x_api_key)
+    if not _memory:
+        raise HTTPException(503, "Not initialized")
+    _memory.enabled = enabled
+    return {"enabled": _memory.enabled}
 
 
 # ─── Annotations (lapiz/marcador) ───
