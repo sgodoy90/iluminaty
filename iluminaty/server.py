@@ -37,6 +37,9 @@ from .context import ContextEngine
 from .plugin_system import PluginManager
 from .monitors import MonitorManager
 from .memory import TemporalMemory
+from .watchdog import Watchdog
+from .router import AIRouter
+from .collab import CollaborativeManager
 
 
 # ─── Estado global (vive solo en RAM del proceso) ───
@@ -52,6 +55,9 @@ _context: Optional[ContextEngine] = None
 _plugin_mgr: Optional[PluginManager] = None
 _monitor_mgr: Optional[MonitorManager] = None
 _memory: Optional[TemporalMemory] = None
+_watchdog: Optional[Watchdog] = None
+_router: Optional[AIRouter] = None
+_collab: Optional[CollaborativeManager] = None
 _ws_clients: set[WebSocket] = set()
 
 
@@ -304,6 +310,7 @@ def init_server(
     global _buffer, _capture, _api_key, _vision, _diff
     global _audio_buffer, _audio_capture, _transcriber
     global _context, _plugin_mgr, _monitor_mgr, _memory
+    global _watchdog, _router, _collab
     _buffer = buffer
     _capture = capture
     _api_key = api_key
@@ -317,7 +324,10 @@ def init_server(
     _plugin_mgr.load_from_directory()
     _monitor_mgr = MonitorManager()
     _monitor_mgr.refresh()
-    _memory = TemporalMemory(enabled=False)  # opt-in
+    _memory = TemporalMemory(enabled=False)
+    _watchdog = Watchdog()
+    _router = AIRouter()
+    _collab = CollaborativeManager()
 
 
 # ─── Vision / AI-ready endpoints ───
@@ -775,3 +785,199 @@ async def ai_ask(
 
     except Exception as e:
         raise HTTPException(500, f"AI provider error: {e}")
+
+
+# ─── Watchdog (E01) ───
+
+@app.get("/watchdog/alerts")
+async def watchdog_alerts(
+    count: int = Query(20, ge=1, le=100),
+    unacknowledged: bool = Query(False),
+    x_api_key: Optional[str] = Header(None),
+):
+    """Get watchdog alerts."""
+    _check_auth(x_api_key)
+    if not _watchdog:
+        return {"alerts": []}
+    return {"alerts": _watchdog.get_alerts(count, unacknowledged)}
+
+
+@app.get("/watchdog/triggers")
+async def watchdog_triggers(x_api_key: Optional[str] = Header(None)):
+    """List all watchdog triggers."""
+    _check_auth(x_api_key)
+    if not _watchdog:
+        return {"triggers": []}
+    return {"triggers": _watchdog.get_triggers(), "stats": _watchdog.stats}
+
+
+@app.post("/watchdog/scan")
+async def watchdog_scan(x_api_key: Optional[str] = Header(None)):
+    """Manually trigger a watchdog scan on current screen."""
+    _check_auth(x_api_key)
+    if not _watchdog or not _buffer:
+        raise HTTPException(503, "Not initialized")
+
+    slot = _buffer.get_latest()
+    if not slot:
+        return {"alerts": [], "note": "No frames in buffer"}
+
+    # Get OCR text and window title for scanning
+    from .vision import get_active_window_info
+    win = get_active_window_info()
+    ocr_text = ""
+    if _vision and _vision.ocr.available:
+        ocr_result = _vision.ocr.extract_text(slot.frame_bytes, frame_hash=slot.phash)
+        ocr_text = ocr_result.get("text", "")
+
+    alerts = _watchdog.scan(ocr_text=ocr_text, window_title=win.get("title", ""))
+    return {
+        "new_alerts": [a.to_dict() for a in alerts],
+        "total_alerts": _watchdog.stats["total_alerts"],
+    }
+
+
+@app.post("/watchdog/acknowledge/{alert_id}")
+async def watchdog_ack(alert_id: str, x_api_key: Optional[str] = Header(None)):
+    """Acknowledge an alert."""
+    _check_auth(x_api_key)
+    if not _watchdog:
+        raise HTTPException(503, "Not initialized")
+    return {"acknowledged": _watchdog.acknowledge(alert_id)}
+
+
+# ─── AI Router (F16) ───
+
+@app.post("/ai/route")
+async def ai_route(
+    prompt: str = Query(...),
+    x_api_key: Optional[str] = Header(None),
+):
+    """Route a prompt to the optimal AI model (cheapest that works)."""
+    _check_auth(x_api_key)
+    if not _router:
+        raise HTTPException(503, "Not initialized")
+
+    decision = _router.route(prompt)
+    return {
+        "route": decision.route,
+        "reason": decision.reason,
+        "estimated_cost": decision.estimated_cost,
+        "model_suggestion": decision.model_suggestion,
+        "needs_image": decision.needs_image,
+        "needs_audio": decision.needs_audio,
+    }
+
+
+@app.get("/ai/router/stats")
+async def ai_router_stats(x_api_key: Optional[str] = Header(None)):
+    """Router cost savings stats."""
+    _check_auth(x_api_key)
+    if not _router:
+        return {}
+    return _router.stats
+
+
+# ─── Collaborative (F17) ───
+
+@app.post("/collab/create")
+async def collab_create(
+    host_name: str = Query(...),
+    room_name: str = Query(""),
+    x_api_key: Optional[str] = Header(None),
+):
+    """Create a collaborative room."""
+    _check_auth(x_api_key)
+    if not _collab:
+        raise HTTPException(503, "Not initialized")
+    return _collab.create_room(host_name, room_name)
+
+
+@app.post("/collab/join")
+async def collab_join(
+    room_id: str = Query(...),
+    viewer_name: str = Query(...),
+    x_api_key: Optional[str] = Header(None),
+):
+    """Join a collaborative room as viewer."""
+    _check_auth(x_api_key)
+    if not _collab:
+        raise HTTPException(503, "Not initialized")
+    result = _collab.join_room(room_id, viewer_name)
+    if not result:
+        raise HTTPException(404, "Room not found or full")
+    return result
+
+
+@app.get("/collab/room/{room_id}")
+async def collab_room(room_id: str, x_api_key: Optional[str] = Header(None)):
+    """Get room info."""
+    _check_auth(x_api_key)
+    if not _collab:
+        raise HTTPException(503, "Not initialized")
+    room = _collab.get_room(room_id)
+    if not room:
+        raise HTTPException(404, "Room not found")
+    return room
+
+
+@app.get("/collab/rooms")
+async def collab_rooms(x_api_key: Optional[str] = Header(None)):
+    """List active rooms."""
+    _check_auth(x_api_key)
+    if not _collab:
+        return {"rooms": []}
+    return {"rooms": _collab.list_rooms(), "stats": _collab.stats}
+
+
+@app.post("/collab/annotate")
+async def collab_annotate(
+    room_id: str = Query(...),
+    author_id: str = Query(...),
+    type: str = Query("rect"),
+    x: int = Query(...),
+    y: int = Query(...),
+    width: int = Query(100),
+    height: int = Query(50),
+    text: str = Query(""),
+    x_api_key: Optional[str] = Header(None),
+):
+    """Add shared annotation in a collab room."""
+    _check_auth(x_api_key)
+    if not _collab:
+        raise HTTPException(503, "Not initialized")
+    result = _collab.add_annotation(room_id, author_id, type, x, y, width, height, text)
+    if not result:
+        raise HTTPException(404, "Room or author not found")
+    return result
+
+
+# ─── System overview ───
+
+@app.get("/system/overview")
+async def system_overview(x_api_key: Optional[str] = Header(None)):
+    """Complete system overview - all components status."""
+    _check_auth(x_api_key)
+    overview = {
+        "version": "0.5.0",
+        "capture": {
+            "running": _capture.is_running if _capture else False,
+            "fps": _capture.current_fps if _capture else 0,
+        },
+        "buffer": _buffer.stats if _buffer else {},
+        "audio": {
+            "enabled": _audio_capture is not None and _audio_capture.is_running if _audio_capture else False,
+            "stats": _audio_buffer.stats if _audio_buffer else {},
+        },
+        "ocr": {
+            "engine": _vision.ocr.engine if _vision else "none",
+            "available": _vision.ocr.available if _vision else False,
+        },
+        "monitors": _monitor_mgr.to_dict() if _monitor_mgr else {},
+        "watchdog": _watchdog.stats if _watchdog else {},
+        "router": _router.stats if _router else {},
+        "collab": _collab.stats if _collab else {},
+        "memory": _memory.stats if _memory else {},
+        "plugins": len(_plugin_mgr.loaded) if _plugin_mgr else 0,
+    }
+    return overview
