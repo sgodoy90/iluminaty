@@ -136,7 +136,31 @@ TOOLS = [
         "name": "screen_status",
         "description": (
             "Get ILUMINATY system status: buffer stats, capture state, "
-            "memory usage, FPS, active window."
+            "memory usage, FPS, active window, workflow, audio level."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "get_context",
+        "description": (
+            "Get the user's current context: what app they're using, "
+            "what workflow they're in (coding, browsing, meeting, etc.), "
+            "how focused they are, and how long they've been at it. "
+            "Use this to understand what the user is doing before helping them."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "get_audio_level",
+        "description": (
+            "Get the current audio level and whether speech is detected. "
+            "Use this to know if the user is talking or in a call."
         ),
         "inputSchema": {
             "type": "object",
@@ -238,12 +262,41 @@ def handle_status(args: dict) -> dict:
     return [{"type": "text", "text": "\n".join(lines)}]
 
 
+def handle_context(args: dict) -> dict:
+    try:
+        ctx = _api_get("/context/state")
+        lines = [
+            "## User Context",
+            f"- Workflow: **{ctx.get('workflow', 'unknown')}** (confidence: {ctx.get('confidence', 0)})",
+            f"- App: {ctx.get('app', 'unknown')}",
+            f"- Window: {ctx.get('title', '')[:80]}",
+            f"- Focus: {'HIGH' if ctx.get('is_focused') else 'LOW'} ({ctx.get('switches_5min', 0)} app switches in 5min)",
+            f"- Time in workflow: {ctx.get('time_in_workflow_seconds', 0):.0f}s",
+            "",
+            ctx.get("summary", ""),
+        ]
+        return [{"type": "text", "text": "\n".join(lines)}]
+    except Exception:
+        return [{"type": "text", "text": "Context engine not available."}]
+
+
+def handle_audio_level(args: dict) -> dict:
+    try:
+        level = _api_get("/audio/level")
+        speech = "YES - user is speaking" if level.get("is_speech") else "No speech detected"
+        return [{"type": "text", "text": f"Audio level: {level.get('level', 0):.3f} | Speech: {speech}"}]
+    except Exception:
+        return [{"type": "text", "text": "Audio not enabled. Start with --audio mic"}]
+
+
 HANDLERS = {
     "see_screen": handle_see_screen,
     "see_changes": handle_see_changes,
     "annotate_screen": handle_annotate,
     "read_screen_text": handle_read_text,
     "screen_status": handle_status,
+    "get_context": handle_context,
+    "get_audio_level": handle_audio_level,
 }
 
 
