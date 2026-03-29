@@ -29,10 +29,19 @@ from PIL import Image, ImageDraw, ImageFont
 from .ring_buffer import FrameSlot
 
 
-# ─── OCR Engine (Windows native + Tesseract fallback) ───
+# ─── OCR Engine (RapidOCR -> Tesseract -> None fallback chain) ───
+
+def _try_import_rapidocr():
+    """Intenta importar RapidOCR (ONNX, rapido, cross-platform)."""
+    try:
+        from rapidocr import RapidOCR
+        return RapidOCR()
+    except Exception:
+        return None
+
 
 def _try_import_tesseract():
-    """Intenta importar pytesseract. Si no está, OCR queda deshabilitado."""
+    """Fallback: pytesseract."""
     try:
         import pytesseract
         return pytesseract
@@ -43,43 +52,115 @@ def _try_import_tesseract():
 class OCREngine:
     """
     Extrae texto de frames usando OCR.
-    - Primer intento: pytesseract (si está instalado)
-    - Fallback: sin OCR, solo metadata de imagen
-    
-    El texto extraído va en inglés siempre al output,
-    pero el OCR lee el idioma que sea de la pantalla.
+    Fallback chain: RapidOCR (ONNX) -> Tesseract -> None
+
+    RapidOCR es 3-5x mas rapido que Tesseract y no necesita
+    instalar binarios del sistema. Solo pip install.
+
+    Features:
+    - OCR caching: si el frame no cambio, devuelve cache
+    - Region OCR: crop antes de OCR para velocidad
+    - Bloques con posiciones: para blur de contenido sensible
     """
 
     def __init__(self):
-        self._tesseract = _try_import_tesseract()
-        self._available = self._tesseract is not None
+        self._rapid = _try_import_rapidocr()
+        self._tesseract = _try_import_tesseract() if not self._rapid else None
+        self._engine_name = "rapidocr" if self._rapid else ("tesseract" if self._tesseract else "none")
+        self._cache_hash: Optional[str] = None
+        self._cache_result: Optional[dict] = None
 
     @property
     def available(self) -> bool:
-        return self._available
+        return self._rapid is not None or self._tesseract is not None
 
-    def extract_text(self, frame_bytes: bytes, lang: str = "eng") -> dict:
+    @property
+    def engine(self) -> str:
+        return self._engine_name
+
+    def extract_text(self, frame_bytes: bytes, frame_hash: Optional[str] = None) -> dict:
         """
         Extrae texto del frame.
-        Returns: { "text": str, "blocks": [...], "confidence": float }
+        Si frame_hash coincide con el cache, devuelve resultado cacheado.
+        Returns: { "text": str, "blocks": [...], "confidence": float, "engine": str }
         """
-        if not self._available:
-            return {"text": "", "blocks": [], "confidence": 0.0, "ocr_available": False}
+        # Cache check: si el frame no cambio, devolver cache
+        if frame_hash and frame_hash == self._cache_hash and self._cache_result:
+            return {**self._cache_result, "cached": True}
 
-        img = Image.open(io.BytesIO(frame_bytes))
+        if self._rapid:
+            result = self._extract_rapidocr(frame_bytes)
+        elif self._tesseract:
+            result = self._extract_tesseract(frame_bytes)
+        else:
+            result = {"text": "", "blocks": [], "confidence": 0.0, "engine": "none", "ocr_available": False}
 
+        # Update cache
+        if frame_hash:
+            self._cache_hash = frame_hash
+            self._cache_result = result
+
+        return result
+
+    def _extract_rapidocr(self, frame_bytes: bytes) -> dict:
+        """OCR con RapidOCR (ONNX). Rapido y preciso."""
         try:
-            # Texto completo
-            full_text = self._tesseract.image_to_string(img, lang=lang)
+            import numpy as np
+            img = Image.open(io.BytesIO(frame_bytes))
+            img_array = np.array(img)
 
-            # Datos detallados con posiciones
-            data = self._tesseract.image_to_data(img, lang=lang, output_type=self._tesseract.Output.DICT)
+            result = self._rapid(img_array)
+
+            if result is None or result.txts is None:
+                return {"text": "", "blocks": [], "confidence": 0.0, "engine": "rapidocr", "ocr_available": True}
+
+            blocks = []
+            full_text_parts = []
+
+            for i, (box, txt, score) in enumerate(zip(result.boxes, result.txts, result.scores)):
+                if score < 0.3:
+                    continue
+                # box es [[x1,y1],[x2,y2],[x3,y3],[x4,y4]]
+                xs = [p[0] for p in box]
+                ys = [p[1] for p in box]
+                x_min, x_max = int(min(xs)), int(max(xs))
+                y_min, y_max = int(min(ys)), int(max(ys))
+
+                blocks.append({
+                    "text": txt,
+                    "x": x_min,
+                    "y": y_min,
+                    "w": x_max - x_min,
+                    "h": y_max - y_min,
+                    "confidence": round(float(score) * 100, 1),
+                })
+                full_text_parts.append(txt)
+
+            avg_conf = sum(b["confidence"] for b in blocks) / max(len(blocks), 1)
+
+            return {
+                "text": "\n".join(full_text_parts),
+                "blocks": blocks,
+                "confidence": round(avg_conf, 1),
+                "engine": "rapidocr",
+                "ocr_available": True,
+                "block_count": len(blocks),
+            }
+        except Exception as e:
+            return {"text": "", "blocks": [], "confidence": 0.0, "engine": "rapidocr", "error": str(e), "ocr_available": True}
+
+    def _extract_tesseract(self, frame_bytes: bytes) -> dict:
+        """Fallback OCR con Tesseract."""
+        try:
+            img = Image.open(io.BytesIO(frame_bytes))
+            full_text = self._tesseract.image_to_string(img)
+            data = self._tesseract.image_to_data(img, output_type=self._tesseract.Output.DICT)
 
             blocks = []
             for i in range(len(data["text"])):
                 text = data["text"][i].strip()
                 conf = int(data["conf"][i])
-                if text and conf > 30:  # filtrar ruido
+                if text and conf > 30:
                     blocks.append({
                         "text": text,
                         "x": data["left"][i],
@@ -90,23 +171,24 @@ class OCREngine:
                     })
 
             avg_conf = sum(b["confidence"] for b in blocks) / max(len(blocks), 1)
-
             return {
                 "text": full_text.strip(),
                 "blocks": blocks,
                 "confidence": round(avg_conf, 1),
+                "engine": "tesseract",
                 "ocr_available": True,
+                "block_count": len(blocks),
             }
         except Exception as e:
-            return {"text": "", "blocks": [], "confidence": 0.0, "error": str(e), "ocr_available": True}
+            return {"text": "", "blocks": [], "confidence": 0.0, "engine": "tesseract", "error": str(e), "ocr_available": True}
 
-    def extract_region(self, frame_bytes: bytes, x: int, y: int, w: int, h: int, lang: str = "eng") -> dict:
-        """OCR solo de una región específica del frame."""
+    def extract_region(self, frame_bytes: bytes, x: int, y: int, w: int, h: int) -> dict:
+        """OCR solo de una region especifica (crop antes de OCR = mas rapido)."""
         img = Image.open(io.BytesIO(frame_bytes))
         cropped = img.crop((x, y, x + w, y + h))
         buf = io.BytesIO()
         cropped.save(buf, format="JPEG", quality=85)
-        return self.extract_text(buf.getvalue(), lang=lang)
+        return self.extract_text(buf.getvalue())
 
 
 # ─── Annotation System ───
@@ -430,9 +512,9 @@ class VisionIntelligence:
         - Anotaciones del usuario (overlay + descripciones)
         - Info de ventana activa
         """
-        # OCR (opcional — es el paso más lento)
+        # OCR (opcional — es el paso mas lento, caching ayuda)
         if run_ocr and self.ocr.available:
-            ocr_result = self.ocr.extract_text(slot.frame_bytes)
+            ocr_result = self.ocr.extract_text(slot.frame_bytes, frame_hash=slot.phash)
         else:
             ocr_result = {"text": "", "blocks": [], "confidence": 0.0}
 
