@@ -497,35 +497,62 @@ class EnrichedFrame:
 
 class VisionIntelligence:
     """
-    Orquesta OCR + Anotaciones + Window Detection para producir
-    EnrichedFrames que cualquier IA puede consumir.
+    Orquesta OCR + Anotaciones + Window Detection + Auto-Blur
+    para producir EnrichedFrames que cualquier IA puede consumir.
     """
 
-    def __init__(self):
+    def __init__(self, auto_blur_sensitive: bool = True):
         self.ocr = OCREngine()
         self.annotations = AnnotationLayer()
+        self.auto_blur = auto_blur_sensitive
+
+        # Import security components
+        from .security import SensitiveDetector, ScreenBlurrer
+        self._sensitive = SensitiveDetector(auto_redact=True)
+        self._blurrer = ScreenBlurrer()
 
     def enrich_frame(self, slot: FrameSlot, run_ocr: bool = True) -> EnrichedFrame:
         """
         Toma un frame crudo y lo enriquece con:
-        - OCR text
+        - OCR text (con redaccion de contenido sensible)
+        - Auto-blur de regiones con passwords/cards/keys
         - Anotaciones del usuario (overlay + descripciones)
         - Info de ventana activa
         """
+        image_bytes = slot.frame_bytes
+        ocr_result = {"text": "", "blocks": [], "confidence": 0.0}
+        blur_count = 0
+
         # OCR (opcional — es el paso mas lento, caching ayuda)
         if run_ocr and self.ocr.available:
             ocr_result = self.ocr.extract_text(slot.frame_bytes, frame_hash=slot.phash)
-        else:
-            ocr_result = {"text": "", "blocks": [], "confidence": 0.0}
+
+            # Auto-blur: detectar contenido sensible y blur esas regiones
+            if self.auto_blur and ocr_result.get("blocks"):
+                regions_to_blur = []
+                for block in ocr_result["blocks"]:
+                    findings = self._sensitive.scan_text(block["text"])
+                    if findings:
+                        regions_to_blur.append({
+                            "x": block["x"],
+                            "y": block["y"],
+                            "w": block["w"],
+                            "h": block["h"],
+                        })
+
+                if regions_to_blur:
+                    image_bytes = self._blurrer.blur_regions(image_bytes, regions_to_blur)
+                    blur_count = len(regions_to_blur)
+
+                # Redact text too
+                ocr_result["text"] = self._sensitive.redact_text(ocr_result.get("text", ""))
 
         # Anotaciones
         ann_descriptions = self.annotations.to_description()
 
         # Si hay anotaciones, renderizar overlay sobre el frame
         if self.annotations.annotations:
-            image_bytes = self.annotations.render_overlay(slot.frame_bytes)
-        else:
-            image_bytes = slot.frame_bytes
+            image_bytes = self.annotations.render_overlay(image_bytes)
 
         # Ventana activa
         window_info = get_active_window_info()
@@ -535,8 +562,8 @@ class VisionIntelligence:
             image_bytes=image_bytes,
             width=slot.width,
             height=slot.height,
-            ocr_text=ocr_result["text"],
-            ocr_blocks=ocr_result["blocks"],
+            ocr_text=ocr_result.get("text", ""),
+            ocr_blocks=ocr_result.get("blocks", []),
             annotations=ann_descriptions,
             active_window=window_info,
             change_score=slot.change_score,

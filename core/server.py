@@ -31,6 +31,7 @@ from .ring_buffer import RingBuffer, FrameSlot
 from .capture import ScreenCapture, CaptureConfig
 from .vision import VisionIntelligence, Annotation
 from .dashboard import DASHBOARD_HTML
+from .smart_diff import SmartDiff
 
 
 # ─── Estado global (vive solo en RAM del proceso) ───
@@ -38,6 +39,7 @@ _buffer: Optional[RingBuffer] = None
 _capture: Optional[ScreenCapture] = None
 _api_key: Optional[str] = None
 _vision: Optional[VisionIntelligence] = None
+_diff: Optional[SmartDiff] = None
 _ws_clients: set[WebSocket] = set()
 
 
@@ -285,11 +287,12 @@ def init_server(
     api_key: Optional[str] = None,
 ):
     """Inyecta las dependencias al módulo del server."""
-    global _buffer, _capture, _api_key, _vision
+    global _buffer, _capture, _api_key, _vision, _diff
     _buffer = buffer
     _capture = capture
     _api_key = api_key
     _vision = VisionIntelligence()
+    _diff = SmartDiff(grid_cols=8, grid_rows=6)
 
 
 # ─── Vision / AI-ready endpoints ───
@@ -356,6 +359,52 @@ async def vision_window(x_api_key: Optional[str] = Header(None)):
     _check_auth(x_api_key)
     from .vision import get_active_window_info
     return get_active_window_info()
+
+
+@app.get("/vision/diff")
+async def vision_diff(
+    include_deltas: bool = Query(False),
+    x_api_key: Optional[str] = Header(None),
+):
+    """
+    Smart visual diff: que cambio y donde en la pantalla.
+    Returns: changed regions, heatmap, change percentage.
+    Con include_deltas=true incluye mini-images de las regiones cambiadas.
+    """
+    _check_auth(x_api_key)
+    if not _buffer or not _diff:
+        raise HTTPException(503, "Not initialized")
+
+    slot = _buffer.get_latest()
+    if not slot:
+        raise HTTPException(404, "No frames in buffer")
+
+    diff = _diff.compare(slot.frame_bytes)
+
+    result = {
+        "changed": diff.changed,
+        "change_percentage": diff.change_percentage,
+        "changed_cells": diff.changed_cells,
+        "total_cells": diff.total_cells,
+        "heatmap": diff.heatmap,
+        "description": _diff.diff_to_description(diff, slot.width, slot.height),
+        "regions": [
+            {
+                "grid": f"({r.grid_x},{r.grid_y})",
+                "pixel_x": r.pixel_x,
+                "pixel_y": r.pixel_y,
+                "pixel_w": r.pixel_w,
+                "pixel_h": r.pixel_h,
+                "intensity": r.change_intensity,
+            }
+            for r in diff.changed_regions
+        ],
+    }
+
+    if include_deltas and diff.changed_regions:
+        result["deltas"] = _diff.get_delta_regions(slot.frame_bytes, diff)
+
+    return result
 
 
 # ─── Annotations (lapiz/marcador) ───
