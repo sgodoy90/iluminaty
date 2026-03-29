@@ -46,11 +46,14 @@ def main():
     parser.add_argument("--api-key", type=str, default=None, help="API key for auth (optional)")
     parser.add_argument("--no-adaptive", action="store_true", help="Disable adaptive FPS")
     parser.add_argument("--no-smart-quality", action="store_true", help="Disable smart quality adjustment")
+    parser.add_argument("--audio", type=str, default="off", choices=["off", "mic", "system", "all"],
+                        help="Audio capture mode (default: off)")
+    parser.add_argument("--audio-buffer", type=int, default=60, help="Audio buffer seconds (default: 60)")
     
     args = parser.parse_args()
     
     if args.command == "version":
-        print("iluminaty v0.1.0")
+        print("iluminaty v0.3.0")
         return
     
     print(BANNER)
@@ -73,8 +76,22 @@ def main():
     )
     capture = ScreenCapture(buffer=buffer, config=config)
     
+    # ─── Audio (opcional) ───
+    audio_buffer = None
+    audio_capture = None
+    if args.audio != "off":
+        from iluminaty.audio import AudioRingBuffer, AudioCapture
+        audio_buffer = AudioRingBuffer(max_seconds=args.audio_buffer)
+        audio_capture = AudioCapture(buffer=audio_buffer, mode=args.audio)
+    
     # ─── Inyectar al server ───
-    init_server(buffer=buffer, capture=capture, api_key=args.api_key)
+    init_server(
+        buffer=buffer,
+        capture=capture,
+        api_key=args.api_key,
+        audio_buffer=audio_buffer,
+        audio_capture=audio_capture,
+    )
     
     # ─── Info de arranque ───
     print(f"  API:       http://{args.host}:{args.port}")
@@ -83,6 +100,7 @@ def main():
     print(f"  Buffer:    {args.buffer_seconds}s ({buffer.max_slots} slots)")
     print(f"  Max width: {args.max_width}px")
     print(f"  Monitor:   {'all' if args.monitor == 0 else f'#{args.monitor}'}")
+    print(f"  Audio:     {args.audio}" + (f" ({args.audio_buffer}s buffer)" if args.audio != "off" else ""))
     print(f"  Auth:      {'enabled' if args.api_key else 'disabled'}")
     print(f"  Disk:      ZERO (RAM-only ring buffer)")
     print()
@@ -99,13 +117,20 @@ def main():
     
     # ─── Arrancar captura ───
     capture.start()
+    if audio_capture and args.audio != "off":
+        audio_capture.start()
+        print(f"  Audio capture started ({args.audio} mode).")
     print("  Capture started. ILUMINATY is watching.\n")
     
     # ─── Cleanup en SIGINT ───
     def cleanup(sig, frame):
-        print("\n  Shutting down... flushing buffer (RAM cleared)")
+        print("\n  Shutting down... flushing buffers (RAM cleared)")
         capture.stop()
+        if audio_capture:
+            audio_capture.stop()
         buffer.flush()
+        if audio_buffer:
+            audio_buffer.clear()
         sys.exit(0)
     
     signal.signal(signal.SIGINT, cleanup)

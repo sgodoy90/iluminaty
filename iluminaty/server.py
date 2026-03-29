@@ -32,6 +32,7 @@ from .capture import ScreenCapture, CaptureConfig
 from .vision import VisionIntelligence, Annotation
 from .dashboard import DASHBOARD_HTML
 from .smart_diff import SmartDiff
+from .audio import AudioRingBuffer, AudioCapture, TranscriptionEngine
 
 
 # ─── Estado global (vive solo en RAM del proceso) ───
@@ -40,6 +41,9 @@ _capture: Optional[ScreenCapture] = None
 _api_key: Optional[str] = None
 _vision: Optional[VisionIntelligence] = None
 _diff: Optional[SmartDiff] = None
+_audio_buffer: Optional[AudioRingBuffer] = None
+_audio_capture: Optional[AudioCapture] = None
+_transcriber: Optional[TranscriptionEngine] = None
 _ws_clients: set[WebSocket] = set()
 
 
@@ -285,14 +289,20 @@ def init_server(
     buffer: RingBuffer,
     capture: ScreenCapture,
     api_key: Optional[str] = None,
+    audio_buffer: Optional[AudioRingBuffer] = None,
+    audio_capture: Optional[AudioCapture] = None,
 ):
     """Inyecta las dependencias al módulo del server."""
     global _buffer, _capture, _api_key, _vision, _diff
+    global _audio_buffer, _audio_capture, _transcriber
     _buffer = buffer
     _capture = capture
     _api_key = api_key
     _vision = VisionIntelligence()
     _diff = SmartDiff(grid_cols=8, grid_rows=6)
+    _audio_buffer = audio_buffer
+    _audio_capture = audio_capture
+    _transcriber = TranscriptionEngine()
 
 
 # ─── Vision / AI-ready endpoints ───
@@ -405,6 +415,86 @@ async def vision_diff(
         result["deltas"] = _diff.get_delta_regions(slot.frame_bytes, diff)
 
     return result
+
+
+# ─── Audio endpoints ───
+
+@app.get("/audio/stats")
+async def audio_stats(x_api_key: Optional[str] = Header(None)):
+    """Stats del buffer de audio."""
+    _check_auth(x_api_key)
+    if not _audio_buffer:
+        return {"status": "disabled", "mode": "off"}
+    stats = _audio_buffer.stats
+    stats["capture_running"] = _audio_capture.is_running if _audio_capture else False
+    stats["mode"] = _audio_capture.mode if _audio_capture else "off"
+    stats["transcription_engine"] = _transcriber.engine if _transcriber else "none"
+    return stats
+
+
+@app.get("/audio/level")
+async def audio_level(x_api_key: Optional[str] = Header(None)):
+    """Nivel de audio actual (para VU meter en el dashboard)."""
+    _check_auth(x_api_key)
+    if not _audio_buffer:
+        return {"level": 0.0, "is_speech": False}
+    chunks = _audio_buffer.get_latest(1.0)
+    if not chunks:
+        return {"level": 0.0, "is_speech": False}
+    latest = chunks[-1]
+    return {"level": latest.rms_level, "is_speech": latest.is_speech}
+
+
+@app.get("/audio/transcribe")
+async def audio_transcribe(
+    seconds: float = Query(10.0, ge=1, le=120),
+    x_api_key: Optional[str] = Header(None),
+):
+    """
+    Transcribe los ultimos N segundos de audio.
+    Usa Whisper local si esta disponible.
+    """
+    _check_auth(x_api_key)
+    if not _audio_buffer or not _transcriber:
+        raise HTTPException(503, "Audio not enabled or transcription unavailable")
+
+    if not _transcriber.available:
+        return {"text": "", "error": "No transcription engine. Install: pip install faster-whisper"}
+
+    chunks = _audio_buffer.get_latest(seconds)
+    speech_chunks = [c for c in chunks if c.is_speech]
+
+    if not speech_chunks:
+        return {"text": "", "note": "No speech detected in last " + str(seconds) + "s"}
+
+    result = _transcriber.transcribe_chunks(speech_chunks)
+    return result
+
+
+@app.get("/audio/wav")
+async def audio_wav(
+    seconds: float = Query(10.0, ge=1, le=60),
+    x_api_key: Optional[str] = Header(None),
+):
+    """Retorna audio WAV de los ultimos N segundos (para debug/playback)."""
+    _check_auth(x_api_key)
+    if not _audio_buffer:
+        raise HTTPException(503, "Audio not enabled")
+
+    wav_data = _audio_buffer.get_audio_wav(seconds)
+    if not wav_data:
+        raise HTTPException(404, "No audio in buffer")
+
+    return Response(content=wav_data, media_type="audio/wav")
+
+
+@app.get("/audio/devices")
+async def audio_devices(x_api_key: Optional[str] = Header(None)):
+    """Lista dispositivos de audio disponibles."""
+    _check_auth(x_api_key)
+    if not _audio_capture:
+        return {"devices": []}
+    return {"devices": _audio_capture.get_devices()}
 
 
 # ─── Annotations (lapiz/marcador) ───
