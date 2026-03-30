@@ -34,8 +34,40 @@
       <a href="#layers">7 Layers</a>
       <a href="#compare">Compare</a>
       <a href="#developers">Developers</a>
+      <a href="#download">Download</a>
       <a href="#pricing">Pricing</a>
       <a href="#" id="nav-sign-in" class="nav-sign-in">Sign In</a>
+      <div id="nav-user" class="nav-user" style="display:none;">
+        <button class="nav-user-btn" id="nav-user-btn" aria-expanded="false">
+          <div class="user-avatar" id="user-avatar">G</div>
+          <span class="user-name" id="user-name">User</span>
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true"><path d="M2.5 4.5L6 8l3.5-3.5"/></svg>
+        </button>
+        <div class="user-dropdown" id="user-dropdown">
+          <div class="dropdown-header">
+            <div class="dropdown-email" id="dropdown-email">user@example.com</div>
+            <div class="dropdown-plan" id="dropdown-plan">Free Plan</div>
+          </div>
+          <div class="dropdown-divider"></div>
+          <a href="/dashboard.html" class="dropdown-item">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+            Dashboard
+          </a>
+          <a href="#pricing" class="dropdown-item" id="dropdown-upgrade">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+            Upgrade to Pro
+          </a>
+          <a href="https://github.com/sgodoy90/iluminaty" target="_blank" rel="noopener noreferrer" class="dropdown-item">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/></svg>
+            API Docs
+          </a>
+          <div class="dropdown-divider"></div>
+          <button class="dropdown-item dropdown-logout" id="dropdown-logout">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+            Log Out
+          </button>
+        </div>
+      </div>
       <a href="https://github.com/sgodoy90/iluminaty" target="_blank" rel="noopener noreferrer" class="nav-gh">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
         GitHub
@@ -77,9 +109,9 @@
       </div>
     </div>
     <div class="hero-actions">
-      <a href="#get-started" class="btn btn-primary">
+      <a href="#download" class="btn btn-primary">
         <span class="btn-glow"></span>
-        Get Started
+        Download Free
       </a>
       <a href="https://github.com/sgodoy90/iluminaty" target="_blank" rel="noopener noreferrer" class="btn btn-secondary">View on GitHub</a>
     </div>
@@ -391,6 +423,79 @@ pip install -e ".[ocr]"</code></pre>
   </div>
 </section>
 
+<!-- ═══ DOWNLOAD ═══ -->
+<section id="download" class="section">
+  <div class="container">
+    <div class="section-badge">Download</div>
+    <h2>Get <span class="text-green">ILUMINATY</span> on your machine</h2>
+    <p class="section-sub">Free forever. Pro features unlock with a license key.</p>
+
+    <div class="download-grid">
+      <!-- Windows -->
+      <div class="download-card" data-os="windows">
+        <div class="download-icon">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="currentColor"><path d="M0 3.449L9.75 2.1v9.451H0m10.949-9.602L24 0v11.4H10.949M0 12.6h9.75v9.451L0 20.699M10.949 12.6H24V24l-12.9-1.801"/></svg>
+        </div>
+        <h3>Windows</h3>
+        <p class="download-version">v1.0.0 &middot; 64-bit</p>
+        <a href="#" class="btn btn-primary download-btn" id="dl-windows" data-os="windows">
+          <span class="btn-glow"></span>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Download .exe
+        </a>
+        <span class="download-alt">Also available: <a href="#" class="dl-alt-link">.msi installer</a></span>
+      </div>
+
+      <!-- macOS -->
+      <div class="download-card" data-os="mac">
+        <div class="download-icon">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="currentColor"><path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.8-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"/></svg>
+        </div>
+        <h3>macOS</h3>
+        <p class="download-version">v1.0.0 &middot; Apple Silicon + Intel</p>
+        <a href="#" class="btn btn-primary download-btn" id="dl-mac" data-os="mac">
+          <span class="btn-glow"></span>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Download .dmg
+        </a>
+        <span class="download-alt">Universal binary</span>
+      </div>
+
+      <!-- Linux -->
+      <div class="download-card" data-os="linux">
+        <div class="download-icon">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="currentColor"><path d="M12.504 0c-.155 0-.315.008-.48.021-4.226.333-3.105 4.807-3.17 6.298-.076 1.092-.3 1.953-1.05 3.02-.885 1.051-2.127 2.75-2.716 4.521-.278.832-.41 1.684-.287 2.489a.424.424 0 00-.11.135c-.26.268-.45.6-.663.839-.199.199-.485.267-.797.4-.313.136-.658.269-.864.68-.09.189-.136.394-.132.602 0 .199.027.4.055.536.058.399.116.728.04.97-.249.68-.28 1.145-.106 1.484.174.334.535.47.94.601.81.2 1.91.135 2.774.6.926.466 1.866.67 2.616.47.526-.116.97-.464 1.208-.946.587-.003 1.23-.269 2.26-.334.699-.058 1.574.267 2.577.2.025.134.063.198.114.333l.003.003c.391.778 1.113 1.368 1.884 1.43.868.07 1.723-.467 2.395-1.333.763-.982.537-1.963.098-3.234-.172-.5-.06-1.065.09-1.398.834-1.527.344-2.731-.09-3.6-.434-.868-1.115-1.563-1.842-2.225-.287-.263-.588-.519-.868-.788-.602-.528-1.086-1.07-1.398-1.615-.31-.545-.472-1.075-.463-1.577.012-.5.088-.977.146-1.477.058-.5.119-1.075.119-1.621 0-.825-.315-1.756-.832-2.33-.517-.579-1.266-.9-2.062-.937a3.364 3.364 0 00-.24-.002z"/></svg>
+        </div>
+        <h3>Linux</h3>
+        <p class="download-version">v1.0.0 &middot; x64</p>
+        <a href="#" class="btn btn-primary download-btn" id="dl-linux" data-os="linux">
+          <span class="btn-glow"></span>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Download .AppImage
+        </a>
+        <span class="download-alt">Also available: <a href="#" class="dl-alt-link">.deb</a></span>
+      </div>
+    </div>
+
+    <div class="download-cli">
+      <h3>Or install via CLI <span class="text-dim">(developers)</span></h3>
+      <pre><code>pip install iluminaty          <span class="c"># Python core only</span>
+pip install iluminaty[ocr]     <span class="c"># with OCR support</span></code></pre>
+    </div>
+
+    <div class="download-license">
+      <div class="license-free">
+        <span class="license-badge free">FREE</span>
+        <span>Core vision + 7 actions + MCP server. No license needed.</span>
+      </div>
+      <div class="license-pro">
+        <span class="license-badge pro">PRO</span>
+        <span>42+ actions, browser, terminal, full autonomy. <a href="#pricing">Get a license key &rarr;</a></span>
+      </div>
+    </div>
+  </div>
+</section>
+
 <!-- ═══ PRICING ═══ -->
 <section id="pricing" class="section section-dark">
   <div class="container">
@@ -483,9 +588,11 @@ pip install -e ".[ocr]"</code></pre>
         <label for="auth-password">Password</label>
         <input type="password" id="auth-password" class="form-input" placeholder="Your password" required autocomplete="current-password"/>
       </div>
+      <div class="auth-error" id="auth-error"></div>
       <button type="submit" class="btn btn-primary auth-submit" id="auth-submit">
         <span class="btn-glow"></span>
-        Sign In
+        <span class="btn-label">Sign In</span>
+        <span class="spinner"></span>
       </button>
     </form>
     <p class="auth-toggle">

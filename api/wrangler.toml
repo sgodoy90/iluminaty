@@ -1,0 +1,11 @@
+name = "iluminaty-auth"
+main = "worker.js"
+compatibility_date = "2024-12-01"
+
+# Custom domain: api.iluminaty.dev
+# routes = [{ pattern = "api.iluminaty.dev/*", zone_name = "iluminaty.dev" }]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "iluminaty-auth"
+database_id = ""  # Fill after: wrangler d1 create iluminaty-auth
