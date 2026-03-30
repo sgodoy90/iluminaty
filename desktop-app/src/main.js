@@ -31,6 +31,418 @@ function escapeHtml(str) {
     .replace(/'/g, "&#039;");
 }
 
+// ─── Auth / Onboarding ───
+const AUTH_API = "https://api.iluminaty.dev";
+// const AUTH_API = "http://localhost:8787"; // dev
+
+function getSession() {
+  try { return JSON.parse(localStorage.getItem("iluminaty_session")); } catch { return null; }
+}
+function setSession(data) {
+  localStorage.setItem("iluminaty_session", JSON.stringify(data));
+}
+function clearSession() {
+  localStorage.removeItem("iluminaty_session");
+}
+
+async function logout() {
+  // Stop server first
+  if (isTauri && invoke) {
+    try { await invoke("stop_server"); } catch {}
+  }
+  serverOnline = false;
+  updateServerUI();
+  stopPolling();
+  stopVisionPolling();
+  stopTokenPolling();
+  clearSession();
+  // Show login screen
+  $("#onboarding").classList.remove("hidden");
+  $("#sidebar-user").style.display = "none";
+  const upgradeBtn = $("#btn-upgrade");
+  if (upgradeBtn) upgradeBtn.classList.remove("hidden");
+  addLog("system", "Signed out", "ok");
+}
+
+// ─── API Key masking ───
+let keyRevealed = false;
+function maskKey(key) {
+  if (!key) return "No key";
+  return key.substring(0, 9) + "****-****-" + key.slice(-4);
+}
+
+function showSidebarUser(session) {
+  if (!session || !session.user) return;
+  const el = $("#sidebar-user");
+  if (!el) return;
+  el.style.display = "flex";
+  const u = session.user;
+  const isPro = u.plan === "pro" || u.plan === "enterprise";
+  $("#sidebar-avatar").textContent = (u.name || u.email || "U")[0].toUpperCase();
+  $("#sidebar-name").textContent = u.name || u.email.split("@")[0];
+  $("#sidebar-plan").textContent = (isPro ? "Pro" : "Free") + " Plan";
+
+  // Show/hide upgrade button
+  const upgradeBtn = $("#btn-upgrade");
+  if (upgradeBtn) {
+    if (isPro) {
+      upgradeBtn.classList.add("hidden");
+    } else {
+      upgradeBtn.classList.remove("hidden");
+    }
+  }
+}
+
+function openUpgradeUrl() {
+  const url = "https://iluminaty.dev/#pricing";
+  if (TAURI?.shell?.open) {
+    TAURI.shell.open(url);
+  } else {
+    window.open(url, "_blank");
+  }
+}
+
+function updatePlanBanner(session) {
+  const banner = $("#plan-banner");
+  if (!banner) return;
+  const isPro = session?.user?.plan === "pro" || session?.user?.plan === "enterprise";
+  if (isPro) {
+    const badge = $("#plan-banner-badge");
+    if (badge) { badge.textContent = "PRO"; badge.classList.add("pro"); }
+    const text = $(".plan-banner-text");
+    if (text) text.textContent = "42+ actions \u00b7 17 MCP tools \u00b7 Full access";
+    const btn = $("#plan-banner-upgrade");
+    if (btn) btn.classList.add("hidden");
+  }
+}
+
+// Wire upgrade buttons on DOMContentLoaded
+document.addEventListener("DOMContentLoaded", () => {
+  const upgradeBtn = $("#btn-upgrade");
+  if (upgradeBtn) upgradeBtn.addEventListener("click", openUpgradeUrl);
+  const bannerBtn = $("#plan-banner-upgrade");
+  if (bannerBtn) bannerBtn.addEventListener("click", openUpgradeUrl);
+
+  // Update plan banner with session
+  const session = getSession();
+  if (session) updatePlanBanner(session);
+});
+
+function initOnboarding() {
+  const session = getSession();
+  if (session && session.api_key) {
+    // Already logged in — skip onboarding, update all UI
+    $("#onboarding").classList.add("hidden");
+    showSidebarUser(session);
+    updateApiKeyCard(session);
+    initSplash();
+    return;
+  }
+
+  // Show onboarding
+  let isSignUp = false;
+  const form = $("#onboard-form");
+  const error = $("#onboard-error");
+  const submit = $("#onboard-submit");
+  const toggleLink = $("#onboard-toggle-link");
+
+  toggleLink.addEventListener("click", (e) => {
+    e.preventDefault();
+    isSignUp = !isSignUp;
+    $("#onboard-name-group").style.display = isSignUp ? "block" : "none";
+    submit.textContent = isSignUp ? "Create Account" : "Sign In";
+    $("#onboard-toggle-text").textContent = isSignUp ? "Already have an account?" : "Don't have an account?";
+    toggleLink.textContent = isSignUp ? "Sign in" : "Sign up";
+    error.textContent = "";
+  });
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    error.textContent = "";
+    const email = $("#onboard-email").value.trim();
+    const password = $("#onboard-password").value;
+    const name = $("#onboard-name").value.trim();
+
+    if (!email || !password) { error.textContent = "Email and password required"; return; }
+    if (isSignUp && !name) { error.textContent = "Name required"; return; }
+
+    submit.disabled = true;
+    submit.textContent = "Connecting...";
+
+    try {
+      const endpoint = isSignUp ? "/auth/register" : "/auth/login";
+      const body = isSignUp ? { email, password, name } : { email, password };
+      const resp = await fetch(AUTH_API + endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await resp.json();
+      if (!resp.ok) {
+        error.textContent = data.error || "Something went wrong";
+        return;
+      }
+      setSession(data);
+      showSidebarUser(data);
+      updatePlanBanner(data);
+      updateApiKeyCard(data);
+      $("#onboarding").classList.add("hidden");
+      initSplash();
+      startServerAfterLogin();
+    } catch (err) {
+      // Auth server unreachable — allow dev bypass
+      const DEV_ACCOUNTS = { "dev@iluminaty.dev": "iluminaty2026" };
+      if (DEV_ACCOUNTS[email] && DEV_ACCOUNTS[email] === password) {
+        const devSession = {
+          user: { name: "Developer", email, plan: "pro" },
+          api_key: "ILUM-dev-godo-master-key-2026",
+        };
+        setSession(devSession);
+        showSidebarUser(devSession);
+        updatePlanBanner(devSession);
+        updateApiKeyCard(devSession);
+        $("#onboarding").classList.add("hidden");
+        initSplash();
+        startServerAfterLogin();
+      } else {
+        error.textContent = "Cannot reach auth server. Please try again later.";
+      }
+    } finally {
+      submit.disabled = false;
+      submit.textContent = isSignUp ? "Create Account" : "Sign In";
+    }
+  });
+
+  // Google button
+  $("#onboard-google").addEventListener("click", () => {
+    error.textContent = "Google login coming soon. Use email for now.";
+  });
+}
+
+// ─── API Key Card ───
+function updateApiKeyCard(session) {
+  if (!session || !session.api_key) return;
+  const key = session.api_key;
+  const plan = session.user?.plan || "free";
+  const isPro = plan === "pro" || plan === "enterprise";
+
+  // Key display
+  const keyEl = $("#apikey-value");
+  if (keyEl) {
+    keyEl.textContent = keyRevealed ? key : maskKey(key);
+    keyEl.classList.toggle("masked", !keyRevealed);
+  }
+
+  // CLI hint
+  const cliVal = $("#apikey-cli-val");
+  if (cliVal) cliVal.textContent = key;
+
+  // Plan badge
+  const badge = $("#plan-badge");
+  if (badge) {
+    badge.textContent = plan.toUpperCase();
+    badge.classList.toggle("pro", isPro);
+  }
+
+  // Plan features
+  const info = $("#apikey-plan-info");
+  if (info) {
+    if (isPro) {
+      info.innerHTML = `
+        <div class="plan-feature"><span class="plan-check">&#10003;</span> 42+ actions</div>
+        <div class="plan-feature"><span class="plan-check">&#10003;</span> 17 MCP tools</div>
+        <div class="plan-feature"><span class="plan-check">&#10003;</span> Vision + OCR</div>
+        <div class="plan-feature"><span class="plan-check">&#10003;</span> Browser + Terminal</div>
+        <div class="plan-feature"><span class="plan-check">&#10003;</span> File System</div>
+        <div class="plan-feature"><span class="plan-check">&#10003;</span> Full Autonomy</div>
+      `;
+    }
+  }
+
+  // Upgrade button
+  const upgradeCard = $("#btn-upgrade-card");
+  if (upgradeCard) {
+    if (isPro) {
+      upgradeCard.classList.add("hidden");
+    } else {
+      upgradeCard.classList.remove("hidden");
+    }
+  }
+}
+
+function initApiKeyCard() {
+  // Reveal toggle
+  const revealBtn = $("#apikey-reveal");
+  if (revealBtn) {
+    revealBtn.addEventListener("click", () => {
+      keyRevealed = !keyRevealed;
+      revealBtn.textContent = keyRevealed ? "Hide" : "Reveal";
+      const session = getSession();
+      if (session) updateApiKeyCard(session);
+    });
+  }
+
+  // Copy button
+  const copyBtn = $("#apikey-copy");
+  if (copyBtn) {
+    copyBtn.addEventListener("click", () => {
+      const session = getSession();
+      if (session?.api_key) {
+        navigator.clipboard.writeText(session.api_key).then(() => {
+          copyBtn.textContent = "Copied!";
+          setTimeout(() => { copyBtn.textContent = "Copy"; }, 2000);
+        });
+      }
+    });
+  }
+
+  // Upgrade button in card
+  const upgradeBtn = $("#btn-upgrade-card");
+  if (upgradeBtn) upgradeBtn.addEventListener("click", openUpgradeUrl);
+}
+
+// ─── Token Economy ───
+let tokenTimer = null;
+
+function startTokenPolling() {
+  if (tokenTimer) return;
+  tokenTimer = setInterval(pollTokens, 3000);
+  pollTokens();
+}
+
+function stopTokenPolling() {
+  if (tokenTimer) { clearInterval(tokenTimer); tokenTimer = null; }
+}
+
+async function pollTokens() {
+  if (!serverOnline) return;
+  const data = await apiGet("/tokens/status");
+  if (!data) return;
+
+  // Update stats
+  const usedEl = $("#token-used");
+  if (usedEl) usedEl.textContent = data.used.toLocaleString();
+
+  const budgetEl = $("#token-budget-val");
+  if (budgetEl) budgetEl.textContent = data.budget === 0 ? "\u221e" : data.budget.toLocaleString();
+
+  const remainEl = $("#token-remaining");
+  if (remainEl) {
+    if (data.remaining === -1) {
+      remainEl.textContent = "\u221e";
+      remainEl.style.color = "";
+    } else {
+      remainEl.textContent = data.remaining.toLocaleString();
+      remainEl.style.color = data.remaining < 5000 ? "var(--red)" : "";
+    }
+  }
+
+  // Update mode badge
+  const modeBadge = $("#token-mode-badge");
+  if (modeBadge) modeBadge.textContent = data.mode;
+
+  // Update mode buttons
+  $$(".token-mode-btn").forEach(btn => {
+    btn.classList.toggle("active", btn.dataset.mode === data.mode);
+  });
+
+  // Update history
+  const histEl = $("#token-history");
+  if (histEl && data.last_5 && data.last_5.length > 0) {
+    histEl.innerHTML = data.last_5.slice().reverse().map(e => {
+      const action = escapeHtml(e.action.replace("vision/smart ", "").replace(/[()]/g, ""));
+      return `<div class="token-history-entry"><span>${action}</span><span class="th-tokens">${e.tokens}</span></div>`;
+    }).join("");
+  }
+}
+
+function initTokenCard() {
+  // Mode buttons
+  $$(".token-mode-btn").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const mode = btn.dataset.mode;
+      await apiPost(`/tokens/mode?mode=${mode}`);
+      $$(".token-mode-btn").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      const modeBadge = $("#token-mode-badge");
+      if (modeBadge) modeBadge.textContent = mode;
+      addLog("tokens", `Mode set to ${mode}`, "ok");
+    });
+  });
+
+  // Budget set
+  const budgetBtn = $("#token-budget-set");
+  if (budgetBtn) {
+    budgetBtn.addEventListener("click", async () => {
+      const val = parseInt($("#token-budget-input").value, 10) || 0;
+      await apiPost(`/tokens/budget?limit=${val}`);
+      addLog("tokens", `Budget set to ${val === 0 ? "unlimited" : val}`, "ok");
+      pollTokens();
+    });
+  }
+
+  // Reset
+  const resetBtn = $("#token-reset");
+  if (resetBtn) {
+    resetBtn.addEventListener("click", async () => {
+      await apiPost("/tokens/reset");
+      addLog("tokens", "Token counter reset", "ok");
+      pollTokens();
+    });
+  }
+}
+
+// ─── Plan Upgrade Check ───
+// Periodically checks if user's plan was upgraded (after purchase)
+async function checkPlanUpgrade() {
+  const session = getSession();
+  if (!session || !session.api_key) return;
+
+  try {
+    // Check against auth API
+    const resp = await fetch(AUTH_API + "/auth/validate", {
+      headers: { "Authorization": "Bearer " + session.api_key },
+    });
+    if (!resp.ok) return;
+    const data = await resp.json();
+    if (!data.valid) return;
+
+    const currentPlan = session.user?.plan || "free";
+    const newPlan = data.plan || data.user?.plan || "free";
+
+    if (newPlan !== currentPlan && (newPlan === "pro" || newPlan === "enterprise")) {
+      // Plan was upgraded!
+      session.user.plan = newPlan;
+      setSession(session);
+      showSidebarUser(session);
+      updatePlanBanner(session);
+      updateApiKeyCard(session);
+
+      // Show upgrade message
+      const msg = $("#apikey-refresh-msg");
+      if (msg) { msg.style.display = "block"; setTimeout(() => { msg.style.display = "none"; }, 10000); }
+
+      addLog("plan", `Upgraded to ${newPlan.toUpperCase()}!`, "ok");
+    }
+  } catch {
+    // Auth server unreachable — no problem
+  }
+}
+
+// ─── Post-Login Server Start ───
+async function startServerAfterLogin() {
+  // Start server via Tauri (if inside desktop app)
+  if (isTauri && invoke) {
+    try {
+      await invoke("start_server");
+      addLog("system", "Server starting...", "ok");
+    } catch {}
+  }
+  // Start health check polling — detects when server is ready
+  checkServer();
+  setInterval(checkServer, 5000);
+}
+
 // ─── Splash Screen ───
 function initSplash() {
   const bar = $("#splash-bar");
@@ -128,9 +540,11 @@ async function checkServer() {
     if (online) {
       startPolling();
       startVisionPolling();
+      startTokenPolling();
     } else {
       stopPolling();
       stopVisionPolling();
+      stopTokenPolling();
     }
   }
 }
@@ -412,7 +826,7 @@ function initActionButtons() {
 
 // ─── Init ───
 function init() {
-  initSplash();
+  initOnboarding();
   initNav();
   initActionButtons();
 
@@ -462,20 +876,40 @@ function init() {
   const saveBtn = $("#btn-save-settings");
   if (saveBtn) saveBtn.addEventListener("click", saveSettings);
 
+  // Logout button
+  const logoutBtn = $("#btn-logout");
+  if (logoutBtn) logoutBtn.addEventListener("click", logout);
+
+  // Init new cards
+  initApiKeyCard();
+  initTokenCard();
+
+  // Load session into API key card on startup
+  const startSession = getSession();
+  if (startSession) updateApiKeyCard(startSession);
+
   // J6: Pause/resume polling when window is hidden
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) {
       stopPolling();
       stopVisionPolling();
+      stopTokenPolling();
     } else if (serverOnline) {
       startPolling();
       startVisionPolling();
+      startTokenPolling();
     }
   });
 
-  // Check server status periodically
-  checkServer();
-  setInterval(checkServer, 5000);
+  // Server does NOT start until login — see startServerAfterLogin()
+  // Only start polling/server if already logged in (session restored)
+  const existingSession = getSession();
+  if (existingSession && existingSession.api_key) {
+    startServerAfterLogin();
+  }
+
+  // Check for plan upgrades every 60s (detects payment)
+  setInterval(checkPlanUpgrade, 60000);
 }
 
 // Start

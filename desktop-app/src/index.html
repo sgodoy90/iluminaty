@@ -8,6 +8,39 @@
 </head>
 <body>
 
+<!-- ═══ ONBOARDING / LOGIN ═══ -->
+<div class="onboarding" id="onboarding">
+  <div class="onboard-card">
+    <div class="onboard-logo">ILUMINAT<span class="y">Y</span></div>
+    <div class="onboard-sub">EYE OF GOD</div>
+    <p class="onboard-desc">Sign in to start using ILUMINATY.<br/>Free plan includes vision + 7 actions.</p>
+
+    <button class="btn-google-login" id="onboard-google">
+      <svg width="18" height="18" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>
+      Continue with Google
+    </button>
+    <div class="onboard-divider"><span>or</span></div>
+
+    <form id="onboard-form">
+      <div class="onboard-field" id="onboard-name-group" style="display:none;">
+        <input type="text" id="onboard-name" placeholder="Full Name" autocomplete="name"/>
+      </div>
+      <div class="onboard-field">
+        <input type="email" id="onboard-email" placeholder="Email" required autocomplete="email"/>
+      </div>
+      <div class="onboard-field">
+        <input type="password" id="onboard-password" placeholder="Password" required autocomplete="current-password"/>
+      </div>
+      <div class="onboard-error" id="onboard-error"></div>
+      <button type="submit" class="onboard-submit" id="onboard-submit">Sign In</button>
+    </form>
+    <p class="onboard-toggle">
+      <span id="onboard-toggle-text">Don't have an account?</span>
+      <a href="#" id="onboard-toggle-link">Sign up</a>
+    </p>
+  </div>
+</div>
+
 <!-- ═══ SPLASH SCREEN ═══ -->
 <div class="splash" id="splash">
   <canvas id="splash-canvas"></canvas>
@@ -52,6 +85,20 @@
   </nav>
 
   <div class="sidebar-footer">
+    <div class="sidebar-user" id="sidebar-user" style="display:none;">
+      <div class="sidebar-user-avatar" id="sidebar-avatar">G</div>
+      <div class="sidebar-user-info">
+        <div class="sidebar-user-name" id="sidebar-name">User</div>
+        <div class="sidebar-user-plan" id="sidebar-plan">Free Plan</div>
+      </div>
+      <button class="btn-logout" id="btn-logout" title="Sign out">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+      </button>
+    </div>
+    <button class="btn-upgrade" id="btn-upgrade">
+      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+      Upgrade to Pro
+    </button>
     <div class="server-status">
       <span class="status-dot" id="status-dot"></span>
       <span id="status-text">Server offline</span>
@@ -78,6 +125,14 @@
 
     <!-- ═══ VIEW: DASHBOARD ═══ -->
     <div class="view active" id="view-dashboard">
+      <!-- Plan Banner -->
+      <div class="plan-banner" id="plan-banner">
+        <div class="plan-banner-left">
+          <span class="plan-banner-badge" id="plan-banner-badge">FREE</span>
+          <span class="plan-banner-text">7 actions &middot; 7 MCP tools</span>
+        </div>
+        <button class="plan-banner-btn" id="plan-banner-upgrade">Unlock all 42+ actions &rarr;</button>
+      </div>
       <!-- Stats Row -->
       <div class="grid-4" style="margin-bottom:16px;">
         <div class="stat-card">
@@ -95,6 +150,80 @@
         <div class="stat-card">
           <div class="stat-value" id="stat-uptime">--</div>
           <div class="stat-label">Uptime</div>
+        </div>
+      </div>
+
+      <!-- Token Economy + API Key -->
+      <div class="grid-2" style="margin-bottom:16px;">
+        <div class="card" id="token-card">
+          <div class="card-header">
+            <span class="card-title">Token Economy</span>
+            <span class="card-badge" id="token-mode-badge">text_only</span>
+          </div>
+          <div class="token-stats">
+            <div class="token-stat">
+              <span class="token-stat-value" id="token-used">0</span>
+              <span class="token-stat-label">Tokens Used</span>
+            </div>
+            <div class="token-stat">
+              <span class="token-stat-value" id="token-budget-val">--</span>
+              <span class="token-stat-label">Budget</span>
+            </div>
+            <div class="token-stat">
+              <span class="token-stat-value" id="token-remaining">--</span>
+              <span class="token-stat-label">Remaining</span>
+            </div>
+          </div>
+          <div class="token-mode-selector">
+            <label class="token-mode-label">Vision Mode</label>
+            <div class="token-modes" id="token-modes">
+              <button class="token-mode-btn active" data-mode="text_only">text_only<span class="token-cost">~200</span></button>
+              <button class="token-mode-btn" data-mode="low_res">low_res<span class="token-cost">~5K</span></button>
+              <button class="token-mode-btn" data-mode="medium_res">med_res<span class="token-cost">~15K</span></button>
+              <button class="token-mode-btn" data-mode="full_res">full_res<span class="token-cost">~30K</span></button>
+            </div>
+          </div>
+          <div class="token-budget-row">
+            <label class="token-mode-label">Budget Limit</label>
+            <div style="display:flex;gap:6px;align-items:center;">
+              <input class="setting-input" id="token-budget-input" type="number" value="0" min="0" step="10000" style="width:100px;" />
+              <button class="topbar-btn" id="token-budget-set" style="font-size:11px;">Set</button>
+              <button class="topbar-btn" id="token-reset" style="font-size:11px;">Reset</button>
+            </div>
+          </div>
+          <div class="token-history" id="token-history">
+            <span style="color:var(--text-muted);font-size:11px;">No usage yet</span>
+          </div>
+        </div>
+
+        <div class="card" id="apikey-card">
+          <div class="card-header">
+            <span class="card-title">Your API Key</span>
+            <span class="card-badge" id="plan-badge">FREE</span>
+          </div>
+          <div class="apikey-display">
+            <code class="apikey-value" id="apikey-value">No key — sign in to get one</code>
+            <div class="apikey-actions">
+              <button class="apikey-btn" id="apikey-reveal" title="Show/hide key">Reveal</button>
+              <button class="apikey-btn" id="apikey-copy" title="Copy to clipboard">Copy</button>
+            </div>
+          </div>
+          <div class="apikey-usage">
+            <label class="token-mode-label">Quick Setup</label>
+            <code class="apikey-cli">export ILUMINATY_KEY=<span id="apikey-cli-val">your-key</span></code>
+          </div>
+          <div class="apikey-plan-info" id="apikey-plan-info">
+            <div class="plan-feature"><span class="plan-check">&#10003;</span> 7 actions</div>
+            <div class="plan-feature"><span class="plan-check">&#10003;</span> 7 MCP tools</div>
+            <div class="plan-feature"><span class="plan-check">&#10003;</span> Vision + OCR</div>
+            <div class="plan-feature locked"><span class="plan-lock">&#128274;</span> 42+ actions</div>
+            <div class="plan-feature locked"><span class="plan-lock">&#128274;</span> 17 MCP tools</div>
+            <div class="plan-feature locked"><span class="plan-lock">&#128274;</span> Browser + Terminal</div>
+          </div>
+          <button class="btn-upgrade-card" id="btn-upgrade-card">Upgrade to Pro</button>
+          <div class="apikey-refresh" id="apikey-refresh-msg" style="display:none;">
+            <span style="color:var(--green);font-size:11px;">Plan upgraded! Key auto-updated.</span>
+          </div>
         </div>
       </div>
 

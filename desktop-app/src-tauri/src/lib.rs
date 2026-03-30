@@ -1,11 +1,17 @@
 use serde::Serialize;
-use std::process::{Child, Command};
+use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
-    Manager, State,
+    Emitter, Manager, State,
 };
+
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 // ─── State ───
 struct ServerProcess(Mutex<Option<Child>>);
@@ -25,15 +31,7 @@ fn start_server(state: State<ServerProcess>) -> Result<String, String> {
         return Ok("Server already running".into());
     }
 
-    // Find python executable
-    let python = find_python();
-
-    let child = Command::new(&python)
-        .args(["-m", "iluminaty.main", "start", "--actions", "--autonomy", "confirm"])
-        .current_dir(project_root())
-        .spawn()
-        .map_err(|e| format!("Failed to start server: {}", e))?;
-
+    let child = spawn_server()?;
     let pid = child.id();
     *proc = Some(child);
     Ok(format!("Server started (PID: {})", pid))
@@ -55,7 +53,6 @@ fn stop_server(state: State<ServerProcess>) -> Result<String, String> {
 #[tauri::command]
 fn server_status(state: State<ServerProcess>) -> Result<ServerStatus, String> {
     let mut proc = state.0.lock().unwrap_or_else(|e| e.into_inner());
-    // Check if process actually exited (R4: stale status fix)
     let exited = if let Some(ref mut child) = *proc {
         matches!(child.try_wait(), Ok(Some(_)))
     } else {
@@ -78,7 +75,6 @@ fn server_status(state: State<ServerProcess>) -> Result<ServerStatus, String> {
 
 #[tauri::command]
 async fn api_get(endpoint: String) -> Result<String, String> {
-    // R5: SSRF validation
     if !endpoint.starts_with('/') || endpoint.contains("://") || endpoint.contains('@') {
         return Err("Invalid endpoint".into());
     }
@@ -93,7 +89,6 @@ async fn api_get(endpoint: String) -> Result<String, String> {
 
 #[tauri::command]
 async fn api_post(endpoint: String, body: String) -> Result<String, String> {
-    // R5: SSRF validation
     if !endpoint.starts_with('/') || endpoint.contains("://") || endpoint.contains('@') {
         return Err("Invalid endpoint".into());
     }
@@ -111,24 +106,111 @@ async fn api_post(endpoint: String, body: String) -> Result<String, String> {
         .map_err(|e| format!("Read failed: {}", e))
 }
 
+#[derive(Serialize)]
+struct UpdateInfo {
+    current: String,
+    latest: String,
+    update_available: bool,
+    download_url: String,
+}
+
+#[tauri::command]
+async fn check_for_updates() -> Result<UpdateInfo, String> {
+    let url = "https://api.github.com/repos/sgodoy90/iluminaty/releases/latest";
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(url)
+        .header("User-Agent", "ILUMINATY-Desktop/1.0.0")
+        .send()
+        .await
+        .map_err(|e| format!("Check failed: {}", e))?;
+    let json: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Parse failed: {}", e))?;
+    let latest = json["tag_name"]
+        .as_str()
+        .unwrap_or("unknown")
+        .trim_start_matches('v')
+        .to_string();
+    let current = env!("CARGO_PKG_VERSION").to_string();
+    let download_url = json["html_url"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    Ok(UpdateInfo {
+        update_available: latest != current && latest != "unknown",
+        current,
+        latest,
+        download_url,
+    })
+}
+
 // ─── Helpers ───
 
+/// Spawn the Python server with hidden console window on Windows
+fn spawn_server() -> Result<Child, String> {
+    let python = find_python();
+    let root = project_root();
+
+    let mut cmd = Command::new(&python);
+    cmd.args(["-m", "iluminaty.main", "start", "--actions", "--autonomy", "confirm", "--monitor", "0"])
+        .current_dir(&root)
+        .env("ILUMINATY_KEY", "ILUM-dev-godo-master-key-2026")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+
+    // Hide the console window on Windows
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+
+    cmd.spawn().map_err(|e| format!("Failed to start server: {}", e))
+}
+
 fn find_python() -> String {
-    // Try python, python3, py in order
-    for cmd in &["python", "python3", "py"] {
-        if Command::new(cmd).arg("--version").output().is_ok() {
+    // Known full paths first (most reliable on Windows)
+    let full_paths = [
+        r"C:\Users\jgodo\AppData\Local\Microsoft\WindowsApps\python3.13.exe",
+        r"C:\Users\jgodo\AppData\Local\Programs\Python\Python313\python.exe",
+        r"C:\Users\jgodo\AppData\Local\Programs\Python\Python312\python.exe",
+    ];
+    for p in &full_paths {
+        if std::path::Path::new(p).exists() && python_has_deps(p) {
+            return p.to_string();
+        }
+    }
+    // Then try PATH commands, but verify deps
+    for cmd in &["python3", "python", "py"] {
+        if python_has_deps(cmd) {
             return cmd.to_string();
         }
     }
     "python".into()
 }
 
+fn python_has_deps(cmd: &str) -> bool {
+    let mut check = Command::new(cmd);
+    check.args(["-c", "import uvicorn, mss"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(target_os = "windows")]
+    check.creation_flags(CREATE_NO_WINDOW);
+    matches!(check.output(), Ok(o) if o.status.success())
+}
+
 fn project_root() -> String {
-    // Go up from the desktop-app/src-tauri to the iluminaty root
+    // 1. Check env var (set by installer or shortcut)
+    if let Ok(root) = std::env::var("ILUMINATY_ROOT") {
+        let p = std::path::PathBuf::from(&root);
+        if p.join("iluminaty").join("main.py").exists() {
+            return root;
+        }
+    }
+
+    // 2. Walk up from exe location
     let exe = std::env::current_exe().unwrap_or_default();
     let mut path = exe.parent().unwrap_or(std::path::Path::new(".")).to_path_buf();
-    // In dev mode, try the repo root
-    for _ in 0..5 {
+    for _ in 0..7 {
         if path.join("iluminaty").join("main.py").exists() {
             return path.to_string_lossy().to_string();
         }
@@ -138,11 +220,50 @@ fn project_root() -> String {
             break;
         }
     }
-    // Fallback: current directory
+
+    // 3. Walk up from current working directory
+    let mut cwd = std::env::current_dir().unwrap_or_default();
+    for _ in 0..5 {
+        if cwd.join("iluminaty").join("main.py").exists() {
+            return cwd.to_string_lossy().to_string();
+        }
+        if let Some(parent) = cwd.parent() {
+            cwd = parent.to_path_buf();
+        } else {
+            break;
+        }
+    }
+
+    // 4. Known dev path fallback
+    let dev = std::path::PathBuf::from(r"C:\Users\jgodo\Desktop\iluminaty");
+    if dev.join("iluminaty").join("main.py").exists() {
+        return dev.to_string_lossy().to_string();
+    }
+
     std::env::current_dir()
         .unwrap_or_default()
         .to_string_lossy()
         .to_string()
+}
+
+fn start_server_internal(state: &State<ServerProcess>) -> Result<(), String> {
+    let mut proc = state.0.lock().map_err(|e| e.to_string())?;
+    if proc.is_some() {
+        return Ok(());
+    }
+    let child = spawn_server()?;
+    *proc = Some(child);
+    Ok(())
+}
+
+fn stop_server_internal(state: &State<ServerProcess>) -> Result<(), String> {
+    let mut proc = state.0.lock().map_err(|e| e.to_string())?;
+    if let Some(ref mut child) = *proc {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    *proc = None;
+    Ok(())
 }
 
 // ─── App ───
@@ -159,17 +280,19 @@ pub fn run() {
             server_status,
             api_get,
             api_post,
+            check_for_updates,
         ])
         .setup(|app| {
-            // ── System Tray ──
+            // ── System Tray (single icon) ──
             let show = MenuItem::with_id(app, "show", "Show ILUMINATY", true, None::<&str>)?;
             let start = MenuItem::with_id(app, "start_srv", "Start Server", true, None::<&str>)?;
             let stop = MenuItem::with_id(app, "stop_srv", "Stop Server", true, None::<&str>)?;
+            let check_update = MenuItem::with_id(app, "check_update", "Check for Updates", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
 
-            let menu = Menu::with_items(app, &[&show, &start, &stop, &quit])?;
+            let menu = Menu::with_items(app, &[&show, &start, &stop, &check_update, &quit])?;
 
-            TrayIconBuilder::new()
+            TrayIconBuilder::with_id("main-tray")
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&menu)
                 .tooltip("ILUMINATY — Eye of God")
@@ -188,8 +311,10 @@ pub fn run() {
                         let state: State<ServerProcess> = app.state();
                         let _ = stop_server_internal(&state);
                     }
+                    "check_update" => {
+                        let _ = app.emit("check-updates", ());
+                    }
                     "quit" => {
-                        // Stop server before quitting
                         let state: State<ServerProcess> = app.state();
                         let _ = stop_server_internal(&state);
                         app.exit(0);
@@ -198,40 +323,15 @@ pub fn run() {
                 })
                 .build(app)?;
 
+            // Server does NOT auto-start — frontend calls start_server after login
             Ok(())
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
-                // Stop server on window close
                 let state: State<ServerProcess> = window.state();
                 let _ = stop_server_internal(&state);
             }
         })
         .run(tauri::generate_context!())
         .expect("error while running ILUMINATY");
-}
-
-fn start_server_internal(state: &State<ServerProcess>) -> Result<(), String> {
-    let mut proc = state.0.lock().map_err(|e| e.to_string())?;
-    if proc.is_some() {
-        return Ok(());
-    }
-    let python = find_python();
-    let child = Command::new(&python)
-        .args(["-m", "iluminaty.main", "start", "--actions", "--autonomy", "confirm"])
-        .current_dir(project_root())
-        .spawn()
-        .map_err(|e| e.to_string())?;
-    *proc = Some(child);
-    Ok(())
-}
-
-fn stop_server_internal(state: &State<ServerProcess>) -> Result<(), String> {
-    let mut proc = state.0.lock().map_err(|e| e.to_string())?;
-    if let Some(ref mut child) = *proc {
-        let _ = child.kill();
-        let _ = child.wait();
-    }
-    *proc = None;
-    Ok(())
 }
