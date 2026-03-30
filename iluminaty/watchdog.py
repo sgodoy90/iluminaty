@@ -137,6 +137,7 @@ class Watchdog:
         self._callbacks: list[Callable] = []
         self._alert_count: int = 0
         self._compiled: dict[str, re.Pattern] = {}
+        self._lock = threading.Lock()  # BUG-013 fix: thread-safe mutations
         self._compile_patterns()
 
     def _compile_patterns(self):
@@ -168,54 +169,56 @@ class Watchdog:
         """
         Escanea texto OCR y/o titulo de ventana contra los triggers.
         Retorna lista de alertas nuevas (puede ser vacia).
+        BUG-013 fix: thread-safe via lock.
         """
         now = time.time()
         new_alerts = []
 
-        for trigger in self._triggers:
-            if not trigger.enabled:
-                continue
+        with self._lock:
+            for trigger in self._triggers:
+                if not trigger.enabled:
+                    continue
 
-            # Cooldown check
-            if now - trigger._last_fired < trigger.cooldown_seconds:
-                continue
+                # Cooldown check
+                if now - trigger._last_fired < trigger.cooldown_seconds:
+                    continue
 
-            pattern = self._compiled.get(trigger.name)
-            if not pattern:
-                continue
+                pattern = self._compiled.get(trigger.name)
+                if not pattern:
+                    continue
 
-            # Decide que texto escanear
-            texts_to_scan = []
-            if trigger.source in ("ocr", "any") and ocr_text:
-                texts_to_scan.append(("ocr", ocr_text))
-            if trigger.source in ("title", "any") and window_title:
-                texts_to_scan.append(("title", window_title))
+                # Decide que texto escanear
+                texts_to_scan = []
+                if trigger.source in ("ocr", "any") and ocr_text:
+                    texts_to_scan.append(("ocr", ocr_text))
+                if trigger.source in ("title", "any") and window_title:
+                    texts_to_scan.append(("title", window_title))
 
-            for source, text in texts_to_scan:
-                match = pattern.search(text)
-                if match:
-                    self._alert_count += 1
-                    alert = WatchdogAlert(
-                        id=f"alert-{self._alert_count}",
-                        trigger_name=trigger.name,
-                        severity=trigger.severity,
-                        message=f"[{trigger.name}] detected: {match.group()[:60]}",
-                        matched_text=match.group(),
-                        timestamp=now,
-                        source=source,
-                    )
-                    self._alerts.append(alert)
-                    new_alerts.append(alert)
-                    trigger._last_fired = now
+                for source, text in texts_to_scan:
+                    match = pattern.search(text)
+                    if match:
+                        self._alert_count += 1
+                        alert = WatchdogAlert(
+                            id=f"alert-{self._alert_count}",
+                            trigger_name=trigger.name,
+                            severity=trigger.severity,
+                            message=f"[{trigger.name}] detected: {match.group()[:60]}",
+                            matched_text=match.group(),
+                            timestamp=now,
+                            source=source,
+                        )
+                        self._alerts.append(alert)
+                        new_alerts.append(alert)
+                        trigger._last_fired = now
 
-                    # Fire callbacks
-                    for cb in self._callbacks:
-                        try:
-                            cb(alert)
-                        except Exception:
-                            pass
+                        # Fire callbacks
+                        for cb in self._callbacks:
+                            try:
+                                cb(alert)
+                            except Exception:
+                                pass
 
-                    break  # one alert per trigger per scan
+                        break  # one alert per trigger per scan
 
         return new_alerts
 

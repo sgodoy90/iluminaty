@@ -183,12 +183,20 @@ class OCREngine:
             return {"text": "", "blocks": [], "confidence": 0.0, "engine": "tesseract", "error": str(e), "ocr_available": True}
 
     def extract_region(self, frame_bytes: bytes, x: int, y: int, w: int, h: int) -> dict:
-        """OCR solo de una region especifica (crop antes de OCR = mas rapido)."""
+        """OCR solo de una region especifica. BUG-010 fix: bypasses cache (region != full frame)."""
         img = Image.open(io.BytesIO(frame_bytes))
+        # Bounds check
+        x = max(0, x)
+        y = max(0, y)
+        w = min(w, img.width - x)
+        h = min(h, img.height - y)
+        if w <= 0 or h <= 0:
+            return {"text": "", "blocks": [], "confidence": 0.0, "engine": self._engine_name}
         cropped = img.crop((x, y, x + w, y + h))
         buf = io.BytesIO()
         cropped.save(buf, format="JPEG", quality=85)
-        return self.extract_text(buf.getvalue())
+        # No frame_hash = no cache (region OCR is always fresh)
+        return self.extract_text(buf.getvalue(), frame_hash=None)
 
 
 # ─── Annotation System ───
@@ -457,9 +465,11 @@ class EnrichedFrame:
         ]
 
         if self.ocr_text:
-            # Limitar texto a 2000 chars para no explotar contexto
-            truncated = self.ocr_text[:2000]
-            parts.append(f"\n### Visible Text (OCR)\n```\n{truncated}\n```")
+            # BUG-011 fix: show truncation notice if text was cut
+            max_chars = 2000
+            truncated = self.ocr_text[:max_chars]
+            trunc_note = f" (truncated from {len(self.ocr_text)} chars)" if len(self.ocr_text) > max_chars else ""
+            parts.append(f"\n### Visible Text (OCR{trunc_note})\n```\n{truncated}\n```")
 
         if self.annotations:
             parts.append("\n### User Annotations (LOOK HERE)")

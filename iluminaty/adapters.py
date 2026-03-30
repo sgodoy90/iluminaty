@@ -315,8 +315,8 @@ class ClaudeAdapter(BaseAdapter):
 
     def connect(self):
         try:
-            from anthropic import Anthropic
-            self._client = Anthropic(api_key=self.api_key)
+            import anthropic
+            self._client = anthropic.Anthropic(api_key=self.api_key)
             self._connected = True
         except ImportError:
             raise RuntimeError("Install anthropic: pip install anthropic")

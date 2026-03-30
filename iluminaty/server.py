@@ -42,23 +42,37 @@ from .router import AIRouter
 from .collab import CollaborativeManager
 
 
-# ─── Estado global (vive solo en RAM del proceso) ───
-_buffer: Optional[RingBuffer] = None
-_capture: Optional[ScreenCapture] = None
-_api_key: Optional[str] = None
-_vision: Optional[VisionIntelligence] = None
-_diff: Optional[SmartDiff] = None
-_audio_buffer: Optional[AudioRingBuffer] = None
-_audio_capture: Optional[AudioCapture] = None
-_transcriber: Optional[TranscriptionEngine] = None
-_context: Optional[ContextEngine] = None
-_plugin_mgr: Optional[PluginManager] = None
-_monitor_mgr: Optional[MonitorManager] = None
-_memory: Optional[TemporalMemory] = None
-_watchdog: Optional[Watchdog] = None
-_router: Optional[AIRouter] = None
-_collab: Optional[CollaborativeManager] = None
-_ws_clients: set[WebSocket] = set()
+# ─── Server State (BUG-005 fix: single state object with lock) ───
+import threading as _threading
+
+class _ServerState:
+    """Thread-safe server state container."""
+    def __init__(self):
+        self.lock = _threading.Lock()
+        self.buffer: Optional[RingBuffer] = None
+        self.capture: Optional[ScreenCapture] = None
+        self.api_key: Optional[str] = None
+        self.vision: Optional[VisionIntelligence] = None
+        self.diff: Optional[SmartDiff] = None
+        self.audio_buffer: Optional[AudioRingBuffer] = None
+        self.audio_capture: Optional[AudioCapture] = None
+        self.transcriber: Optional[TranscriptionEngine] = None
+        self.context: Optional[ContextEngine] = None
+        self.plugin_mgr: Optional[PluginManager] = None
+        self.monitor_mgr: Optional[MonitorManager] = None
+        self.memory: Optional[TemporalMemory] = None
+        self.watchdog: Optional[Watchdog] = None
+        self.router: Optional[AIRouter] = None
+        self.collab: Optional[CollaborativeManager] = None
+        self.ws_clients: set = set()
+
+_state = _ServerState()
+
+# Aliases for backward compat in endpoint functions
+def _get_buffer(): return _state.buffer
+def _get_capture(): return _state.capture
+def _get_vision(): return _state.vision
+def _get_diff(): return _state.diff
 
 
 def _frame_to_json(slot: FrameSlot, include_base64: bool = False) -> dict:
@@ -80,7 +94,7 @@ def _frame_to_json(slot: FrameSlot, include_base64: bool = False) -> dict:
 
 
 def _check_auth(api_key: Optional[str]):
-    if _api_key and api_key != _api_key:
+    if _state.api_key and api_key != _state.api_key:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
 
@@ -90,10 +104,10 @@ async def lifespan(app: FastAPI):
     # Ya se inicializa desde main.py
     yield
     # Cleanup
-    if _capture and _capture.is_running:
-        _capture.stop()
-    if _buffer:
-        _buffer.flush()
+    if _state.capture and _state.capture.is_running:
+        _state.capture.stop()
+    if _state.buffer:
+        _state.buffer.flush()
 
 
 # ─── App ───
@@ -118,26 +132,53 @@ app.add_middleware(
 async def health():
     return {
         "status": "alive",
-        "capture_running": _capture.is_running if _capture else False,
-        "buffer_slots": _buffer.size if _buffer else 0,
+        "capture_running": _state.capture.is_running if _state.capture else False,
+        "buffer_slots": _state.buffer.size if _state.buffer else 0,
     }
 
 
 @app.get("/", response_class=Response)
-async def dashboard():
-    """Dashboard web en vivo."""
+async def dashboard(x_api_key: Optional[str] = Header(None), token: Optional[str] = Query(None)):
+    """Dashboard web en vivo. Auth via header or ?token= query param."""
+    # Allow dashboard access via query param too (for browser URL bar)
+    if _state.api_key:
+        provided = x_api_key or token
+        if provided != _state.api_key:
+            # Return a simple auth page instead of 401
+            auth_html = '''<!DOCTYPE html>
+<html><head><title>ILUMINATY</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0a0a12;color:#e4e4ee;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh}
+.box{text-align:center;max-width:360px}
+h1{color:#00ff88;font-size:20px;letter-spacing:3px;margin-bottom:24px}
+input{background:#12121e;border:1px solid #1a1a30;color:#e4e4ee;padding:10px 16px;border-radius:6px;width:100%;font-size:14px;margin-bottom:12px;outline:none}
+input:focus{border-color:#00ff88}
+button{background:transparent;border:1px solid #00ff88;color:#00ff88;padding:10px 32px;border-radius:6px;cursor:pointer;font-size:14px;width:100%}
+button:hover{background:rgba(0,255,136,0.1)}
+p{color:#555;font-size:12px;margin-top:16px}
+</style></head><body>
+<div class="box">
+<h1>ILUMINATY</h1>
+<form onsubmit="location.href='/?token='+document.getElementById('k').value;return false">
+<input id="k" type="password" placeholder="Enter API key" autofocus/>
+<button type="submit">ACCESS</button>
+</form>
+<p>Authentication required to access the dashboard.</p>
+</div></body></html>'''
+            return Response(content=auth_html, media_type="text/html")
     return Response(content=DASHBOARD_HTML, media_type="text/html")
 
 
 @app.get("/buffer/stats")
 async def buffer_stats(x_api_key: Optional[str] = Header(None)):
     _check_auth(x_api_key)
-    if not _buffer:
+    if not _state.buffer:
         raise HTTPException(503, "Buffer not initialized")
-    stats = _buffer.stats
-    stats["capture_running"] = _capture.is_running if _capture else False
-    stats["current_fps"] = _capture.current_fps if _capture else 0
-    stats["ws_clients"] = len(_ws_clients)
+    stats = _state.buffer.stats
+    stats["capture_running"] = _state.capture.is_running if _state.capture else False
+    stats["current_fps"] = _state.capture.current_fps if _state.capture else 0
+    stats["ws_clients"] = len(_state.ws_clients)
     return stats
 
 
@@ -148,10 +189,10 @@ async def frame_latest(
 ):
     """Último frame. Sin base64 devuelve JPEG raw. Con base64 devuelve JSON."""
     _check_auth(x_api_key)
-    if not _buffer:
+    if not _state.buffer:
         raise HTTPException(503, "Buffer not initialized")
     
-    slot = _buffer.get_latest()
+    slot = _state.buffer.get_latest()
     if not slot:
         raise HTTPException(404, "No frames in buffer")
     
@@ -185,15 +226,15 @@ async def frames(
     - ?include_images=true → incluye base64 (cuidado: puede ser grande)
     """
     _check_auth(x_api_key)
-    if not _buffer:
+    if not _state.buffer:
         raise HTTPException(503, "Buffer not initialized")
     
     if seconds is not None:
-        slots = _buffer.get_since(seconds)
+        slots = _state.buffer.get_since(seconds)
     elif last is not None:
-        slots = _buffer.get_latest_n(last)
+        slots = _state.buffer.get_latest_n(last)
     else:
-        slots = _buffer.get_latest_n(5)
+        slots = _state.buffer.get_latest_n(5)
     
     return {
         "count": len(slots),
@@ -213,28 +254,30 @@ async def update_config(
 ):
     """Cambiar configuracion en caliente sin reiniciar."""
     _check_auth(x_api_key)
-    if not _capture:
+    if not _state.capture:
         raise HTTPException(503, "Capture not initialized")
     
     changed = []
-    if fps is not None:
-        _capture.config.fps = fps
-        _capture._current_fps = fps
-        changed.append(f"fps={fps}")
-    if quality is not None:
-        _capture.config.quality = max(10, min(95, quality))
-        changed.append(f"quality={quality}")
-    if image_format is not None and image_format in ("jpeg", "webp", "png"):
-        _capture.config.image_format = image_format
-        changed.append(f"image_format={image_format}")
-    if max_width is not None:
-        _capture.config.max_width = max(320, min(3840, max_width))
-        changed.append(f"max_width={max_width}")
-    if skip_unchanged is not None:
-        _capture.config.skip_unchanged = skip_unchanged
-        changed.append(f"skip_unchanged={skip_unchanged}")
-    if smart_quality is not None:
-        _capture.config.smart_quality = smart_quality
+    # BUG-006 fix: lock during config update
+    with _state.lock:
+        if fps is not None:
+            _state.capture.config.fps = fps
+            _state.capture._current_fps = fps
+            changed.append(f"fps={fps}")
+        if quality is not None:
+            _state.capture.config.quality = max(10, min(95, quality))
+            changed.append(f"quality={quality}")
+        if image_format is not None and image_format in ("jpeg", "webp", "png"):
+            _state.capture.config.image_format = image_format
+            changed.append(f"image_format={image_format}")
+        if max_width is not None:
+            _state.capture.config.max_width = max(320, min(3840, max_width))
+            changed.append(f"max_width={max_width}")
+        if skip_unchanged is not None:
+            _state.capture.config.skip_unchanged = skip_unchanged
+            changed.append(f"skip_unchanged={skip_unchanged}")
+        if smart_quality is not None:
+            _state.capture.config.smart_quality = smart_quality
         changed.append(f"smart_quality={smart_quality}")
     
     return {"updated": changed}
@@ -244,24 +287,24 @@ async def update_config(
 async def flush_buffer(x_api_key: Optional[str] = Header(None)):
     """Destruir todo el contenido visual del buffer. Irreversible."""
     _check_auth(x_api_key)
-    if _buffer:
-        _buffer.flush()
+    if _state.buffer:
+        _state.buffer.flush()
     return {"status": "flushed", "slots": 0}
 
 
 @app.post("/capture/start")
 async def start_capture(x_api_key: Optional[str] = Header(None)):
     _check_auth(x_api_key)
-    if _capture and not _capture.is_running:
-        _capture.start()
+    if _state.capture and not _state.capture.is_running:
+        _state.capture.start()
     return {"status": "running"}
 
 
 @app.post("/capture/stop")
 async def stop_capture(x_api_key: Optional[str] = Header(None)):
     _check_auth(x_api_key)
-    if _capture and _capture.is_running:
-        _capture.stop()
+    if _state.capture and _state.capture.is_running:
+        _state.capture.stop()
     return {"status": "stopped"}
 
 
@@ -275,28 +318,28 @@ async def ws_stream(ws: WebSocket):
     La IA se conecta aquí para "ver" en vivo.
     """
     await ws.accept()
-    _ws_clients.add(ws)
+    _state.ws_clients.add(ws)
     
     try:
         last_hash = None
         while True:
-            if not _buffer:
+            if not _state.buffer:
                 await asyncio.sleep(1)
                 continue
                 
-            slot = _buffer.get_latest()
+            slot = _state.buffer.get_latest()
             if slot and slot.phash != last_hash:
                 await ws.send_json(_frame_to_json(slot, include_base64=True))
                 last_hash = slot.phash
             
             # Enviar al ritmo del FPS actual
-            fps = _capture.current_fps if _capture else 1.0
+            fps = _state.capture.current_fps if _state.capture else 1.0
             await asyncio.sleep(1.0 / fps)
             
     except WebSocketDisconnect:
         pass
     finally:
-        _ws_clients.discard(ws)
+        _state.ws_clients.discard(ws)
 
 
 def init_server(
@@ -306,28 +349,25 @@ def init_server(
     audio_buffer: Optional[AudioRingBuffer] = None,
     audio_capture: Optional[AudioCapture] = None,
 ):
-    """Inyecta las dependencias al módulo del server."""
-    global _buffer, _capture, _api_key, _vision, _diff
-    global _audio_buffer, _audio_capture, _transcriber
-    global _context, _plugin_mgr, _monitor_mgr, _memory
-    global _watchdog, _router, _collab
-    _buffer = buffer
-    _capture = capture
-    _api_key = api_key
-    _vision = VisionIntelligence()
-    _diff = SmartDiff(grid_cols=8, grid_rows=6)
-    _audio_buffer = audio_buffer
-    _audio_capture = audio_capture
-    _transcriber = TranscriptionEngine()
-    _context = ContextEngine()
-    _plugin_mgr = PluginManager()
-    _plugin_mgr.load_from_directory()
-    _monitor_mgr = MonitorManager()
-    _monitor_mgr.refresh()
-    _memory = TemporalMemory(enabled=False)
-    _watchdog = Watchdog()
-    _router = AIRouter()
-    _collab = CollaborativeManager()
+    """Inyecta las dependencias al modulo del server (thread-safe)."""
+    with _state.lock:
+        _state.buffer = buffer
+        _state.capture = capture
+        _state.api_key = api_key
+        _state.vision = VisionIntelligence()
+        _state.diff = SmartDiff(grid_cols=8, grid_rows=6)
+        _state.audio_buffer = audio_buffer
+        _state.audio_capture = audio_capture
+        _state.transcriber = TranscriptionEngine()
+        _state.context = ContextEngine()
+        _state.plugin_mgr = PluginManager()
+        _state.plugin_mgr.load_from_directory()
+        _state.monitor_mgr = MonitorManager()
+        _state.monitor_mgr.refresh()
+        _state.memory = TemporalMemory(enabled=False)
+        _state.watchdog = Watchdog()
+        _state.router = AIRouter()
+        _state.collab = CollaborativeManager()
 
 
 # ─── Vision / AI-ready endpoints ───
@@ -349,14 +389,14 @@ async def vision_snapshot(
     Este es EL endpoint que cualquier IA consume.
     """
     _check_auth(x_api_key)
-    if not _buffer or not _vision:
+    if not _state.buffer or not _state.vision:
         raise HTTPException(503, "Not initialized")
 
-    slot = _buffer.get_latest()
+    slot = _state.buffer.get_latest()
     if not slot:
         raise HTTPException(404, "No frames in buffer")
 
-    enriched = _vision.enrich_frame(slot, run_ocr=ocr)
+    enriched = _state.vision.enrich_frame(slot, run_ocr=ocr)
     return JSONResponse(enriched.to_dict(include_image=include_image))
 
 
@@ -373,17 +413,17 @@ async def vision_ocr(
     Opcionalmente de una region especifica: ?region_x=100&region_y=200&region_w=400&region_h=300
     """
     _check_auth(x_api_key)
-    if not _buffer or not _vision:
+    if not _state.buffer or not _state.vision:
         raise HTTPException(503, "Not initialized")
 
-    slot = _buffer.get_latest()
+    slot = _state.buffer.get_latest()
     if not slot:
         raise HTTPException(404, "No frames in buffer")
 
     if all(v is not None for v in [region_x, region_y, region_w, region_h]):
-        result = _vision.ocr.extract_region(slot.frame_bytes, region_x, region_y, region_w, region_h)
+        result = _state.vision.ocr.extract_region(slot.frame_bytes, region_x, region_y, region_w, region_h)
     else:
-        result = _vision.ocr.extract_text(slot.frame_bytes)
+        result = _state.vision.ocr.extract_text(slot.frame_bytes)
 
     return result
 
@@ -407,14 +447,14 @@ async def vision_diff(
     Con include_deltas=true incluye mini-images de las regiones cambiadas.
     """
     _check_auth(x_api_key)
-    if not _buffer or not _diff:
+    if not _state.buffer or not _state.diff:
         raise HTTPException(503, "Not initialized")
 
-    slot = _buffer.get_latest()
+    slot = _state.buffer.get_latest()
     if not slot:
         raise HTTPException(404, "No frames in buffer")
 
-    diff = _diff.compare(slot.frame_bytes)
+    diff = _state.diff.compare(slot.frame_bytes)
 
     result = {
         "changed": diff.changed,
@@ -422,7 +462,7 @@ async def vision_diff(
         "changed_cells": diff.changed_cells,
         "total_cells": diff.total_cells,
         "heatmap": diff.heatmap,
-        "description": _diff.diff_to_description(diff, slot.width, slot.height),
+        "description": _state.diff.diff_to_description(diff, slot.width, slot.height),
         "regions": [
             {
                 "grid": f"({r.grid_x},{r.grid_y})",
@@ -437,7 +477,7 @@ async def vision_diff(
     }
 
     if include_deltas and diff.changed_regions:
-        result["deltas"] = _diff.get_delta_regions(slot.frame_bytes, diff)
+        result["deltas"] = _state.diff.get_delta_regions(slot.frame_bytes, diff)
 
     return result
 
@@ -448,12 +488,12 @@ async def vision_diff(
 async def audio_stats(x_api_key: Optional[str] = Header(None)):
     """Stats del buffer de audio."""
     _check_auth(x_api_key)
-    if not _audio_buffer:
+    if not _state.audio_buffer:
         return {"status": "disabled", "mode": "off"}
-    stats = _audio_buffer.stats
-    stats["capture_running"] = _audio_capture.is_running if _audio_capture else False
-    stats["mode"] = _audio_capture.mode if _audio_capture else "off"
-    stats["transcription_engine"] = _transcriber.engine if _transcriber else "none"
+    stats = _state.audio_buffer.stats
+    stats["capture_running"] = _state.audio_capture.is_running if _state.audio_capture else False
+    stats["mode"] = _state.audio_capture.mode if _state.audio_capture else "off"
+    stats["transcription_engine"] = _state.transcriber.engine if _state.transcriber else "none"
     return stats
 
 
@@ -461,9 +501,9 @@ async def audio_stats(x_api_key: Optional[str] = Header(None)):
 async def audio_level(x_api_key: Optional[str] = Header(None)):
     """Nivel de audio actual (para VU meter en el dashboard)."""
     _check_auth(x_api_key)
-    if not _audio_buffer:
+    if not _state.audio_buffer:
         return {"level": 0.0, "is_speech": False}
-    chunks = _audio_buffer.get_latest(1.0)
+    chunks = _state.audio_buffer.get_latest(1.0)
     if not chunks:
         return {"level": 0.0, "is_speech": False}
     latest = chunks[-1]
@@ -480,19 +520,19 @@ async def audio_transcribe(
     Usa Whisper local si esta disponible.
     """
     _check_auth(x_api_key)
-    if not _audio_buffer or not _transcriber:
+    if not _state.audio_buffer or not _state.transcriber:
         raise HTTPException(503, "Audio not enabled or transcription unavailable")
 
-    if not _transcriber.available:
+    if not _state.transcriber.available:
         return {"text": "", "error": "No transcription engine. Install: pip install faster-whisper"}
 
-    chunks = _audio_buffer.get_latest(seconds)
+    chunks = _state.audio_buffer.get_latest(seconds)
     speech_chunks = [c for c in chunks if c.is_speech]
 
     if not speech_chunks:
         return {"text": "", "note": "No speech detected in last " + str(seconds) + "s"}
 
-    result = _transcriber.transcribe_chunks(speech_chunks)
+    result = _state.transcriber.transcribe_chunks(speech_chunks)
     return result
 
 
@@ -503,10 +543,10 @@ async def audio_wav(
 ):
     """Retorna audio WAV de los ultimos N segundos (para debug/playback)."""
     _check_auth(x_api_key)
-    if not _audio_buffer:
+    if not _state.audio_buffer:
         raise HTTPException(503, "Audio not enabled")
 
-    wav_data = _audio_buffer.get_audio_wav(seconds)
+    wav_data = _state.audio_buffer.get_audio_wav(seconds)
     if not wav_data:
         raise HTTPException(404, "No audio in buffer")
 
@@ -517,9 +557,9 @@ async def audio_wav(
 async def audio_devices(x_api_key: Optional[str] = Header(None)):
     """Lista dispositivos de audio disponibles."""
     _check_auth(x_api_key)
-    if not _audio_capture:
+    if not _state.audio_capture:
         return {"devices": []}
-    return {"devices": _audio_capture.get_devices()}
+    return {"devices": _state.audio_capture.get_devices()}
 
 
 # ─── Context Engine (F08) ───
@@ -528,15 +568,15 @@ async def audio_devices(x_api_key: Optional[str] = Header(None)):
 async def context_state(x_api_key: Optional[str] = Header(None)):
     """Estado actual del workflow: que esta haciendo el usuario."""
     _check_auth(x_api_key)
-    if not _context:
+    if not _state.context:
         raise HTTPException(503, "Context engine not initialized")
 
     # Update context with current window
     from .vision import get_active_window_info
     win = get_active_window_info()
-    _context.update(win.get("title", "unknown"), win.get("title", ""))
+    _state.context.update(win.get("title", "unknown"), win.get("title", ""))
 
-    state = _context.get_state()
+    state = _state.context.get_state()
     return {
         "workflow": state.current_workflow,
         "confidence": state.confidence,
@@ -554,18 +594,18 @@ async def context_state(x_api_key: Optional[str] = Header(None)):
 async def context_apps(x_api_key: Optional[str] = Header(None)):
     """Stats de tiempo por app."""
     _check_auth(x_api_key)
-    if not _context:
+    if not _state.context:
         raise HTTPException(503, "Not initialized")
-    return _context.get_app_stats()
+    return _state.context.get_app_stats()
 
 
 @app.get("/context/workflows")
 async def context_workflows(x_api_key: Optional[str] = Header(None)):
     """Stats de tiempo por workflow."""
     _check_auth(x_api_key)
-    if not _context:
+    if not _state.context:
         raise HTTPException(503, "Not initialized")
-    return _context.get_workflow_stats()
+    return _state.context.get_workflow_stats()
 
 
 @app.get("/context/timeline")
@@ -575,9 +615,9 @@ async def context_timeline(
 ):
     """Timeline de actividad."""
     _check_auth(x_api_key)
-    if not _context:
+    if not _state.context:
         raise HTTPException(503, "Not initialized")
-    return {"timeline": _context.get_timeline(minutes)}
+    return {"timeline": _state.context.get_timeline(minutes)}
 
 
 # ─── Monitors (F10) ───
@@ -586,10 +626,10 @@ async def context_timeline(
 async def monitors_info(x_api_key: Optional[str] = Header(None)):
     """Info de todos los monitores."""
     _check_auth(x_api_key)
-    if not _monitor_mgr:
+    if not _state.monitor_mgr:
         raise HTTPException(503, "Not initialized")
-    _monitor_mgr.refresh()
-    return _monitor_mgr.to_dict()
+    _state.monitor_mgr.refresh()
+    return _state.monitor_mgr.to_dict()
 
 
 # ─── Plugins (F09) ───
@@ -598,11 +638,11 @@ async def monitors_info(x_api_key: Optional[str] = Header(None)):
 async def plugins_list(x_api_key: Optional[str] = Header(None)):
     """Lista de plugins cargados."""
     _check_auth(x_api_key)
-    if not _plugin_mgr:
+    if not _state.plugin_mgr:
         return {"plugins": []}
     return {
-        "plugins": _plugin_mgr.get_info(),
-        "event_log": _plugin_mgr.get_event_log(20),
+        "plugins": _state.plugin_mgr.get_info(),
+        "event_log": _state.plugin_mgr.get_event_log(20),
     }
 
 
@@ -615,9 +655,9 @@ async def memory_recent(
 ):
     """Entradas de memoria recientes."""
     _check_auth(x_api_key)
-    if not _memory:
+    if not _state.memory:
         return {"entries": [], "enabled": False}
-    return {"entries": _memory.get_recent(minutes), "enabled": _memory.enabled}
+    return {"entries": _state.memory.get_recent(minutes), "enabled": _state.memory.enabled}
 
 
 @app.get("/memory/search")
@@ -627,9 +667,9 @@ async def memory_search(
 ):
     """Buscar en la memoria temporal."""
     _check_auth(x_api_key)
-    if not _memory or not _memory.enabled:
+    if not _state.memory or not _state.memory.enabled:
         return {"results": [], "enabled": False}
-    return {"results": _memory.search(q), "query": q}
+    return {"results": _state.memory.search(q), "query": q}
 
 
 @app.post("/memory/toggle")
@@ -639,10 +679,10 @@ async def memory_toggle(
 ):
     """Habilitar/deshabilitar memoria temporal."""
     _check_auth(x_api_key)
-    if not _memory:
+    if not _state.memory:
         raise HTTPException(503, "Not initialized")
-    _memory.enabled = enabled
-    return {"enabled": _memory.enabled}
+    _state.memory.enabled = enabled
+    return {"enabled": _state.memory.enabled}
 
 
 # ─── Annotations (lapiz/marcador) ───
@@ -665,7 +705,7 @@ async def add_annotation(
     Tipos: circle, rect, arrow, text, freehand
     """
     _check_auth(x_api_key)
-    if not _vision:
+    if not _state.vision:
         raise HTTPException(503, "Not initialized")
 
     import uuid
@@ -678,7 +718,7 @@ async def add_annotation(
         thickness=thickness,
         text=text,
     )
-    _vision.annotations.add(ann)
+    _state.vision.annotations.add(ann)
     return {"id": ann.id, "type": type, "position": f"({x},{y})", "status": "added"}
 
 
@@ -686,11 +726,11 @@ async def add_annotation(
 async def list_annotations(x_api_key: Optional[str] = Header(None)):
     """Lista todas las anotaciones activas."""
     _check_auth(x_api_key)
-    if not _vision:
+    if not _state.vision:
         raise HTTPException(503, "Not initialized")
     return {
-        "count": len(_vision.annotations.annotations),
-        "annotations": _vision.annotations.to_description(),
+        "count": len(_state.vision.annotations.annotations),
+        "annotations": _state.vision.annotations.to_description(),
     }
 
 
@@ -698,9 +738,9 @@ async def list_annotations(x_api_key: Optional[str] = Header(None)):
 async def remove_annotation(annotation_id: str, x_api_key: Optional[str] = Header(None)):
     """Elimina una anotacion por ID."""
     _check_auth(x_api_key)
-    if not _vision:
+    if not _state.vision:
         raise HTTPException(503, "Not initialized")
-    removed = _vision.annotations.remove(annotation_id)
+    removed = _state.vision.annotations.remove(annotation_id)
     return {"removed": removed, "id": annotation_id}
 
 
@@ -708,9 +748,9 @@ async def remove_annotation(annotation_id: str, x_api_key: Optional[str] = Heade
 async def clear_annotations(x_api_key: Optional[str] = Header(None)):
     """Borra todas las anotaciones."""
     _check_auth(x_api_key)
-    if not _vision:
+    if not _state.vision:
         raise HTTPException(503, "Not initialized")
-    _vision.annotations.clear()
+    _state.vision.annotations.clear()
     return {"status": "cleared"}
 
 
@@ -718,14 +758,14 @@ async def clear_annotations(x_api_key: Optional[str] = Header(None)):
 async def frame_annotated(x_api_key: Optional[str] = Header(None)):
     """Frame actual con las anotaciones dibujadas encima. Devuelve JPEG."""
     _check_auth(x_api_key)
-    if not _buffer or not _vision:
+    if not _state.buffer or not _state.vision:
         raise HTTPException(503, "Not initialized")
 
-    slot = _buffer.get_latest()
+    slot = _state.buffer.get_latest()
     if not slot:
         raise HTTPException(404, "No frames in buffer")
 
-    rendered = _vision.annotations.render_overlay(slot.frame_bytes)
+    rendered = _state.vision.annotations.render_overlay(slot.frame_bytes)
     return Response(content=rendered, media_type="image/jpeg")
 
 
@@ -746,10 +786,10 @@ async def ai_ask(
     Ejemplo: /ai/ask?provider=gemini&provider_api_key=AIza...&prompt=What bug do you see?
     """
     _check_auth(x_api_key)
-    if not _buffer:
+    if not _state.buffer:
         raise HTTPException(503, "Not initialized")
 
-    slot = _buffer.get_latest()
+    slot = _state.buffer.get_latest()
     if not slot:
         raise HTTPException(404, "No frames in buffer")
 
@@ -765,7 +805,7 @@ async def ai_ask(
         adapter.connect()
 
         # Build enriched prompt
-        enriched = _vision.enrich_frame(slot, run_ocr=False) if _vision else None
+        enriched = _state.vision.enrich_frame(slot, run_ocr=False) if _state.vision else None
         full_prompt = prompt
         if enriched:
             full_prompt = enriched.to_ai_prompt() + "\n\nUser question: " + prompt
@@ -797,28 +837,28 @@ async def watchdog_alerts(
 ):
     """Get watchdog alerts."""
     _check_auth(x_api_key)
-    if not _watchdog:
+    if not _state.watchdog:
         return {"alerts": []}
-    return {"alerts": _watchdog.get_alerts(count, unacknowledged)}
+    return {"alerts": _state.watchdog.get_alerts(count, unacknowledged)}
 
 
 @app.get("/watchdog/triggers")
 async def watchdog_triggers(x_api_key: Optional[str] = Header(None)):
     """List all watchdog triggers."""
     _check_auth(x_api_key)
-    if not _watchdog:
+    if not _state.watchdog:
         return {"triggers": []}
-    return {"triggers": _watchdog.get_triggers(), "stats": _watchdog.stats}
+    return {"triggers": _state.watchdog.get_triggers(), "stats": _state.watchdog.stats}
 
 
 @app.post("/watchdog/scan")
 async def watchdog_scan(x_api_key: Optional[str] = Header(None)):
     """Manually trigger a watchdog scan on current screen."""
     _check_auth(x_api_key)
-    if not _watchdog or not _buffer:
+    if not _state.watchdog or not _state.buffer:
         raise HTTPException(503, "Not initialized")
 
-    slot = _buffer.get_latest()
+    slot = _state.buffer.get_latest()
     if not slot:
         return {"alerts": [], "note": "No frames in buffer"}
 
@@ -826,14 +866,14 @@ async def watchdog_scan(x_api_key: Optional[str] = Header(None)):
     from .vision import get_active_window_info
     win = get_active_window_info()
     ocr_text = ""
-    if _vision and _vision.ocr.available:
-        ocr_result = _vision.ocr.extract_text(slot.frame_bytes, frame_hash=slot.phash)
+    if _state.vision and _state.vision.ocr.available:
+        ocr_result = _state.vision.ocr.extract_text(slot.frame_bytes, frame_hash=slot.phash)
         ocr_text = ocr_result.get("text", "")
 
-    alerts = _watchdog.scan(ocr_text=ocr_text, window_title=win.get("title", ""))
+    alerts = _state.watchdog.scan(ocr_text=ocr_text, window_title=win.get("title", ""))
     return {
         "new_alerts": [a.to_dict() for a in alerts],
-        "total_alerts": _watchdog.stats["total_alerts"],
+        "total_alerts": _state.watchdog.stats["total_alerts"],
     }
 
 
@@ -841,9 +881,9 @@ async def watchdog_scan(x_api_key: Optional[str] = Header(None)):
 async def watchdog_ack(alert_id: str, x_api_key: Optional[str] = Header(None)):
     """Acknowledge an alert."""
     _check_auth(x_api_key)
-    if not _watchdog:
+    if not _state.watchdog:
         raise HTTPException(503, "Not initialized")
-    return {"acknowledged": _watchdog.acknowledge(alert_id)}
+    return {"acknowledged": _state.watchdog.acknowledge(alert_id)}
 
 
 # ─── AI Router (F16) ───
@@ -855,10 +895,10 @@ async def ai_route(
 ):
     """Route a prompt to the optimal AI model (cheapest that works)."""
     _check_auth(x_api_key)
-    if not _router:
+    if not _state.router:
         raise HTTPException(503, "Not initialized")
 
-    decision = _router.route(prompt)
+    decision = _state.router.route(prompt)
     return {
         "route": decision.route,
         "reason": decision.reason,
@@ -873,9 +913,9 @@ async def ai_route(
 async def ai_router_stats(x_api_key: Optional[str] = Header(None)):
     """Router cost savings stats."""
     _check_auth(x_api_key)
-    if not _router:
+    if not _state.router:
         return {}
-    return _router.stats
+    return _state.router.stats
 
 
 # ─── Collaborative (F17) ───
@@ -888,9 +928,9 @@ async def collab_create(
 ):
     """Create a collaborative room."""
     _check_auth(x_api_key)
-    if not _collab:
+    if not _state.collab:
         raise HTTPException(503, "Not initialized")
-    return _collab.create_room(host_name, room_name)
+    return _state.collab.create_room(host_name, room_name)
 
 
 @app.post("/collab/join")
@@ -901,9 +941,9 @@ async def collab_join(
 ):
     """Join a collaborative room as viewer."""
     _check_auth(x_api_key)
-    if not _collab:
+    if not _state.collab:
         raise HTTPException(503, "Not initialized")
-    result = _collab.join_room(room_id, viewer_name)
+    result = _state.collab.join_room(room_id, viewer_name)
     if not result:
         raise HTTPException(404, "Room not found or full")
     return result
@@ -913,9 +953,9 @@ async def collab_join(
 async def collab_room(room_id: str, x_api_key: Optional[str] = Header(None)):
     """Get room info."""
     _check_auth(x_api_key)
-    if not _collab:
+    if not _state.collab:
         raise HTTPException(503, "Not initialized")
-    room = _collab.get_room(room_id)
+    room = _state.collab.get_room(room_id)
     if not room:
         raise HTTPException(404, "Room not found")
     return room
@@ -925,9 +965,9 @@ async def collab_room(room_id: str, x_api_key: Optional[str] = Header(None)):
 async def collab_rooms(x_api_key: Optional[str] = Header(None)):
     """List active rooms."""
     _check_auth(x_api_key)
-    if not _collab:
+    if not _state.collab:
         return {"rooms": []}
-    return {"rooms": _collab.list_rooms(), "stats": _collab.stats}
+    return {"rooms": _state.collab.list_rooms(), "stats": _state.collab.stats}
 
 
 @app.post("/collab/annotate")
@@ -944,9 +984,9 @@ async def collab_annotate(
 ):
     """Add shared annotation in a collab room."""
     _check_auth(x_api_key)
-    if not _collab:
+    if not _state.collab:
         raise HTTPException(503, "Not initialized")
-    result = _collab.add_annotation(room_id, author_id, type, x, y, width, height, text)
+    result = _state.collab.add_annotation(room_id, author_id, type, x, y, width, height, text)
     if not result:
         raise HTTPException(404, "Room or author not found")
     return result
@@ -961,23 +1001,23 @@ async def system_overview(x_api_key: Optional[str] = Header(None)):
     overview = {
         "version": "0.5.0",
         "capture": {
-            "running": _capture.is_running if _capture else False,
-            "fps": _capture.current_fps if _capture else 0,
+            "running": _state.capture.is_running if _state.capture else False,
+            "fps": _state.capture.current_fps if _state.capture else 0,
         },
-        "buffer": _buffer.stats if _buffer else {},
+        "buffer": _state.buffer.stats if _state.buffer else {},
         "audio": {
-            "enabled": _audio_capture is not None and _audio_capture.is_running if _audio_capture else False,
-            "stats": _audio_buffer.stats if _audio_buffer else {},
+            "enabled": _state.audio_capture is not None and _state.audio_capture.is_running if _state.audio_capture else False,
+            "stats": _state.audio_buffer.stats if _state.audio_buffer else {},
         },
         "ocr": {
-            "engine": _vision.ocr.engine if _vision else "none",
-            "available": _vision.ocr.available if _vision else False,
+            "engine": _state.vision.ocr.engine if _state.vision else "none",
+            "available": _state.vision.ocr.available if _state.vision else False,
         },
-        "monitors": _monitor_mgr.to_dict() if _monitor_mgr else {},
-        "watchdog": _watchdog.stats if _watchdog else {},
-        "router": _router.stats if _router else {},
-        "collab": _collab.stats if _collab else {},
-        "memory": _memory.stats if _memory else {},
-        "plugins": len(_plugin_mgr.loaded) if _plugin_mgr else 0,
+        "monitors": _state.monitor_mgr.to_dict() if _state.monitor_mgr else {},
+        "watchdog": _state.watchdog.stats if _state.watchdog else {},
+        "router": _state.router.stats if _state.router else {},
+        "collab": _state.collab.stats if _state.collab else {},
+        "memory": _state.memory.stats if _state.memory else {},
+        "plugins": len(_state.plugin_mgr.loaded) if _state.plugin_mgr else 0,
     }
     return overview
