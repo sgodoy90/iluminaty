@@ -60,6 +60,10 @@ from .recovery import ErrorRecovery
 from .safety import SafetySystem
 from .autonomy import AutonomyManager, AutonomyLevel
 from .audit import AuditLog
+from .licensing import LicenseManager, get_license, init_license
+
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request as StarletteRequest
 
 
 # ─── Server State (BUG-005 fix: single state object with lock) ───
@@ -105,6 +109,8 @@ class _ServerState:
         self.safety: Optional[SafetySystem] = None
         self.autonomy: Optional[AutonomyManager] = None
         self.audit: Optional[AuditLog] = None
+        self.license: Optional[LicenseManager] = None
+        self.perception = None  # PerceptionEngine (lazy import)
 
 _state = _ServerState()
 
@@ -177,6 +183,28 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ─── License Gate Middleware ───
+
+class LicenseGateMiddleware(BaseHTTPMiddleware):
+    """Blocks Pro-only endpoints for Free plan users."""
+    async def dispatch(self, request: StarletteRequest, call_next):
+        lic = get_license()
+        if lic and not lic.is_endpoint_allowed(request.url.path):
+            return JSONResponse(
+                status_code=403,
+                content={
+                    "error": "pro_required",
+                    "message": "This endpoint requires ILUMINATY Pro ($29/mo).",
+                    "endpoint": request.url.path,
+                    "current_plan": lic.plan.value,
+                    "upgrade_url": "https://iluminaty.dev/#pricing",
+                },
+            )
+        return await call_next(request)
+
+app.add_middleware(LicenseGateMiddleware)
 
 
 # ─── Endpoints ───
@@ -405,9 +433,21 @@ def init_server(
     autonomy_level: str = "suggest",
     browser_debug_port: int = 9222,
     file_sandbox_paths: Optional[list[str]] = None,
+    iluminaty_key: Optional[str] = None,
 ):
     """Inyecta las dependencias al modulo del server (thread-safe)."""
     with _state.lock:
+        # ─── License validation ───
+        import asyncio
+        _state.license = init_license(api_key=iluminaty_key)
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.ensure_future(_state.license.validate())
+            else:
+                loop.run_until_complete(_state.license.validate())
+        except RuntimeError:
+            asyncio.run(_state.license.validate())
         # ─── Core (v0.5) ───
         _state.buffer = buffer
         _state.capture = capture
@@ -418,6 +458,15 @@ def init_server(
         _state.audio_capture = audio_capture
         _state.transcriber = TranscriptionEngine()
         _state.context = ContextEngine()
+
+        # Perception Engine — continuous vision processing (the AI's visual cortex)
+        try:
+            from .perception import PerceptionEngine
+            _state.perception = PerceptionEngine()
+            _state.perception.start(buffer)
+        except Exception:
+            pass  # Non-critical, degrade gracefully
+
         _state.plugin_mgr = PluginManager()
         _state.plugin_mgr.load_from_directory()
         _state.monitor_mgr = MonitorManager()
@@ -730,6 +779,50 @@ async def context_timeline(
     if not _state.context:
         raise HTTPException(503, "Not initialized")
     return {"timeline": _state.context.get_timeline(minutes)}
+
+
+# ─── Perception (Real-Time Vision) ───
+
+@app.get("/perception")
+async def perception_summary(
+    seconds: float = Query(30, ge=1, le=300),
+    x_api_key: Optional[str] = Header(None),
+):
+    """Get real-time perception events — what happened on screen."""
+    _check_auth(x_api_key)
+    if not _state.perception:
+        raise HTTPException(503, "Perception engine not initialized")
+    return {
+        "summary": _state.perception.get_summary(seconds),
+        "event_count": _state.perception.get_event_count(),
+        "running": _state.perception.is_running,
+    }
+
+
+@app.get("/perception/events")
+async def perception_events(
+    seconds: float = Query(30, ge=1, le=300),
+    min_importance: float = Query(0.0, ge=0.0, le=1.0),
+    x_api_key: Optional[str] = Header(None),
+):
+    """Get raw perception events."""
+    _check_auth(x_api_key)
+    if not _state.perception:
+        raise HTTPException(503, "Perception engine not initialized")
+    events = _state.perception.get_events(seconds, min_importance)
+    return {
+        "events": [
+            {
+                "timestamp": e.timestamp,
+                "type": e.event_type,
+                "description": e.description,
+                "importance": e.importance,
+                "monitor": e.monitor,
+                "details": e.details,
+            }
+            for e in events
+        ]
+    }
 
 
 # ─── Monitors (F10) ───
@@ -1792,5 +1885,192 @@ async def system_overview(x_api_key: Optional[str] = Header(None)):
         "safety": _state.safety.stats if _state.safety else {},
         "autonomy": _state.autonomy.stats if _state.autonomy else {},
         "resolver": _state.resolver.stats if _state.resolver else {},
+        "license": {
+            "plan": _state.license.plan.value if _state.license else "free",
+            "is_pro": _state.license.is_pro if _state.license else False,
+            "user": _state.license.user if _state.license else {},
+        },
     }
     return overview
+
+
+@app.get("/license/status")
+async def license_status():
+    """Current license plan and available features."""
+    lic = get_license()
+    return {
+        "plan": lic.plan.value,
+        "is_pro": lic.is_pro,
+        "user": lic.user,
+        "actions": {
+            "available": sorted(lic.available_actions),
+            "total": len(lic.available_actions),
+            "max": len(lic.available_actions) if lic.is_pro else 7,
+        },
+        "mcp_tools": {
+            "available": sorted(lic.available_mcp_tools),
+            "total": len(lic.available_mcp_tools),
+            "max": len(lic.available_mcp_tools) if lic.is_pro else 7,
+        },
+        "upgrade_url": None if lic.is_pro else "https://iluminaty.dev/#pricing",
+    }
+
+
+# ─── Token Economy ─────────────────────────────────────────────
+
+# Approximate token costs per response mode
+TOKEN_COSTS = {
+    "text_only":  {"tokens": 200,   "desc": "OCR text + metadata, no image"},
+    "low_res":    {"tokens": 5000,  "desc": "Image at 320px width + metadata"},
+    "medium_res": {"tokens": 15000, "desc": "Image at 768px width + metadata"},
+    "full_res":   {"tokens": 30000, "desc": "Image at 1280px width + metadata"},
+}
+
+
+class _TokenTracker:
+    """Tracks token usage per session."""
+    def __init__(self):
+        self.mode: str = "text_only"  # Default: cheapest mode
+        self.budget: int = 0          # 0 = unlimited
+        self.used: int = 0
+        self.history: list = []       # Last 50 actions
+        self.max_history = 50
+
+    def estimate(self, mode: str = None) -> int:
+        return TOKEN_COSTS.get(mode or self.mode, TOKEN_COSTS["text_only"])["tokens"]
+
+    def record(self, action: str, tokens: int):
+        self.used += tokens
+        entry = {"action": action, "tokens": tokens, "time": time.time()}
+        self.history.append(entry)
+        if len(self.history) > self.max_history:
+            self.history.pop(0)
+
+    def budget_remaining(self) -> int:
+        if self.budget == 0:
+            return -1  # unlimited
+        return max(0, self.budget - self.used)
+
+    def is_over_budget(self) -> bool:
+        return self.budget > 0 and self.used >= self.budget
+
+
+_tokens = _TokenTracker()
+
+
+@app.get("/tokens/status")
+async def tokens_status():
+    """Current token usage and budget."""
+    return {
+        "mode": _tokens.mode,
+        "mode_cost": TOKEN_COSTS[_tokens.mode],
+        "all_modes": TOKEN_COSTS,
+        "used": _tokens.used,
+        "budget": _tokens.budget,
+        "remaining": _tokens.budget_remaining(),
+        "over_budget": _tokens.is_over_budget(),
+        "history_count": len(_tokens.history),
+        "last_5": _tokens.history[-5:],
+    }
+
+
+@app.post("/tokens/mode")
+async def tokens_set_mode(mode: str = Query(...)):
+    """Set response mode: text_only, low_res, medium_res, full_res."""
+    if mode not in TOKEN_COSTS:
+        raise HTTPException(400, f"Invalid mode. Choose: {list(TOKEN_COSTS.keys())}")
+    _tokens.mode = mode
+    return {"mode": mode, "estimated_tokens_per_call": TOKEN_COSTS[mode]["tokens"]}
+
+
+@app.post("/tokens/budget")
+async def tokens_set_budget(limit: int = Query(...)):
+    """Set token budget. 0 = unlimited."""
+    _tokens.budget = max(0, limit)
+    return {"budget": _tokens.budget, "used": _tokens.used, "remaining": _tokens.budget_remaining()}
+
+
+@app.post("/tokens/reset")
+async def tokens_reset():
+    """Reset token counter."""
+    _tokens.used = 0
+    _tokens.history.clear()
+    return {"reset": True, "used": 0}
+
+
+@app.get("/vision/smart")
+async def vision_smart(
+    mode: Optional[str] = Query(None),
+    x_api_key: Optional[str] = Header(None),
+):
+    """
+    Smart vision endpoint — adapts response based on token mode.
+
+    Modes:
+      text_only   → OCR text + window info (~200 tokens)
+      low_res     → 320px image + text (~5K tokens)
+      medium_res  → 768px image + text (~15K tokens)
+      full_res    → 1280px image + text (~30K tokens)
+    """
+    _check_auth(x_api_key)
+    if not _state.buffer or not _state.vision:
+        raise HTTPException(503, "Not initialized")
+
+    # Check budget
+    active_mode = mode or _tokens.mode
+    if _tokens.is_over_budget():
+        return JSONResponse({
+            "error": "token_budget_exceeded",
+            "used": _tokens.used,
+            "budget": _tokens.budget,
+            "suggestion": "Switch to text_only mode or increase budget",
+        }, status_code=429)
+
+    slot = _state.buffer.get_latest()
+    if not slot:
+        raise HTTPException(404, "No frames in buffer")
+
+    result = {}
+
+    if active_mode == "text_only":
+        enriched = _state.vision.enrich_frame(slot, run_ocr=True)
+        result = {
+            "mode": "text_only",
+            "timestamp": enriched.timestamp,
+            "ocr_text": enriched.ocr_text,
+            "active_window": enriched.active_window,
+            "ai_prompt": enriched.to_ai_prompt(),
+            "change_score": enriched.change_score,
+        }
+    else:
+        # Resize image based on mode
+        from PIL import Image
+        import io
+
+        enriched = _state.vision.enrich_frame(slot, run_ocr=True)
+        d = enriched.to_dict(include_image=True)
+
+        if active_mode in ("low_res", "medium_res") and d.get("image_base64"):
+            import base64
+            target_width = 320 if active_mode == "low_res" else 768
+            img_bytes = base64.b64decode(d["image_base64"])
+            img = Image.open(io.BytesIO(img_bytes))
+            ratio = target_width / img.width
+            new_size = (target_width, int(img.height * ratio))
+            img = img.resize(new_size, Image.LANCZOS)
+            buf = io.BytesIO()
+            img.save(buf, format="WEBP", quality=60)
+            d["image_base64"] = base64.b64encode(buf.getvalue()).decode()
+            d["width"] = new_size[0]
+            d["height"] = new_size[1]
+
+        d["mode"] = active_mode
+        result = d
+
+    # Track tokens
+    est = _tokens.estimate(active_mode)
+    _tokens.record(f"vision/smart ({active_mode})", est)
+    result["token_estimate"] = est
+    result["tokens_used_total"] = _tokens.used
+
+    return JSONResponse(result)
