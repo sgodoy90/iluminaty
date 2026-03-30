@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>ILUMINATY — Eye of God | Real-time AI Perception + Action</title>
+<meta name="description" content="Give any AI eyes and hands on your computer. Real-time visual perception + 42 actions. Zero disk. RAM only. The AI sees all."/>
+<meta name="theme-color" content="#00ff88"/>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;700;900&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet"/>
+<link rel="stylesheet" href="style.css"/>
+</head>
+<body>
+<!-- ═══ NAV ═══ -->
+<nav id="nav">
+  <div class="nav-inner">
+    <a href="#" class="nav-logo">
+      <span class="logo-text">ILUMINAT<span class="logo-y">Y</span></span>
+    </a>
+    <div class="nav-links">
+      <a href="#features">Features</a>
+      <a href="#layers">7 Layers</a>
+      <a href="#compare">Compare</a>
+      <a href="#developers">Developers</a>
+      <a href="https://github.com/sgodoy90/iluminaty" target="_blank" class="nav-gh">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+        GitHub
+      </a>
+      <a href="#get-started" class="nav-cta">Get Started</a>
+    </div>
+  </div>
+</nav>
+
+<!-- ═══ HERO: THE EYE OF GOD ═══ -->
+<section id="hero">
+  <canvas id="eye-canvas"></canvas>
+  <div class="hero-content">
+    <div class="hero-badge">v1.0.0 — Computer Use "EYE OF GOD"</div>
+    <h1>
+      <span class="hero-title-line">ILUMINAT<span class="hero-y">Y</span></span>
+      <span class="hero-subtitle">Eye of God</span>
+    </h1>
+    <p class="hero-desc">
+      Give any AI <strong>eyes and hands</strong> on your computer.<br/>
+      Real-time visual perception + 42 actions. Zero disk. RAM only.
+    </p>
+    <div class="hero-stats">
+      <div class="stat">
+        <span class="stat-num" data-target="42">0</span><span class="stat-plus">+</span>
+        <span class="stat-label">Actions</span>
+      </div>
+      <div class="stat">
+        <span class="stat-num" data-target="80">0</span><span class="stat-plus">+</span>
+        <span class="stat-label">API Endpoints</span>
+      </div>
+      <div class="stat">
+        <span class="stat-num" data-target="17">0</span>
+        <span class="stat-label">MCP Tools</span>
+      </div>
+      <div class="stat">
+        <span class="stat-num" data-target="0">0</span>
+        <span class="stat-label">Disk Usage</span>
+      </div>
+    </div>
+    <div class="hero-actions">
+      <a href="#get-started" class="btn btn-primary">
+        <span class="btn-glow"></span>
+        Get Started
+      </a>
+      <a href="https://github.com/sgodoy90/iluminaty" target="_blank" class="btn btn-secondary">View on GitHub</a>
+    </div>
+  </div>
+  <div class="scroll-hint">
+    <span>Scroll to explore</span>
+    <div class="scroll-arrow"></div>
+  </div>
+</section>
+
+<!-- ═══ THE PROBLEM ═══ -->
+<section id="problem" class="section">
+  <div class="container">
+    <div class="section-badge">The Problem</div>
+    <h2>Every AI today is <span class="text-red">blind</span> between screenshots</h2>
+    <div class="problem-grid">
+      <div class="problem-card">
+        <div class="problem-icon">
+          <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2"><circle cx="24" cy="24" r="10"/><line x1="24" y1="2" x2="24" y2="10"/><line x1="24" y1="38" x2="24" y2="46"/><path d="M4 24h8M36 24h8" stroke-dasharray="3 3"/></svg>
+        </div>
+        <h3>Blind Between Actions</h3>
+        <p>Screenshot. Wait 3 seconds. Act blindly. Screenshot again. The AI closes its eyes every time it needs to do something.</p>
+      </div>
+      <div class="problem-card">
+        <div class="problem-icon">
+          <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="6" width="36" height="36" rx="4"/><path d="M6 18h36M18 18v24" stroke-dasharray="4 2"/><circle cx="30" cy="30" r="6" stroke="currentColor" fill="none"/><line x1="26" y1="34" x2="34" y2="26"/></svg>
+        </div>
+        <h3>Pixel-Only Understanding</h3>
+        <p>Other tools see pixels and guess. They can't read the accessibility tree. They don't know a button IS a button — just colored rectangles.</p>
+      </div>
+      <div class="problem-card">
+        <div class="problem-icon">
+          <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 36V20a12 12 0 0124 0v16"/><circle cx="24" cy="38" r="4"/><line x1="8" y1="8" x2="40" y2="40" stroke-width="3"/></svg>
+        </div>
+        <h3>No Recovery</h3>
+        <p>Action failed? Too bad. No retry, no alternative, no cascade. Just an error message and a confused AI.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ THE SOLUTION ═══ -->
+<section id="solution" class="section section-dark">
+  <div class="container">
+    <div class="section-badge">The Solution</div>
+    <h2>ILUMINATY gives AI <span class="text-green">persistent vision</span> + <span class="text-green">direct action</span></h2>
+    <div class="solution-flow">
+      <div class="flow-step">
+        <div class="flow-num">1</div>
+        <div class="flow-content">
+          <h3>Always Watching</h3>
+          <p>Continuous capture at 1-5 FPS. RAM-only ring buffer. The AI never blinks.</p>
+        </div>
+      </div>
+      <div class="flow-arrow"></div>
+      <div class="flow-step">
+        <div class="flow-num">2</div>
+        <div class="flow-content">
+          <h3>Understands Everything</h3>
+          <p>OCR + Accessibility Tree + Spatial Map. Knows every button, field, and menu by name.</p>
+        </div>
+      </div>
+      <div class="flow-arrow"></div>
+      <div class="flow-step">
+        <div class="flow-num">3</div>
+        <div class="flow-content">
+          <h3>Acts Intelligently</h3>
+          <p>Cascade resolver: API Direct &lt;10ms → Keyboard ~50ms → UI Tree ~100ms → Vision ~500ms.</p>
+        </div>
+      </div>
+      <div class="flow-arrow"></div>
+      <div class="flow-step">
+        <div class="flow-num">4</div>
+        <div class="flow-content">
+          <h3>Verifies & Recovers</h3>
+          <p>Every action is verified. If it fails: retry → alternative → rollback → escalate.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ 7 LAYERS ═══ -->
+<section id="layers" class="section">
+  <div class="container">
+    <div class="section-badge">Architecture</div>
+    <h2>7 Layers of <span class="text-green">God-Level</span> Computer Use</h2>
+    <p class="section-sub">Each layer builds on the previous. Safety runs through everything.</p>
+    <div class="layers-stack">
+      <div class="layer" data-layer="7">
+        <div class="layer-num">7</div>
+        <div class="layer-info">
+          <h3>Safety</h3>
+          <p>Kill switch, 3 autonomy levels, whitelist/blacklist, rate limits, persistent audit log</p>
+        </div>
+        <div class="layer-badge safety">ALWAYS ON</div>
+      </div>
+      <div class="layer" data-layer="6">
+        <div class="layer-num">6</div>
+        <div class="layer-info">
+          <h3>Brain</h3>
+          <p>Intent classifier, cascade resolver, task planner, action verifier, error recovery</p>
+        </div>
+        <div class="layer-badge">5 modules</div>
+      </div>
+      <div class="layer" data-layer="5">
+        <div class="layer-num">5</div>
+        <div class="layer-info">
+          <h3>File System</h3>
+          <p>Sandboxed read/write/search/delete with path restrictions and auto-backup</p>
+        </div>
+        <div class="layer-badge">sandbox</div>
+      </div>
+      <div class="layer" data-layer="4">
+        <div class="layer-num">4</div>
+        <div class="layer-info">
+          <h3>Web</h3>
+          <p>Chrome DevTools Protocol — DOM, forms, navigation, tabs, JavaScript execution</p>
+        </div>
+        <div class="layer-badge">CDP</div>
+      </div>
+      <div class="layer" data-layer="3">
+        <div class="layer-num">3</div>
+        <div class="layer-info">
+          <h3>App Control</h3>
+          <p>VS Code commands, Terminal PTY, Git operations — all programmatic, no UI needed</p>
+        </div>
+        <div class="layer-badge">3 modules</div>
+      </div>
+      <div class="layer" data-layer="2">
+        <div class="layer-num">2</div>
+        <div class="layer-info">
+          <h3>UI Intelligence</h3>
+          <p>Accessibility Tree — find buttons, fields, menus by NAME, not pixels</p>
+        </div>
+        <div class="layer-badge">cross-platform</div>
+      </div>
+      <div class="layer" data-layer="1">
+        <div class="layer-num">1</div>
+        <div class="layer-info">
+          <h3>OS Control</h3>
+          <p>16 mouse/keyboard actions, window management, clipboard, process control</p>
+        </div>
+        <div class="layer-badge">16 actions</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ FEATURES ═══ -->
+<section id="features" class="section section-dark">
+  <div class="container">
+    <div class="section-badge">Features</div>
+    <h2>Everything the AI needs to <span class="text-green">see and act</span></h2>
+    <div class="features-grid">
+      <div class="feature-card">
+        <div class="feature-icon-wrap"><span>👁</span></div>
+        <h3>Continuous Vision</h3>
+        <p>1-5 FPS adaptive capture. WebP/JPEG/PNG. 36KB/frame. Multi-monitor. Smart quality.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon-wrap"><span>🔤</span></div>
+        <h3>OCR + UI Tree</h3>
+        <p>91% accuracy OCR + real accessibility tree. Buttons, fields, menus by name.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon-wrap"><span>🖱</span></div>
+        <h3>42+ Actions</h3>
+        <p>Click, drag, type, scroll, hotkey, window management, clipboard, process control.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon-wrap"><span>🧠</span></div>
+        <h3>Cascade Resolver</h3>
+        <p>API Direct &lt;10ms → Keyboard → UI Tree → Vision. Always tries the fastest first.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon-wrap"><span>🌐</span></div>
+        <h3>Browser Control</h3>
+        <p>Chrome DevTools Protocol. DOM, forms, navigation, tabs, JS execution. No screenshots.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon-wrap"><span>💻</span></div>
+        <h3>Terminal + Git</h3>
+        <p>Run commands, background processes. Git status, commit, push, pull. All programmatic.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon-wrap"><span>🔒</span></div>
+        <h3>Safety First</h3>
+        <p>Kill switch, 3 autonomy levels, rate limits per category, persistent audit log.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon-wrap"><span>🔌</span></div>
+        <h3>17 MCP Tools</h3>
+        <p>Drop-in for Claude Code, Cursor, Windsurf. See screen + act in one integration.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon-wrap"><span>💾</span></div>
+        <h3>Zero Disk</h3>
+        <p>RAM-only ring buffer. ~2MB for 30s. Kill the process, everything disappears. Forever.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ COMPARE ═══ -->
+<section id="compare" class="section">
+  <div class="container">
+    <div class="section-badge">Comparison</div>
+    <h2>How ILUMINATY compares to <span class="text-green">Computer Use</span></h2>
+    <div class="compare-table-wrap">
+      <table class="compare-table">
+        <thead>
+          <tr>
+            <th></th>
+            <th>Screenshots</th>
+            <th>Screenpipe</th>
+            <th>Computer Use<br/><small>(Anthropic)</small></th>
+            <th class="highlight-col">ILUMINATY<br/><small>Eye of God</small></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td>Mode</td><td>Manual</td><td>Records all</td><td>API screenshots</td><td class="highlight-col">Live perception + action</td></tr>
+          <tr><td>Between actions</td><td>N/A</td><td>N/A</td><td class="text-red">Blind</td><td class="highlight-col">Always watching</td></tr>
+          <tr><td>Actions</td><td>None</td><td>None</td><td>5 basic</td><td class="highlight-col">42+ (7 layers)</td></tr>
+          <tr><td>UI Understanding</td><td>None</td><td>None</td><td>Pixels + OCR</td><td class="highlight-col">Accessibility Tree + OCR</td></tr>
+          <tr><td>Error Recovery</td><td>None</td><td>None</td><td>None</td><td class="highlight-col">Auto retry + cascade</td></tr>
+          <tr><td>Speed</td><td>Seconds</td><td>Seconds</td><td>1-3s per action</td><td class="highlight-col">&lt;10ms to 500ms</td></tr>
+          <tr><td>Drag & Drop</td><td>No</td><td>No</td><td>No</td><td class="highlight-col">Yes, native</td></tr>
+          <tr><td>Browser DOM</td><td>No</td><td>No</td><td>No</td><td class="highlight-col">Chrome DevTools</td></tr>
+          <tr><td>Terminal</td><td>No</td><td>No</td><td>No</td><td class="highlight-col">Full PTY</td></tr>
+          <tr><td>Storage</td><td>Disk</td><td>~20GB/mo</td><td>Cloud</td><td class="highlight-col">ZERO (RAM only)</td></tr>
+          <tr><td>Privacy</td><td>Files on disk</td><td>SQLite DB</td><td>Cloud API</td><td class="highlight-col">RAM only, dies on exit</td></tr>
+          <tr><td>Cost</td><td>Free</td><td>$30+</td><td>API pricing</td><td class="highlight-col">Free & open source</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ DEVELOPERS ═══ -->
+<section id="developers" class="section section-dark">
+  <div class="container">
+    <div class="section-badge">For Developers</div>
+    <h2>5 lines to give your AI <span class="text-green">superpowers</span></h2>
+    <div class="code-tabs">
+      <div class="code-tab-bar">
+        <button class="code-tab active" data-tab="mcp">MCP (Claude Code)</button>
+        <button class="code-tab" data-tab="python">Python</button>
+        <button class="code-tab" data-tab="curl">cURL</button>
+      </div>
+      <div class="code-panel active" data-panel="mcp">
+<pre><code><span class="c"># Add ILUMINATY to Claude Code</span>
+claude mcp add iluminaty -- python -m iluminaty.mcp
+
+<span class="c"># Then just ask Claude:</span>
+<span class="s">"What do you see on my screen?"</span>
+<span class="s">"Click the Save button"</span>
+<span class="s">"Run npm test and tell me what failed"</span></code></pre>
+      </div>
+      <div class="code-panel" data-panel="python">
+<pre><code><span class="k">from</span> iluminaty_client <span class="k">import</span> Iluminaty
+
+eye = Iluminaty()
+snapshot = eye.see()              <span class="c"># see the screen</span>
+eye.post(<span class="s">"/agent/do"</span>,            <span class="c"># natural language action</span>
+    instruction=<span class="s">"save the file"</span>)
+eye.post(<span class="s">"/terminal/exec"</span>,        <span class="c"># run commands</span>
+    cmd=<span class="s">"npm test"</span>)</code></pre>
+      </div>
+      <div class="code-panel" data-panel="curl">
+<pre><code><span class="c"># See what's on screen</span>
+curl localhost:8420/vision/snapshot
+
+<span class="c"># Execute an action (natural language)</span>
+curl -X POST <span class="s">"localhost:8420/agent/do?instruction=save+the+file"</span>
+
+<span class="c"># Click a UI element by name</span>
+curl -X POST <span class="s">"localhost:8420/ui/click?name=Submit"</span></code></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ GET STARTED ═══ -->
+<section id="get-started" class="section">
+  <div class="container">
+    <div class="section-badge">Get Started</div>
+    <h2>Up and running in <span class="text-green">30 seconds</span></h2>
+    <div class="start-grid">
+      <div class="start-card">
+        <div class="start-num">1</div>
+        <h3>Install</h3>
+        <pre><code>git clone https://github.com/sgodoy90/iluminaty.git
+cd iluminaty
+pip install -e ".[ocr]"</code></pre>
+      </div>
+      <div class="start-card">
+        <div class="start-num">2</div>
+        <h3>Run</h3>
+        <pre><code>python main.py start --actions --autonomy confirm</code></pre>
+      </div>
+      <div class="start-card">
+        <div class="start-num">3</div>
+        <h3>Connect</h3>
+        <pre><code>claude mcp add iluminaty -- python -m iluminaty.mcp
+# "Click the Save button" — it just works.</code></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ FOOTER ═══ -->
+<footer>
+  <div class="container">
+    <div class="footer-inner">
+      <div class="footer-brand">
+        <span class="logo-text">ILUMINAT<span class="logo-y">Y</span></span>
+        <p>Eye of God — The AI sees all.</p>
+      </div>
+      <div class="footer-links">
+        <div>
+          <h4>Product</h4>
+          <a href="#features">Features</a>
+          <a href="#layers">Architecture</a>
+          <a href="#compare">Compare</a>
+        </div>
+        <div>
+          <h4>Developers</h4>
+          <a href="https://github.com/sgodoy90/iluminaty" target="_blank">GitHub</a>
+          <a href="https://github.com/sgodoy90/iluminaty#api-reference" target="_blank">API Docs</a>
+          <a href="https://github.com/sgodoy90/iluminaty#mcp-tools-17" target="_blank">MCP Tools</a>
+        </div>
+        <div>
+          <h4>Community</h4>
+          <a href="https://github.com/sgodoy90/iluminaty/issues" target="_blank">Issues</a>
+          <a href="https://github.com/sgodoy90/iluminaty/pulls" target="_blank">Contribute</a>
+        </div>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <p>MIT License &bull; Made with obsession by <strong>Godo</strong></p>
+      <p class="footer-tag">42 modules &bull; 80+ endpoints &bull; 17 MCP tools &bull; Zero disk &bull; 100% local</p>
+    </div>
+  </div>
+</footer>
+
+<script src="eye.js"></script>
+<script src="main.js"></script>
+</body>
+</html>
