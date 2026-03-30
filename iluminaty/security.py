@@ -20,7 +20,6 @@ import hashlib
 import hmac
 import re
 from collections import defaultdict, deque
-from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Optional
 from io import BytesIO
@@ -227,7 +226,7 @@ class AuditEntry:
     details: str = ""
 
 
-class AuditLog:
+class SecurityAuditLog:
     """
     Log de accesos. NO guarda frames — solo metadata.
     Vive en RAM con un maximo de entries.

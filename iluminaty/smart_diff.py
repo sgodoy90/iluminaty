@@ -17,10 +17,24 @@ Tecnicas:
 
 import io
 import hashlib
-import numpy as np
 from PIL import Image
 from typing import Optional
 from dataclasses import dataclass
+
+# Lazy numpy import - loaded on first use
+_np = None
+
+def _get_np():
+    global _np
+    if _np is None:
+        try:
+            import numpy as np
+            _np = np
+        except ImportError:
+            raise ImportError(
+                "numpy is required for SmartDiff. Install with: pip install numpy"
+            )
+    return _np
 
 
 @dataclass
@@ -61,18 +75,19 @@ class SmartDiff:
         self.grid_rows = grid_rows
         self.threshold = threshold
         self._prev_hashes: Optional[list[list[str]]] = None
-        self._prev_cells: Optional[list[list[np.ndarray]]] = None
+        self._prev_cells: Optional[list[list]] = None  # list[list[np.ndarray]]
         self._heatmap: list[list[float]] = [
             [0.0] * grid_cols for _ in range(grid_rows)
         ]
         self._heatmap_decay = 0.9  # cuanto se desvanece el heatmap por frame
 
-    def _frame_to_array(self, frame_bytes: bytes) -> np.ndarray:
+    def _frame_to_array(self, frame_bytes: bytes):
         """Convierte frame bytes a numpy array."""
+        np = _get_np()
         img = Image.open(io.BytesIO(frame_bytes)).convert("RGB")
         return np.array(img)
 
-    def _split_grid(self, arr: np.ndarray) -> list[list[np.ndarray]]:
+    def _split_grid(self, arr) -> list[list]:
         """Divide array en grid NxN de celdas."""
         h, w = arr.shape[:2]
         cell_h = h // self.grid_rows
@@ -89,17 +104,19 @@ class SmartDiff:
             grid.append(row_cells)
         return grid
 
-    def _cell_hash(self, cell: np.ndarray) -> str:
+    def _cell_hash(self, cell) -> str:
         """Hash rapido de una celda del grid."""
+        np = _get_np()
         # Downscale a 8x8 y hashear para velocidad
         small = Image.fromarray(cell).resize((8, 8))
         return hashlib.md5(np.array(small).tobytes()).hexdigest()
 
-    def _cell_diff_intensity(self, cell_a: np.ndarray, cell_b: np.ndarray) -> float:
+    def _cell_diff_intensity(self, cell_a, cell_b) -> float:
         """
         Calcula intensidad de cambio entre dos celdas (0-1).
         Usa Mean Absolute Difference normalizado.
         """
+        np = _get_np()
         if cell_a.shape != cell_b.shape:
             return 1.0
         diff = np.abs(cell_a.astype(float) - cell_b.astype(float))

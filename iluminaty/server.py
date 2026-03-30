@@ -58,7 +58,7 @@ from .planner import TaskPlanner
 from .verifier import ActionVerifier
 from .recovery import ErrorRecovery
 from .safety import SafetySystem
-from .autonomy import AutonomyManager
+from .autonomy import AutonomyManager, AutonomyLevel
 from .audit import AuditLog
 
 
@@ -129,7 +129,7 @@ def _frame_to_json(slot: FrameSlot, include_base64: bool = False) -> dict:
     }
     if include_base64:
         result["image_base64"] = base64.b64encode(slot.frame_bytes).decode("ascii")
-        result["image_url"] = f"data:image/jpeg;base64,{result['image_base64']}"
+        result["image_url"] = f"data:{slot.mime_type};base64,{result['image_base64']}"
     return result
 
 
@@ -158,9 +158,22 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+def _get_cors_origins() -> list[str]:
+    """Build CORS origins list including configured host:port."""
+    origins = ["http://127.0.0.1:8420", "http://localhost:8420", "tauri://localhost"]
+    # Add dynamically configured host:port if different
+    if _state.capture and hasattr(_state.capture, 'config'):
+        cfg = _state.capture.config
+        host = getattr(cfg, 'host', '127.0.0.1')
+        port = getattr(cfg, 'port', 8420)
+        dynamic = f"http://{host}:{port}"
+        if dynamic not in origins:
+            origins.append(dynamic)
+    return origins
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://127.0.0.1:8420", "http://localhost:8420", "tauri://localhost"],
+    allow_origins=_get_cors_origins(),
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -318,7 +331,7 @@ async def update_config(
             changed.append(f"skip_unchanged={skip_unchanged}")
         if smart_quality is not None:
             _state.capture.config.smart_quality = smart_quality
-        changed.append(f"smart_quality={smart_quality}")
+            changed.append(f"smart_quality={smart_quality}")
     
     return {"updated": changed}
 
@@ -673,7 +686,7 @@ async def context_state(x_api_key: Optional[str] = Header(None)):
     # Update context with current window
     from .vision import get_active_window_info
     win = get_active_window_info()
-    _state.context.update(win.get("title", "unknown"), win.get("title", ""))
+    _state.context.update(win.get("name", "unknown"), win.get("title", ""))
 
     state = _state.context.get_state()
     return {
@@ -1144,7 +1157,7 @@ async def set_autonomy_level(
     _check_auth(x_api_key)
     if not _state.autonomy:
         raise HTTPException(503, "Not initialized")
-    _state.autonomy.set_level(level)
+    _state.autonomy.set_level(AutonomyLevel(level))
     return {"level": level}
 
 
@@ -1587,7 +1600,13 @@ async def browser_text(x_api_key: Optional[str] = Header(None)):
 
 @app.post("/browser/eval")
 async def browser_eval(expression: str = Query(...), x_api_key: Optional[str] = Header(None)):
+    """WARNING: Executes arbitrary JavaScript in the browser. Use with caution."""
     _check_auth(x_api_key)
+    # Safety: block dangerous patterns
+    dangerous = ["document.cookie", "localStorage", "sessionStorage", "eval(", "Function("]
+    for pattern in dangerous:
+        if pattern in expression:
+            return {"error": f"Blocked: expression contains dangerous pattern '{pattern}'"}
     return _state.browser.evaluate(expression) if _state.browser else {}
 
 

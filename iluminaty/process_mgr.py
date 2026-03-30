@@ -144,14 +144,17 @@ class ProcessManager:
                 )
             return {"success": True, "pid": process.pid, "command": command}
         except Exception as e:
-            # Fallback: intentar con shell
+            # Fallback: intentar con platform launcher (no shell=True)
             try:
                 if self._platform == "win32":
-                    subprocess.Popen(f"start {command}", shell=True,
+                    subprocess.Popen(["cmd", "/c", "start", "", command],
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                elif self._platform == "darwin":
+                    subprocess.Popen(["open", command],
                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 else:
-                    subprocess.Popen(f"open {command}" if self._platform == "darwin" else f"xdg-open {command}",
-                                     shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    subprocess.Popen(["xdg-open", command],
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 return {"success": True, "pid": -1, "command": command}
             except Exception as e2:
                 return {"success": False, "error": str(e2), "command": command}

@@ -39,10 +39,15 @@ def _api_get(path: str) -> dict:
         return json.loads(resp.read().decode())
 
 
-def _api_post(path: str) -> dict:
+def _api_post(path: str, body: dict | None = None) -> dict:
     """POST request to ILUMINATY API."""
     url = API_BASE + path
-    req = urllib.request.Request(url, method="POST", data=b"")
+    if body is not None:
+        data = json.dumps(body).encode("utf-8")
+        req = urllib.request.Request(url, method="POST", data=data,
+                                     headers={"Content-Type": "application/json"})
+    else:
+        req = urllib.request.Request(url, method="POST", data=b"")
     with urllib.request.urlopen(req, timeout=5) as resp:
         return json.loads(resp.read().decode())
 
@@ -524,7 +529,7 @@ def handle_read_file(args: dict) -> list:
 def handle_write_file(args: dict) -> list:
     path = args.get("path", "")
     content = args.get("content", "")
-    data = _api_post(f"/files/write?path={urllib.parse.quote(path)}&content={urllib.parse.quote(content)}")
+    data = _api_post(f"/files/write?path={urllib.parse.quote(path)}", body={"content": content})
     if data.get("success"):
         return [{"type": "text", "text": f"Written {data.get('size', 0)}B to {path}"}]
     return [{"type": "text", "text": f"Failed to write {path}: {data.get('error', 'unknown')}"}]
@@ -580,7 +585,7 @@ def run_mcp_stdio():
 
     def send(msg: dict):
         data = json.dumps(msg)
-        sys.stdout.write(f"Content-Length: {len(data)}\r\n\r\n{data}")
+        sys.stdout.write(f"Content-Length: {len(data.encode('utf-8'))}\r\n\r\n{data}")
         sys.stdout.flush()
 
     def read_message() -> dict:

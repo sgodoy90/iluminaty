@@ -155,10 +155,11 @@ class ClipboardManager:
             finally:
                 user32.CloseClipboard()
         except Exception:
-            # Fallback: usar powershell
+            # Fallback: usar powershell (pass text via stdin to avoid injection)
             try:
                 subprocess.run(
-                    ["powershell", "-command", f"Set-Clipboard -Value '{text}'"],
+                    ["powershell", "-Command", "Set-Clipboard"],
+                    input=text, text=True,
                     capture_output=True, timeout=3
                 )
                 return True

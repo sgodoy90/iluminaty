@@ -82,7 +82,7 @@ PATTERNS = [
      "close_tab", "normal", lambda m: {}),
 
     # ─── Terminal ───
-    (r"(?:ejecuta|run|corre)\s+(.+)",
+    (r"^(?:ejecuta|run|corre)\s+(.+)",
      "terminal_exec", "normal", lambda m: {"command": m.group(1).strip()}),
 
     # ─── Window Management ───

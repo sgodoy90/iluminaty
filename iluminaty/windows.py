@@ -284,9 +284,11 @@ class WindowManager:
         if not title:
             return False
         try:
+            # Sanitize title to prevent AppleScript injection
+            safe_title = title.replace('"', '').replace('\\', '')
             script = f'''
             tell application "System Events"
-                set targetWindow to first window of (first process whose name contains "{title}")
+                set targetWindow to first window of (first process whose name contains "{safe_title}")
                 {action}
             end tell
             '''

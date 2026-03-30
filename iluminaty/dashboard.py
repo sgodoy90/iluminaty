@@ -485,7 +485,7 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
       </svg>
     </div>
     <span class="brand-name">ILUMINATY</span>
-    <span class="brand-version">v0.5</span>
+    <span class="brand-version">v1.0.0</span>
   </div>
   <div class="header-status">
     <div class="status-item"><span class="status-dot"></span><span id="statusText">LIVE</span></div>
@@ -743,7 +743,7 @@ canvas.addEventListener('mouseup', async e => {
   const p = new URLSearchParams({
     type: currentTool, x: Math.min(drawStart.x,ex), y: Math.min(drawStart.y,ey),
     width: Math.abs(w)||50, height: Math.abs(h)||50,
-    color: encodeURIComponent(currentColor), text: label
+    color: currentColor, text: label
   });
   try {
     const res = await fetch(API+'/annotations/add?'+p, {method:'POST'});

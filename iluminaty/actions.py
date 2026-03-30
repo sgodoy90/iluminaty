@@ -164,9 +164,9 @@ class ActionBridge:
     # ─── Keyboard Actions ───
 
     def type_text(self, text: str, interval: float = 0.02) -> ActionResult:
-        """Escribe texto via keyboard. Soporta unicode via write()."""
+        """Escribe texto via keyboard. Only supports ASCII characters."""
         def do():
-            # pyautogui.write() soporta unicode, typewrite() no
+            # pyautogui.write() only supports ASCII; non-ASCII chars are silently dropped
             self._pyautogui.write(text, interval=interval)
             return f"Typed {len(text)} chars"
         return self._exec("type_text", do)

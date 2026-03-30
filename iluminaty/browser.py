@@ -71,7 +71,6 @@ class BrowserBridge:
             if not self._connect_ws():
                 return {"error": "Not connected to browser"}
         try:
-            import _thread
             cmd_id = int(time.time() * 1000) % 1000000
             msg = {"id": cmd_id, "method": method}
             if params:
@@ -194,7 +193,8 @@ class BrowserBridge:
 
     def click_selector(self, selector: str) -> dict:
         """Click en un elemento DOM via JavaScript."""
-        js = f'document.querySelector("{selector}")?.click(); "clicked"'
+        safe_selector = json.dumps(selector)
+        js = f'document.querySelector({safe_selector})?.click(); "clicked"'
         result = self._send_command("Runtime.evaluate", {"expression": js})
         value = result.get("result", {}).get("result", {}).get("value")
         if value == "clicked":
@@ -203,9 +203,10 @@ class BrowserBridge:
 
     def fill_input(self, selector: str, value: str) -> dict:
         """Llena un input field via DOM."""
+        safe_selector = json.dumps(selector)
         js = f'''
         (function() {{
-            var el = document.querySelector("{selector}");
+            var el = document.querySelector({safe_selector});
             if (!el) return "not_found";
             el.focus();
             el.value = {json.dumps(value)};
@@ -230,7 +231,8 @@ class BrowserBridge:
 
     def submit_form(self, form_selector: str = "form") -> dict:
         """Submit de un formulario."""
-        js = f'document.querySelector("{form_selector}")?.submit(); "submitted"'
+        safe_selector = json.dumps(form_selector)
+        js = f'document.querySelector({safe_selector})?.submit(); "submitted"'
         result = self._send_command("Runtime.evaluate", {"expression": js})
         return {"success": True, "form": form_selector}
 

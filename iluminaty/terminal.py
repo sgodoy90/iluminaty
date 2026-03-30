@@ -8,6 +8,7 @@ Lee output en tiempo real, detecta errores, timeout automatico.
 "Que dice el output?" → get_output()
 """
 
+import shlex
 import subprocess
 import sys
 import threading
@@ -62,12 +63,13 @@ class TerminalManager:
         timeout = timeout or self._default_timeout
         start = time.time()
 
-        shell = True
         if self._platform == "win32":
-            # Usar cmd.exe en Windows
+            # Windows: use cmd.exe to handle built-in commands
             cmd = command
+            shell = True
         else:
-            cmd = command
+            cmd = shlex.split(command)
+            shell = False
 
         try:
             result = subprocess.run(
@@ -110,10 +112,15 @@ class TerminalManager:
 
     def run_background(self, command: str, name: str, cwd: Optional[str] = None) -> dict:
         """Lanza un comando en background. Usa get_background_output() para leer."""
-        shell = True
+        if self._platform == "win32":
+            cmd = command
+            shell = True
+        else:
+            cmd = shlex.split(command)
+            shell = False
         try:
             proc = subprocess.Popen(
-                command, shell=shell, cwd=cwd,
+                cmd, shell=shell, cwd=cwd,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True,
             )
