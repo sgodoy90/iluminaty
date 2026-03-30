@@ -30,6 +30,56 @@ import os
 # ILUMINATY API base URL - configurable via env var
 API_BASE = os.environ.get("ILUMINATY_API_URL", "http://127.0.0.1:8420")
 
+# ILUMINATY license key - gates MCP tools to free/pro plan
+ILUMINATY_KEY = os.environ.get("ILUMINATY_KEY", "")
+
+# Free tier tools (10) — available without license
+FREE_MCP_TOOLS = {
+    "see_screen", "see_changes", "read_screen_text", "perception",
+    "screen_status", "get_context", "do_action", "get_audio_level",
+    "token_status", "set_token_mode", "set_token_budget",
+}
+
+# All tools (28) — available with Pro license
+ALL_MCP_TOOLS = {
+    "see_screen", "see_changes", "annotate_screen", "read_screen_text", "perception",
+    "screen_status", "get_context", "get_audio_level",
+    "do_action", "click_element", "type_text", "run_command",
+    "list_windows", "find_ui_element", "read_file", "write_file",
+    "get_clipboard", "agent_status",
+    # Human-like navigation
+    "watch_screen", "focus_window", "browser_navigate", "browser_tabs",
+    "click_screen", "keyboard", "scroll",
+    "monitor_info", "see_monitor",
+    # Token management
+    "token_status", "set_token_mode", "set_token_budget",
+}
+
+
+def _get_plan() -> str:
+    """Check license plan by calling the local server or auth API."""
+    if not ILUMINATY_KEY:
+        return "free"
+    try:
+        url = API_BASE + "/license/status"
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            data = json.loads(resp.read().decode())
+            return data.get("plan", "free")
+    except Exception:
+        # Fallback: check key prefix
+        if ILUMINATY_KEY.startswith("ILUM-pro") or ILUMINATY_KEY.startswith("ILUM-dev"):
+            return "pro"
+        return "free"
+
+
+def _get_allowed_tools() -> set:
+    """Return set of tool names allowed for current plan."""
+    plan = _get_plan()
+    if plan in ("pro", "enterprise"):
+        return ALL_MCP_TOOLS
+    return FREE_MCP_TOOLS
+
 
 def _api_get(path: str) -> dict:
     """GET request to ILUMINATY API."""
@@ -52,31 +102,74 @@ def _api_post(path: str, body: dict | None = None) -> dict:
         return json.loads(resp.read().decode())
 
 
+# ─── Token Mode (default: cheapest) ───
+VISION_MODE = os.environ.get("ILUMINATY_VISION_MODE", "text_only")
+
 # ─── MCP Tool Definitions ───
 
 TOOLS = [
     {
         "name": "see_screen",
         "description": (
-            "See what is currently on the user's screen in real-time. "
-            "Returns an enriched snapshot with: the screen image, OCR text "
-            "of visible content, active window info, and a structured prompt. "
-            "Use this when you need to see what the user sees right now."
+            "See what is currently on the user's screen. "
+            "Uses smart token mode to control costs. Modes: "
+            "text_only (~200 tokens), low_res (~5K), medium_res (~15K), full_res (~30K). "
+            "Default is text_only. Use text_only for most tasks, only use image modes "
+            "when you truly need to SEE the screen layout or colors."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "include_image": {
-                    "type": "boolean",
-                    "description": "Include the screen image as base64 (default true)",
-                    "default": True,
-                },
-                "ocr": {
-                    "type": "boolean",
-                    "description": "Run OCR to extract visible text (default false, slower)",
-                    "default": False,
+                "mode": {
+                    "type": "string",
+                    "enum": ["text_only", "low_res", "medium_res", "full_res"],
+                    "description": "Vision mode. text_only=cheapest, full_res=expensive. Default: text_only",
+                    "default": "text_only",
                 },
             },
+        },
+    },
+    {
+        "name": "token_status",
+        "description": (
+            "Check current token usage, budget, and mode. "
+            "Use this to monitor how many tokens ILUMINATY vision has consumed."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "set_token_mode",
+        "description": (
+            "Set the default vision mode to control token costs. "
+            "text_only (~200 tokens/call), low_res (~5K), medium_res (~15K), full_res (~30K)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "mode": {
+                    "type": "string",
+                    "enum": ["text_only", "low_res", "medium_res", "full_res"],
+                    "description": "Vision mode to set as default",
+                },
+            },
+            "required": ["mode"],
+        },
+    },
+    {
+        "name": "set_token_budget",
+        "description": (
+            "Set a token budget limit. ILUMINATY will refuse vision requests "
+            "when budget is exceeded. Set to 0 for unlimited."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "description": "Max tokens to spend. 0 = unlimited",
+                },
+            },
+            "required": ["limit"],
         },
     },
     {
@@ -315,50 +408,318 @@ TOOLS = [
             "properties": {},
         },
     },
+    {
+        "name": "focus_window",
+        "description": (
+            "Switch to a window by title (partial match). Like a human clicking on a window. "
+            "Example: focus_window('Chrome') switches to Chrome. "
+            "Use list_windows first to see available windows."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Window title (partial match)"},
+            },
+            "required": ["title"],
+        },
+    },
+    {
+        "name": "browser_navigate",
+        "description": (
+            "Navigate the browser to a URL. Opens the URL in the active browser window. "
+            "Example: browser_navigate('https://github.com')"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "URL to navigate to"},
+            },
+            "required": ["url"],
+        },
+    },
+    {
+        "name": "browser_tabs",
+        "description": "List all open browser tabs with their titles and URLs.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "click_screen",
+        "description": (
+            "Click at a specific position on screen using REAL screen coordinates (not image coordinates). "
+            "For multi-monitor setups, coordinates span the full virtual desktop. "
+            "Use list_windows to see window positions and calculate where to click."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "x": {"type": "integer", "description": "X coordinate (real screen pixels)"},
+                "y": {"type": "integer", "description": "Y coordinate (real screen pixels)"},
+                "button": {"type": "string", "description": "Mouse button: left, right, middle", "default": "left"},
+            },
+            "required": ["x", "y"],
+        },
+    },
+    {
+        "name": "keyboard",
+        "description": (
+            "Press keyboard keys or shortcuts. Like a human pressing keys. "
+            "Examples: 'enter', 'tab', 'ctrl+s', 'ctrl+shift+t', 'alt+tab', 'ctrl+l', 'f5'. "
+            "For typing text use type_text instead."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "keys": {"type": "string", "description": "Key or key combo (e.g. 'ctrl+s', 'enter', 'alt+tab')"},
+            },
+            "required": ["keys"],
+        },
+    },
+    {
+        "name": "scroll",
+        "description": (
+            "Scroll in the active window. Positive = down, negative = up. "
+            "Like a human using the mouse wheel."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "amount": {"type": "integer", "description": "Scroll amount. Positive=down, negative=up. Default=3", "default": 3},
+            },
+        },
+    },
+    {
+        "name": "perception",
+        "description": (
+            "Get real-time perception of what's happening on screen — like having eyes that never blink. "
+            "Instead of taking a screenshot (1 frozen moment), this returns a STREAM of events that the "
+            "perception engine detected continuously: window switches, page loads, text changes, motion, "
+            "loading spinners, content stabilization. Costs ~200 tokens (text only, no images). "
+            "Use this FIRST before any action to understand current state. "
+            "Use this AFTER any action to see what happened without needing a screenshot."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "seconds": {
+                    "type": "number",
+                    "description": "How many seconds back to look (default 30)",
+                    "default": 30,
+                },
+            },
+        },
+    },
+    {
+        "name": "watch_screen",
+        "description": (
+            "See the last N frames as a sequence — like watching a video replay. "
+            "Use this instead of see_screen when you need to understand what JUST happened: "
+            "animations, loading spinners, transitions, popups appearing/disappearing. "
+            "Returns the most recent frames with images so you see the flow, not just a snapshot. "
+            "Default: last 3 frames (~0.6s at 5 FPS). Max: 5 frames."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "frames": {
+                    "type": "integer",
+                    "description": "Number of recent frames to return (1-5, default 3)",
+                    "default": 3,
+                },
+                "monitor": {
+                    "type": "integer",
+                    "description": "Specific monitor (1,2,3). Omit for all monitors.",
+                },
+            },
+        },
+    },
+    {
+        "name": "monitor_info",
+        "description": (
+            "Get information about all connected monitors: positions, sizes, and layout. "
+            "Essential for understanding the multi-monitor setup before interacting."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "see_monitor",
+        "description": (
+            "Capture a specific monitor (1, 2, 3...) instead of all monitors combined. "
+            "This gives much better resolution for reading content on that monitor. "
+            "Use monitor_info first to know which monitor number to target."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "monitor": {"type": "integer", "description": "Monitor number (1=primary, 2, 3...)"},
+                "mode": {"type": "string", "enum": ["low_res", "medium_res", "full_res"], "default": "medium_res"},
+            },
+            "required": ["monitor"],
+        },
+    },
 ]
 
 
 # ─── Tool Handlers ───
 
 def handle_see_screen(args: dict) -> dict:
-    include_image = args.get("include_image", True)
-    ocr = args.get("ocr", False)
-    data = _api_get(f"/vision/snapshot?ocr={str(ocr).lower()}&include_image={str(include_image).lower()}")
+    mode = args.get("mode", VISION_MODE)
+    data = _api_get(f"/vision/smart?mode={mode}")
 
-    result = {"type": "text", "text": data.get("ai_prompt", "")}
+    if data.get("error") == "token_budget_exceeded":
+        return [{"type": "text", "text": (
+            f"TOKEN BUDGET EXCEEDED. Used: {data['used']}/{data['budget']}. "
+            f"Switch to text_only mode or increase budget with set_token_budget."
+        )}]
 
-    # If image is included, add it as image content
-    if include_image and "image_base64" in data:
-        return [
-            {"type": "text", "text": data["ai_prompt"]},
-            {
+    tokens_info = f"\n\n---\n[Token mode: {mode} | ~{data.get('token_estimate', '?')} tokens | Total used: {data.get('tokens_used_total', '?')}]"
+
+    # text_only mode: just return text
+    if mode == "text_only" or "image_base64" not in data:
+        text = data.get("ai_prompt", data.get("ocr_text", "No screen data"))
+        if data.get("ocr_text"):
+            text += f"\n\n### OCR Text\n{data['ocr_text']}"
+        return [{"type": "text", "text": text + tokens_info}]
+
+    # Image modes: return image + text
+    return [
+        {"type": "text", "text": data.get("ai_prompt", "") + tokens_info},
+        {
+            "type": "image",
+            "data": data["image_base64"],
+            "mimeType": "image/webp",
+        },
+    ]
+
+
+def handle_perception(args: dict) -> list:
+    """Get real-time perception events — the AI's visual cortex."""
+    seconds = args.get("seconds", 30)
+    try:
+        data = _api_get(f"/perception?seconds={seconds}")
+        summary = data.get("summary", "Perception engine not available")
+        event_count = data.get("event_count", 0)
+        running = data.get("running", False)
+
+        status = "ACTIVE" if running else "OFFLINE"
+        return [{"type": "text", "text": f"[Perception: {status} | {event_count} events buffered]\n\n{summary}"}]
+    except Exception as e:
+        return [{"type": "text", "text": f"Perception not available: {e}. Use see_screen as fallback."}]
+
+
+def handle_watch_screen(args: dict) -> list:
+    """Return last N frames as images — like watching a video replay."""
+    n = min(args.get("frames", 3), 5)
+    monitor = args.get("monitor")
+
+    data = _api_get(f"/frames?last={n}&include_images=true")
+    frames = data.get("frames", [])
+
+    if not frames:
+        return [{"type": "text", "text": "No frames in buffer yet."}]
+
+    result = []
+    result.append({
+        "type": "text",
+        "text": f"## Screen Replay ({len(frames)} frames)\nOldest → Newest. Watch for changes between frames.",
+    })
+
+    for i, f in enumerate(frames):
+        ts = f.get("timestamp_iso", "?")
+        change = f.get("change_score", 0)
+        img_b64 = f.get("image_base64")
+
+        label = f"**Frame {i+1}/{len(frames)}** — {ts} | change: {change}"
+
+        if img_b64:
+            # If monitor specified, we'd need per-monitor crop — for now send full frame
+            result.append({"type": "text", "text": label})
+            result.append({
                 "type": "image",
-                "data": data["image_base64"],
-                "mimeType": "image/webp",
-            },
-        ]
+                "data": img_b64,
+                "mimeType": f.get("mime_type", "image/webp"),
+            })
+        else:
+            result.append({"type": "text", "text": label + " (no image data)"})
 
-    return [result]
+    return result
 
 
-def handle_see_changes(args: dict) -> dict:
+def handle_token_status(args: dict) -> dict:
+    data = _api_get("/tokens/status")
+    lines = [
+        "## ILUMINATY Token Status",
+        f"**Mode**: {data['mode']} (~{data['mode_cost']['tokens']} tokens/call)",
+        f"**Used**: {data['used']} tokens",
+        f"**Budget**: {'unlimited' if data['budget'] == 0 else data['budget']}",
+        f"**Remaining**: {'unlimited' if data['remaining'] == -1 else data['remaining']}",
+        "",
+        "### Available Modes",
+    ]
+    for name, info in data["all_modes"].items():
+        marker = " <<<" if name == data["mode"] else ""
+        lines.append(f"  - **{name}**: ~{info['tokens']} tokens — {info['desc']}{marker}")
+    if data["last_5"]:
+        lines.append("\n### Recent Usage")
+        for entry in data["last_5"]:
+            lines.append(f"  - {entry['action']}: {entry['tokens']} tokens")
+    return [{"type": "text", "text": "\n".join(lines)}]
+
+
+def handle_set_token_mode(args: dict) -> dict:
+    mode = args.get("mode", "text_only")
+    data = _api_post(f"/tokens/mode?mode={mode}")
+    return [{"type": "text", "text": f"Vision mode set to **{data['mode']}** (~{data['estimated_tokens_per_call']} tokens/call)"}]
+
+
+def handle_set_token_budget(args: dict) -> dict:
+    limit = args.get("limit", 0)
+    data = _api_post(f"/tokens/budget?limit={limit}")
+    return [{"type": "text", "text": f"Token budget: {data['budget']} | Used: {data['used']} | Remaining: {'unlimited' if data['budget']==0 else data['remaining']}"}]
+
+
+def handle_see_changes(args: dict) -> list:
     seconds = args.get("seconds", 10)
-    data = _api_get(f"/frames?seconds={seconds}")
+    # Get frames WITH images to actually see what changed
+    data = _api_get(f"/frames?seconds={seconds}&include_images=true")
     count = data.get("count", 0)
     frames = data.get("frames", [])
 
-    summary_lines = [
-        f"## Screen Changes (last {seconds}s)",
-        f"**Frames captured**: {count}",
-        "",
-    ]
-    for i, f in enumerate(frames):
-        summary_lines.append(
-            f"- Frame {i+1}: {f['timestamp_iso']} | "
-            f"{f['size_bytes']}B | change:{f['change_score']}"
-        )
+    if not frames:
+        return [{"type": "text", "text": f"No changes in the last {seconds}s."}]
 
-    return [{"type": "text", "text": "\n".join(summary_lines)}]
+    # Only show frames with significant changes (change_score > 0.01) + first and last
+    significant = []
+    for i, f in enumerate(frames):
+        if i == 0 or i == len(frames) - 1 or f.get("change_score", 0) > 0.01:
+            significant.append(f)
+
+    # Cap at 5 frames to avoid token explosion
+    if len(significant) > 5:
+        step = len(significant) / 5
+        significant = [significant[int(i * step)] for i in range(5)]
+
+    result = [{"type": "text", "text": f"## Screen Changes (last {seconds}s) — {count} total frames, showing {len(significant)} key frames"}]
+
+    for i, f in enumerate(significant):
+        ts = f.get("timestamp_iso", "?")
+        change = f.get("change_score", 0)
+        img_b64 = f.get("image_base64")
+
+        result.append({"type": "text", "text": f"**Frame {i+1}** — {ts} | change: {change:.3f}"})
+        if img_b64:
+            result.append({
+                "type": "image",
+                "data": img_b64,
+                "mimeType": f.get("mime_type", "image/webp"),
+            })
+
+    return result
 
 
 def handle_annotate(args: dict) -> dict:
@@ -443,23 +804,120 @@ def handle_do_action(args: dict) -> list:
     instruction = args.get("instruction", "")
     if not instruction:
         return [{"type": "text", "text": "Error: instruction is required"}]
-    data = _api_post(f"/agent/do?instruction={urllib.parse.quote(instruction)}")
-    intent = data.get("intent", {})
-    result = data.get("result", {})
-    verification = data.get("verification")
-    recovery = data.get("recovery")
 
-    lines = [
-        f"## Action: {intent.get('action', 'unknown')}",
-        f"**Intent**: {instruction} → {intent.get('action')} (confidence: {intent.get('confidence', 0)})",
-        f"**Result**: {'SUCCESS' if result.get('success') else 'FAILED'} via {result.get('method_used', 'none')} ({result.get('total_ms', 0):.0f}ms)",
-        f"**Message**: {result.get('message', '')}",
-    ]
-    if verification:
-        lines.append(f"**Verified**: {'YES' if verification.get('verified') else 'NO'} ({verification.get('method', '')})")
-    if recovery:
-        lines.append(f"**Recovery**: {'Recovered' if recovery.get('recovered') else 'Failed'} - {recovery.get('final_message', '')}")
-    return [{"type": "text", "text": "\n".join(lines)}]
+    low = instruction.lower().strip()
+
+    # --- Parse natural language into direct API calls ---
+
+    # Click: "click at 500, 300" or "click 500 300"
+    import re
+    click_m = re.search(r'(?:click|tap)\s+(?:at\s+)?(\d+)[,\s]+(\d+)', low)
+    if click_m:
+        x, y = click_m.group(1), click_m.group(2)
+        data = _api_post(f"/action/click?x={x}&y={y}")
+        return [{"type": "text", "text": f"Clicked at ({x},{y}): {'SUCCESS' if data.get('success') else 'FAILED'} - {data.get('message','')}"}]
+
+    # Double click
+    dbl_m = re.search(r'double[- ]?click\s+(?:at\s+)?(\d+)[,\s]+(\d+)', low)
+    if dbl_m:
+        x, y = dbl_m.group(1), dbl_m.group(2)
+        data = _api_post(f"/action/double_click?x={x}&y={y}")
+        return [{"type": "text", "text": f"Double-clicked at ({x},{y}): {'SUCCESS' if data.get('success') else 'FAILED'}"}]
+
+    # Right click
+    rclick_m = re.search(r'right[- ]?click\s+(?:at\s+)?(\d+)[,\s]+(\d+)', low)
+    if rclick_m:
+        x, y = rclick_m.group(1), rclick_m.group(2)
+        data = _api_post(f"/action/right_click?x={x}&y={y}")
+        return [{"type": "text", "text": f"Right-clicked at ({x},{y}): {'SUCCESS' if data.get('success') else 'FAILED'}"}]
+
+    # Type text: "type hello world" or "write hello"
+    type_m = re.match(r'(?:type|write|enter|input)\s+(.+)', low)
+    if type_m:
+        text = type_m.group(1)
+        data = _api_post(f"/action/type?text={urllib.parse.quote(text)}")
+        return [{"type": "text", "text": f"Typed '{text}': {'SUCCESS' if data.get('success') else 'FAILED'}"}]
+
+    # Hotkey: "press ctrl+s" or "hotkey alt+tab"
+    key_m = re.match(r'(?:press|hotkey|hit)\s+(.+)', low)
+    if key_m:
+        keys = key_m.group(1).strip()
+        if '+' in keys or keys in ('enter', 'tab', 'escape', 'esc', 'space', 'backspace', 'delete',
+                                     'up', 'down', 'left', 'right', 'home', 'end', 'pageup', 'pagedown',
+                                     'f1','f2','f3','f4','f5','f6','f7','f8','f9','f10','f11','f12'):
+            data = _api_post(f"/action/hotkey?keys={urllib.parse.quote(keys)}")
+            return [{"type": "text", "text": f"Pressed {keys}: {'SUCCESS' if data.get('success') else 'FAILED'}"}]
+
+    # Scroll: "scroll down" or "scroll up 5"
+    scroll_m = re.match(r'scroll\s+(up|down)(?:\s+(\d+))?', low)
+    if scroll_m:
+        direction = scroll_m.group(1)
+        amount = int(scroll_m.group(2) or 3)
+        if direction == "up":
+            amount = -amount
+        data = _api_post(f"/action/scroll?amount={amount}")
+        return [{"type": "text", "text": f"Scrolled {direction}: {'SUCCESS' if data.get('success') else 'FAILED'}"}]
+
+    # Move mouse: "move mouse to 500 300"
+    move_m = re.search(r'move\s+(?:mouse\s+)?(?:to\s+)?(\d+)[,\s]+(\d+)', low)
+    if move_m:
+        x, y = move_m.group(1), move_m.group(2)
+        data = _api_post(f"/action/move_mouse?x={x}&y={y}")
+        return [{"type": "text", "text": f"Moved mouse to ({x},{y}): {'SUCCESS' if data.get('success') else 'FAILED'}"}]
+
+    # Minimize/maximize/restore windows
+    if 'minimize' in low and ('all' in low or 'window' in low):
+        data = _api_post("/action/hotkey?keys=win+d")
+        return [{"type": "text", "text": f"Minimize all: {'SUCCESS' if data.get('success') else 'FAILED'}"}]
+
+    if 'minimize' in low:
+        data = _api_post("/action/hotkey?keys=win+down")
+        return [{"type": "text", "text": f"Minimize window: {'SUCCESS' if data.get('success') else 'FAILED'}"}]
+
+    if 'maximize' in low:
+        data = _api_post("/action/hotkey?keys=win+up")
+        return [{"type": "text", "text": f"Maximize window: {'SUCCESS' if data.get('success') else 'FAILED'}"}]
+
+    # Open app: "open chrome" / "open notepad"
+    open_m = re.match(r'open\s+(.+)', low)
+    if open_m:
+        app = open_m.group(1).strip()
+        data = _api_post(f"/action/hotkey?keys=win")
+        import time; time.sleep(0.5)
+        data2 = _api_post(f"/action/type?text={urllib.parse.quote(app)}")
+        import time; time.sleep(0.5)
+        data3 = _api_post(f"/action/hotkey?keys=enter")
+        return [{"type": "text", "text": f"Opening '{app}': typed in Start menu and pressed Enter"}]
+
+    # Switch window: "switch to chrome" / "alt tab"
+    if 'alt tab' in low or 'switch window' in low:
+        data = _api_post("/action/hotkey?keys=alt+tab")
+        return [{"type": "text", "text": f"Switched window: {'SUCCESS' if data.get('success') else 'FAILED'}"}]
+
+    # Copy/paste
+    if low in ('copy', 'ctrl+c'):
+        data = _api_post("/action/hotkey?keys=ctrl+c")
+        return [{"type": "text", "text": f"Copy: {'SUCCESS' if data.get('success') else 'FAILED'}"}]
+    if low in ('paste', 'ctrl+v'):
+        data = _api_post("/action/hotkey?keys=ctrl+v")
+        return [{"type": "text", "text": f"Paste: {'SUCCESS' if data.get('success') else 'FAILED'}"}]
+    if low in ('save', 'ctrl+s'):
+        data = _api_post("/action/hotkey?keys=ctrl+s")
+        return [{"type": "text", "text": f"Save: {'SUCCESS' if data.get('success') else 'FAILED'}"}]
+    if low in ('undo', 'ctrl+z'):
+        data = _api_post("/action/hotkey?keys=ctrl+z")
+        return [{"type": "text", "text": f"Undo: {'SUCCESS' if data.get('success') else 'FAILED'}"}]
+
+    # Fallback: try agent/do (if brain is initialized), otherwise explain
+    try:
+        data = _api_post(f"/agent/do?instruction={urllib.parse.quote(instruction)}")
+        if data and "result" in data:
+            result = data["result"]
+            return [{"type": "text", "text": f"Action: {'SUCCESS' if result.get('success') else 'FAILED'} - {result.get('message','')}"}]
+    except Exception:
+        pass
+
+    return [{"type": "text", "text": f"Could not parse instruction: '{instruction}'. Try: 'click at X,Y', 'type hello', 'press ctrl+s', 'scroll down', 'open chrome', 'minimize all'."}]
 
 
 def handle_click_element(args: dict) -> list:
@@ -552,8 +1010,155 @@ def handle_agent_status(args: dict) -> list:
     return [{"type": "text", "text": "\n".join(lines)}]
 
 
+def handle_focus_window(args: dict) -> list:
+    title = args.get("title", "")
+    if not title:
+        return [{"type": "text", "text": "Error: title is required"}]
+    # Try exact match first, then partial
+    data = _api_post(f"/windows/focus?title={urllib.parse.quote(title)}")
+    if data.get("success"):
+        return [{"type": "text", "text": f"Focused window: '{title}'"}]
+    # Try partial match via windows list
+    windows = _api_get("/windows/list")
+    if windows and "windows" in windows:
+        for w in windows["windows"]:
+            if title.lower() in w.get("title", "").lower():
+                # Use hotkey approach - cycle alt+tab
+                # Or try direct focus by setting foreground
+                data2 = _api_post(f"/windows/focus?title={urllib.parse.quote(w['title'])}")
+                if data2.get("success"):
+                    return [{"type": "text", "text": f"Focused window: '{w['title']}'"}]
+    return [{"type": "text", "text": f"Could not focus window '{title}'. Use list_windows to see available windows."}]
+
+
+def handle_browser_navigate(args: dict) -> list:
+    url = args.get("url", "")
+    if not url:
+        return [{"type": "text", "text": "Error: url is required"}]
+    data = _api_post(f"/browser/navigate?url={urllib.parse.quote(url)}")
+    if data.get("success") or data.get("status") == "ok":
+        return [{"type": "text", "text": f"Navigated to: {url}"}]
+    # Fallback: use keyboard to navigate
+    _api_post("/action/hotkey?keys=ctrl%2Bl")
+    import time; time.sleep(0.3)
+    _api_post(f"/action/type?text={urllib.parse.quote(url)}")
+    time.sleep(0.2)
+    _api_post("/action/hotkey?keys=enter")
+    return [{"type": "text", "text": f"Navigated to: {url} (via keyboard)"}]
+
+
+def handle_browser_tabs(args: dict) -> list:
+    data = _api_get("/browser/tabs")
+    if data and isinstance(data, list):
+        lines = ["## Open Browser Tabs"]
+        for i, tab in enumerate(data):
+            lines.append(f"{i+1}. **{tab.get('title', '?')}** — {tab.get('url', '?')}")
+        return [{"type": "text", "text": "\n".join(lines)}]
+    elif data and "tabs" in data:
+        lines = ["## Open Browser Tabs"]
+        for i, tab in enumerate(data["tabs"]):
+            lines.append(f"{i+1}. **{tab.get('title', '?')}** — {tab.get('url', '?')}")
+        return [{"type": "text", "text": "\n".join(lines)}]
+    return [{"type": "text", "text": "Could not get browser tabs. Is Chrome running with --remote-debugging-port=9222?"}]
+
+
+def handle_click_screen(args: dict) -> list:
+    x = args.get("x", 0)
+    y = args.get("y", 0)
+    button = args.get("button", "left")
+    data = _api_post(f"/action/click?x={x}&y={y}&button={button}")
+    return [{"type": "text", "text": f"Clicked at ({x},{y}) {button}: {'SUCCESS' if data.get('success') else 'FAILED'}"}]
+
+
+def handle_keyboard(args: dict) -> list:
+    keys = args.get("keys", "")
+    if not keys:
+        return [{"type": "text", "text": "Error: keys is required"}]
+    data = _api_post(f"/action/hotkey?keys={urllib.parse.quote(keys)}")
+    return [{"type": "text", "text": f"Pressed {keys}: {'SUCCESS' if data.get('success') else 'FAILED'}"}]
+
+
+def handle_scroll(args: dict) -> list:
+    amount = args.get("amount", 3)
+    data = _api_post(f"/action/scroll?amount={amount}")
+    direction = "down" if amount > 0 else "up"
+    return [{"type": "text", "text": f"Scrolled {direction} ({abs(amount)}): {'SUCCESS' if data.get('success') else 'FAILED'}"}]
+
+
+def handle_monitor_info(args: dict) -> list:
+    try:
+        import mss
+        with mss.mss() as sct:
+            lines = ["## Monitor Layout"]
+            for i, m in enumerate(sct.monitors):
+                if i == 0:
+                    lines.append(f"- **Virtual Desktop**: {m['width']}x{m['height']} at ({m['left']},{m['top']})")
+                else:
+                    lines.append(f"- **Monitor {i}**: {m['width']}x{m['height']} at ({m['left']},{m['top']})")
+            # Also show which windows are on which monitor
+            windows = _api_get("/windows/list")
+            if windows and "windows" in windows:
+                lines.append("\n## Windows by Monitor")
+                for w in windows["windows"]:
+                    if not w.get("is_visible") or w.get("is_minimized"):
+                        continue
+                    wx = w.get("x", 0)
+                    wy = w.get("y", 0)
+                    mon = "?"
+                    for j, m in enumerate(sct.monitors):
+                        if j == 0:
+                            continue
+                        if m["left"] <= wx < m["left"] + m["width"] and m["top"] <= wy < m["top"] + m["height"]:
+                            mon = str(j)
+                            break
+                    lines.append(f"  - Monitor {mon}: **{w['title'][:50]}** at ({wx},{wy}) {w.get('width',0)}x{w.get('height',0)}")
+            return [{"type": "text", "text": "\n".join(lines)}]
+    except Exception as e:
+        return [{"type": "text", "text": f"Error getting monitor info: {e}"}]
+
+
+def handle_see_monitor(args: dict) -> list:
+    monitor = args.get("monitor", 1)
+    mode = args.get("mode", "medium_res")
+    try:
+        import mss, io, base64
+        from PIL import Image
+        with mss.mss() as sct:
+            if monitor >= len(sct.monitors):
+                return [{"type": "text", "text": f"Monitor {monitor} not found. Max: {len(sct.monitors)-1}"}]
+            mon = sct.monitors[monitor]
+            img = sct.grab(mon)
+            pil_img = Image.frombytes("RGB", (img.width, img.height), img.rgb)
+
+            # Resize based on mode
+            max_w = {"low_res": 640, "medium_res": 1280, "full_res": 1920}.get(mode, 1280)
+            if pil_img.width > max_w:
+                ratio = max_w / pil_img.width
+                pil_img = pil_img.resize((max_w, int(pil_img.height * ratio)), Image.LANCZOS)
+
+            buf = io.BytesIO()
+            pil_img.save(buf, format="WEBP", quality=85)
+            b64 = base64.b64encode(buf.getvalue()).decode()
+
+            # Get active window info
+            active = _api_get("/windows/active") or {}
+            text = (
+                f"## Monitor {monitor} ({mon['width']}x{mon['height']})\n"
+                f"**Active Window**: {active.get('title', '?')}\n"
+                f"**Position**: ({mon['left']},{mon['top']})\n"
+            )
+            return [
+                {"type": "text", "text": text},
+                {"type": "image", "data": b64, "mimeType": "image/webp"},
+            ]
+    except Exception as e:
+        return [{"type": "text", "text": f"Error capturing monitor {monitor}: {e}"}]
+
+
 HANDLERS = {
     "see_screen": handle_see_screen,
+    "perception": handle_perception,
+    "watch_screen": handle_watch_screen,
     "see_changes": handle_see_changes,
     "annotate_screen": handle_annotate,
     "read_screen_text": handle_read_text,
@@ -571,6 +1176,19 @@ HANDLERS = {
     "write_file": handle_write_file,
     "get_clipboard": handle_get_clipboard,
     "agent_status": handle_agent_status,
+    # Human-like navigation
+    "focus_window": handle_focus_window,
+    "browser_navigate": handle_browser_navigate,
+    "browser_tabs": handle_browser_tabs,
+    "click_screen": handle_click_screen,
+    "keyboard": handle_keyboard,
+    "scroll": handle_scroll,
+    "monitor_info": handle_monitor_info,
+    "see_monitor": handle_see_monitor,
+    # Token management
+    "token_status": handle_token_status,
+    "set_token_mode": handle_set_token_mode,
+    "set_token_budget": handle_set_token_budget,
 }
 
 
@@ -583,27 +1201,57 @@ def run_mcp_stdio():
     """
     import sys
 
+    # Debug log to file
+    _logf = open(os.path.join(os.path.dirname(__file__), "..", "mcp_debug.log"), "w")
+    def _log(msg):
+        _logf.write(f"{msg}\n")
+        _logf.flush()
+
     def send(msg: dict):
         data = json.dumps(msg)
-        sys.stdout.write(f"Content-Length: {len(data.encode('utf-8'))}\r\n\r\n{data}")
+        sys.stdout.write(data + "\n")
         sys.stdout.flush()
 
+    _log(f"MCP server starting. Python: {sys.executable}")
+
     def read_message() -> dict:
-        # Read headers
+        """Read a JSON-RPC message. Supports both raw JSON lines and LSP Content-Length framing."""
+        line = sys.stdin.readline()
+        if line == "":
+            _log("EOF detected, exiting")
+            sys.exit(0)
+        line = line.strip()
+        if not line:
+            return {}
+        _log(f"read: {line[:120]}")
+
+        # If line starts with '{', it's raw JSON (Claude Code style)
+        if line.startswith("{"):
+            return json.loads(line)
+
+        # Otherwise it's an LSP header (Content-Length: N)
         headers = {}
+        if ":" in line:
+            key, val = line.split(":", 1)
+            headers[key.strip()] = val.strip()
+        # Read remaining headers until blank line
         while True:
-            line = sys.stdin.readline()
-            if line == "\r\n" or line == "\n" or line == "":
+            h = sys.stdin.readline()
+            if h == "":
+                sys.exit(0)
+            h = h.strip()
+            if h == "":
                 break
-            if ":" in line:
-                key, val = line.split(":", 1)
+            if ":" in h:
+                key, val = h.split(":", 1)
                 headers[key.strip()] = val.strip()
 
         content_length = int(headers.get("Content-Length", 0))
         if content_length == 0:
             return {}
-
         body = sys.stdin.read(content_length)
+        if not body:
+            sys.exit(0)
         return json.loads(body)
 
     # MCP handshake loop
@@ -634,15 +1282,35 @@ def run_mcp_stdio():
                 pass  # No response needed
 
             elif method == "tools/list":
+                allowed = _get_allowed_tools()
+                filtered_tools = [t for t in TOOLS if t["name"] in allowed]
                 send({
                     "jsonrpc": "2.0",
                     "id": msg_id,
-                    "result": {"tools": TOOLS},
+                    "result": {"tools": filtered_tools},
                 })
 
             elif method == "tools/call":
                 tool_name = msg.get("params", {}).get("name", "")
                 tool_args = msg.get("params", {}).get("arguments", {})
+
+                # License gate: block pro-only tools for free users
+                allowed = _get_allowed_tools()
+                if tool_name not in allowed:
+                    send({
+                        "jsonrpc": "2.0",
+                        "id": msg_id,
+                        "result": {
+                            "content": [{
+                                "type": "text",
+                                "text": f"Tool '{tool_name}' requires ILUMINATY Pro ($29/mo).\n"
+                                        f"Upgrade at: https://iluminaty.dev/#pricing\n"
+                                        f"Set your ILUMINATY_KEY env var after subscribing.",
+                            }],
+                            "isError": True,
+                        },
+                    })
+                    continue
 
                 handler = HANDLERS.get(tool_name)
                 if handler:
