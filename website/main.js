@@ -29,7 +29,7 @@
 
   // ─── Scroll Reveal (IntersectionObserver) ───
   const revealElements = document.querySelectorAll(
-    ".section-badge, .problem-card, .solution-step, .layer-row, " +
+    ".section-badge, .problem-card, .flow-step, .layer, " +
     ".feature-card, .compare-table, .code-tabs, .start-card, " +
     "h2, .hero-stats, .hero-actions"
   );
@@ -38,9 +38,10 @@
     entries.forEach((entry) => {
       if (entry.isIntersecting) {
         entry.target.classList.add("revealed");
+        revealObserver.unobserve(entry.target);
         // Stagger children if it's a grid/row container
         const children = entry.target.parentElement?.querySelectorAll(
-          ".problem-card, .feature-card, .start-card, .solution-step"
+          ".problem-card, .feature-card, .start-card, .flow-step"
         );
         if (children && children.length > 1) {
           children.forEach((child, i) => {
@@ -68,6 +69,7 @@
       if (entry.isIntersecting && !statsCounted) {
         statsCounted = true;
         animateStats();
+        statsObserver.disconnect();
       }
     });
   }, { threshold: 0.5 });
@@ -123,8 +125,8 @@
     });
   });
 
-  // ─── Layer rows hover glow ───
-  document.querySelectorAll(".layer-row").forEach((row) => {
+  // ─── Layer hover glow ───
+  document.querySelectorAll(".layer").forEach((row) => {
     row.addEventListener("mouseenter", () => {
       row.style.borderColor = "rgba(0, 255, 136, 0.4)";
     });
@@ -144,19 +146,24 @@
     }
   }, { passive: true });
 
-  // ─── CSS for reveal animations (inject once) ───
-  const style = document.createElement("style");
-  style.textContent = `
-    .reveal-hidden {
-      opacity: 0;
-      transform: translateY(30px);
-      transition: opacity 0.6s ease, transform 0.6s ease;
-    }
-    .reveal-hidden.revealed {
-      opacity: 1;
-      transform: translateY(0);
-    }
-  `;
-  document.head.appendChild(style);
+  // ─── Hamburger menu toggle ───
+  const hamburger = document.querySelector(".nav-hamburger");
+  const navLinks = document.querySelector(".nav-links");
+
+  if (hamburger && navLinks) {
+    hamburger.addEventListener("click", () => {
+      const isOpen = navLinks.classList.toggle("open");
+      hamburger.classList.toggle("active");
+      hamburger.setAttribute("aria-expanded", isOpen);
+    });
+    // Close menu when a nav link is clicked
+    navLinks.querySelectorAll("a").forEach((link) => {
+      link.addEventListener("click", () => {
+        navLinks.classList.remove("open");
+        hamburger.classList.remove("active");
+        hamburger.setAttribute("aria-expanded", "false");
+      });
+    });
+  }
 
 })();

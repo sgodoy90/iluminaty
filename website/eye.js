@@ -558,8 +558,11 @@
 
   // ─── Main loop ───
   let lastTime = 0;
+  let rafId = null;
+  let isVisible = true;
 
   function frame(ts) {
+    if (!isVisible) { rafId = null; return; }
     const dt = lastTime ? Math.min(ts - lastTime, 50) : 16;
     lastTime = ts;
     time += dt;
@@ -602,8 +605,27 @@
     // Iris + pupil (center)
     drawIris();
 
-    requestAnimationFrame(frame);
+    rafId = requestAnimationFrame(frame);
   }
+
+  // ─── Visibility observer — pause when off-screen ───
+  const canvasObserver = new IntersectionObserver((entries) => {
+    entries.forEach((entry) => {
+      if (entry.isIntersecting) {
+        if (!isVisible) {
+          isVisible = true;
+          lastTime = 0;
+          rafId = requestAnimationFrame(frame);
+        }
+      } else {
+        isVisible = false;
+        if (rafId) {
+          cancelAnimationFrame(rafId);
+          rafId = null;
+        }
+      }
+    });
+  }, { threshold: 0 });
 
   // ─── Events ───
   function onMouseMove(e) {
@@ -626,6 +648,15 @@
     }
   }
 
+  // ─── Debounce utility ───
+  function debounce(fn, ms) {
+    let timer;
+    return function () {
+      clearTimeout(timer);
+      timer = setTimeout(fn, ms);
+    };
+  }
+
   // ─── Init ───
   function init() {
     resize();
@@ -640,14 +671,15 @@
     canvas.addEventListener("mousemove", onMouseMove);
     canvas.addEventListener("mouseleave", onMouseLeave);
     canvas.addEventListener("touchmove", onTouchMove, { passive: true });
-    window.addEventListener("resize", () => {
+    window.addEventListener("resize", debounce(() => {
       resize();
       initParticles();
       initBgStars();
       initTriParticles();
-    });
+    }, 200));
 
-    requestAnimationFrame(frame);
+    canvasObserver.observe(canvas);
+    rafId = requestAnimationFrame(frame);
   }
 
   // Start when DOM ready
