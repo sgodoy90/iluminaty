@@ -44,6 +44,7 @@ fn stop_server(state: State<ServerProcess>) -> Result<String, String> {
     let mut proc = state.0.lock().map_err(|e| e.to_string())?;
     if let Some(ref mut child) = *proc {
         child.kill().map_err(|e| e.to_string())?;
+        let _ = child.wait();
         *proc = None;
         Ok("Server stopped".into())
     } else {
@@ -52,22 +53,35 @@ fn stop_server(state: State<ServerProcess>) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn server_status(state: State<ServerProcess>) -> ServerStatus {
-    let proc = state.0.lock().unwrap();
+fn server_status(state: State<ServerProcess>) -> Result<ServerStatus, String> {
+    let mut proc = state.0.lock().unwrap_or_else(|e| e.into_inner());
+    // Check if process actually exited (R4: stale status fix)
+    let exited = if let Some(ref mut child) = *proc {
+        matches!(child.try_wait(), Ok(Some(_)))
+    } else {
+        false
+    };
+    if exited {
+        *proc = None;
+    }
     match &*proc {
-        Some(child) => ServerStatus {
+        Some(child) => Ok(ServerStatus {
             running: true,
             pid: Some(child.id()),
-        },
-        None => ServerStatus {
+        }),
+        None => Ok(ServerStatus {
             running: false,
             pid: None,
-        },
+        }),
     }
 }
 
 #[tauri::command]
 async fn api_get(endpoint: String) -> Result<String, String> {
+    // R5: SSRF validation
+    if !endpoint.starts_with('/') || endpoint.contains("://") || endpoint.contains('@') {
+        return Err("Invalid endpoint".into());
+    }
     let url = format!("http://127.0.0.1:8420{}", endpoint);
     let resp = reqwest::get(&url)
         .await
@@ -79,6 +93,10 @@ async fn api_get(endpoint: String) -> Result<String, String> {
 
 #[tauri::command]
 async fn api_post(endpoint: String, body: String) -> Result<String, String> {
+    // R5: SSRF validation
+    if !endpoint.starts_with('/') || endpoint.contains("://") || endpoint.contains('@') {
+        return Err("Invalid endpoint".into());
+    }
     let url = format!("http://127.0.0.1:8420{}", endpoint);
     let client = reqwest::Client::new();
     let resp = client
@@ -212,6 +230,7 @@ fn stop_server_internal(state: &State<ServerProcess>) -> Result<(), String> {
     let mut proc = state.0.lock().map_err(|e| e.to_string())?;
     if let Some(ref mut child) = *proc {
         let _ = child.kill();
+        let _ = child.wait();
     }
     *proc = None;
     Ok(())

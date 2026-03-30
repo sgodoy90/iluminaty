@@ -2,6 +2,7 @@
    ILUMINATY Desktop App — Eye of God Theme
    ═══════════════════════════════════════════════ */
 
+/* C1: Google Fonts — cached after first load; offline fallback to system fonts defined in :root */
 @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;700;900&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
 *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
@@ -441,7 +442,7 @@ select.setting-input option { background: var(--bg3); color: var(--text); }
 
 /* Toggle switch */
 .toggle { position: relative; width: 40px; height: 22px; cursor: pointer; }
-.toggle input { display: none; }
+.toggle input { position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden; }
 .toggle-slider {
   position: absolute; inset: 0;
   background: var(--bg4);

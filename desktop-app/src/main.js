@@ -20,6 +20,17 @@ let logs = [];
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
 
+// ─── XSS Helper (J1/J2) ───
+function escapeHtml(str) {
+  if (str == null) return "";
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
 // ─── Splash Screen ───
 function initSplash() {
   const bar = $("#splash-bar");
@@ -146,18 +157,22 @@ async function toggleServer() {
     return;
   }
 
-  if (serverOnline) {
-    await invoke("stop_server");
-    serverOnline = false;
-    updateServerUI();
-    stopPolling();
-    stopVisionPolling();
-    addLog("system", "Server stopped", "ok");
-  } else {
-    const result = await invoke("start_server");
-    addLog("system", result, "ok");
-    // Give it a moment to start
-    setTimeout(checkServer, 2000);
+  try {
+    if (serverOnline) {
+      await invoke("stop_server");
+      serverOnline = false;
+      updateServerUI();
+      stopPolling();
+      stopVisionPolling();
+      addLog("system", "Server stopped", "ok");
+    } else {
+      const result = await invoke("start_server");
+      addLog("system", result, "ok");
+      // Give it a moment to start
+      setTimeout(checkServer, 2000);
+    }
+  } catch (err) {
+    addLog("system", "Server error: " + (err.message || err), "fail");
   }
 }
 
@@ -219,8 +234,8 @@ async function pollData() {
           ? new Date(a.timestamp * 1000).toLocaleTimeString()
           : "--:--";
         entry.innerHTML = `
-          <span class="log-time">${time}</span>
-          <span class="log-action">${a.action || "?"}</span>
+          <span class="log-time">${escapeHtml(time)}</span>
+          <span class="log-action">${escapeHtml(a.action || "?")}</span>
           <span class="log-status ${a.success ? "ok" : "fail"}">${a.success ? "OK" : "FAIL"}</span>
         `;
         container.appendChild(entry);
@@ -247,22 +262,19 @@ async function pollVision() {
   if (!serverOnline) return;
 
   try {
-    const resp = await fetch(API + "/vision/snapshot");
-    if (resp.ok) {
-      const data = await resp.json();
-      if (data && data.image) {
-        const img = $("#vision-img");
-        const placeholder = $("#vision-placeholder");
-        const overlay = $("#vision-overlay");
+    const data = await apiGet("/vision/snapshot");
+    if (data && data.image) {
+      const img = $("#vision-img");
+      const placeholder = $("#vision-placeholder");
+      const overlay = $("#vision-overlay");
 
-        img.src = "data:image/jpeg;base64," + data.image;
-        img.style.display = "block";
-        placeholder.style.display = "none";
-        overlay.style.display = "flex";
+      img.src = "data:image/jpeg;base64," + data.image;
+      img.style.display = "block";
+      placeholder.style.display = "none";
+      overlay.style.display = "flex";
 
-        if (data.width && data.height) {
-          $("#vision-res").textContent = `${data.width}x${data.height}`;
-        }
+      if (data.width && data.height) {
+        $("#vision-res").textContent = `${data.width}x${data.height}`;
       }
     }
   } catch {
@@ -281,9 +293,7 @@ async function executeAgent() {
   result.textContent = "Executing...";
   result.style.color = "var(--yellow)";
 
-  const data = await apiPost(
-    `/agent/do?instruction=${encodeURIComponent(instruction)}`
-  );
+  const data = await apiPost("/agent/do", { instruction });
 
   if (data) {
     result.style.color = data.success ? "var(--green)" : "var(--red)";
@@ -332,10 +342,10 @@ function renderLogs() {
     .map(
       (l) => `
     <div class="log-entry">
-      <span class="log-time">${l.time}</span>
-      <span class="log-action">${l.action}</span>
-      <span class="log-detail">${l.detail}</span>
-      <span class="log-status ${l.status}">${l.status.toUpperCase()}</span>
+      <span class="log-time">${escapeHtml(l.time)}</span>
+      <span class="log-action">${escapeHtml(l.action)}</span>
+      <span class="log-detail">${escapeHtml(l.detail)}</span>
+      <span class="log-status ${escapeHtml(l.status)}">${escapeHtml(l.status).toUpperCase()}</span>
     </div>
   `
     )
@@ -343,6 +353,36 @@ function renderLogs() {
 }
 
 // ─── Action Buttons ───
+// D1: Actions that need parameters before calling the API
+const ACTION_PARAMS = {
+  click: { prompt: "Enter coordinates (x, y):", param: "coordinates" },
+  double_click: { prompt: "Enter coordinates (x, y):", param: "coordinates" },
+  right_click: { prompt: "Enter coordinates (x, y):", param: "coordinates" },
+  drag_drop: { prompt: "Enter start and end (x1,y1,x2,y2):", param: "coordinates" },
+  move_mouse: { prompt: "Enter coordinates (x, y):", param: "coordinates" },
+  scroll: { prompt: "Enter scroll amount (positive=down, negative=up):", param: "amount" },
+  typewrite: { prompt: "Enter text to type:", param: "text" },
+  press_key: { prompt: "Enter key name (e.g. enter, tab, escape):", param: "key" },
+  hotkey: { prompt: "Enter hotkey combo (e.g. ctrl+s):", param: "keys" },
+  set_clipboard: { prompt: "Enter text for clipboard:", param: "text" },
+  click_element: { prompt: "Enter element name or selector:", param: "selector" },
+  type_in_field: { prompt: "Enter field name and text (field: text):", param: "input" },
+  select_option: { prompt: "Enter selector and option (selector: option):", param: "input" },
+  find_element: { prompt: "Enter element name or text to find:", param: "query" },
+  vscode_open: { prompt: "Enter file path to open:", param: "path" },
+  terminal_run: { prompt: "Enter command to run:", param: "command" },
+  git_commit: { prompt: "Enter commit message:", param: "message" },
+  browser_navigate: { prompt: "Enter URL to navigate to:", param: "url" },
+  browser_click: { prompt: "Enter CSS selector to click:", param: "selector" },
+  browser_fill: { prompt: "Enter selector and value (selector: value):", param: "input" },
+  browser_eval: { prompt: "Enter JavaScript to evaluate:", param: "code" },
+  file_read: { prompt: "Enter file path:", param: "path" },
+  file_write: { prompt: "Enter file path:", param: "path" },
+  file_list: { prompt: "Enter directory path:", param: "path" },
+  file_search: { prompt: "Enter search pattern:", param: "pattern" },
+  file_copy: { prompt: "Enter source and destination (src: dst):", param: "paths" },
+};
+
 function initActionButtons() {
   $$(".action-btn").forEach((btn) => {
     btn.addEventListener("click", async () => {
@@ -352,8 +392,15 @@ function initActionButtons() {
         return;
       }
 
-      // For simple demo actions, just call the endpoint
-      const data = await apiPost(`/action/${action}`);
+      let body = {};
+      const paramInfo = ACTION_PARAMS[action];
+      if (paramInfo) {
+        const input = prompt(paramInfo.prompt);
+        if (input === null) return; // cancelled
+        body[paramInfo.param] = input;
+      }
+
+      const data = await apiPost(`/action/${action}`, body);
       if (data) {
         addLog(action, data.message || "Done", data.success ? "ok" : "warn");
       } else {
@@ -389,6 +436,41 @@ function init() {
   $("#btn-clear-logs").addEventListener("click", () => {
     logs = [];
     renderLogs();
+  });
+
+  // J11: Settings save
+  const saveSettings = async () => {
+    const settings = {
+      autonomy: $("#set-autonomy").value,
+      capture_interval: parseInt($("#set-interval").value, 10),
+      ocr_enabled: $("#set-ocr").checked,
+      buffer_size: parseInt($("#set-buffer").value, 10),
+      port: parseInt($("#set-port").value, 10),
+      browser_port: parseInt($("#set-browser-port").value, 10),
+      rate_limit: parseInt($("#set-rate").value, 10),
+      kill_zones: $("#set-killzones").checked,
+      audit_trail: $("#set-audit").checked,
+      mcp_enabled: $("#set-mcp").checked,
+    };
+    const result = await apiPost("/settings", settings);
+    if (result) {
+      addLog("settings", "Settings saved (apply on next server restart)", "ok");
+    } else {
+      addLog("settings", "Failed to save settings", "fail");
+    }
+  };
+  const saveBtn = $("#btn-save-settings");
+  if (saveBtn) saveBtn.addEventListener("click", saveSettings);
+
+  // J6: Pause/resume polling when window is hidden
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      stopPolling();
+      stopVisionPolling();
+    } else if (serverOnline) {
+      startPolling();
+      startVisionPolling();
+    }
   });
 
   // Check server status periodically

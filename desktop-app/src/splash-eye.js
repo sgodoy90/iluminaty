@@ -228,14 +228,23 @@
   initAll();
   ctx.fillStyle = "rgba(10,10,18,1)";
   ctx.fillRect(0, 0, W, H);
-  window.addEventListener("resize", () => { resize(); initAll(); });
+  const resizeHandler = () => { resize(); initAll(); };
+  window.addEventListener("resize", resizeHandler);
   animId = requestAnimationFrame(frame);
 
-  // Stop animation when splash hides
   const observer = new MutationObserver(() => {
     const splash = document.getElementById("splash");
     if (splash && splash.classList.contains("hidden")) {
       if (animId) cancelAnimationFrame(animId);
+      animId = null;
+      // S1: Free animation memory
+      particles = [];
+      nebulas = [];
+      triParticles = [];
+      bgStars = [];
+      canvas.width = 0;
+      canvas.height = 0;
+      window.removeEventListener("resize", resizeHandler);
       observer.disconnect();
     }
   });
