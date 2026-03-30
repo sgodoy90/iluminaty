@@ -23,6 +23,7 @@ import sys
 import base64
 import time
 import urllib.request
+import urllib.parse
 
 import os
 
@@ -169,6 +170,146 @@ TOOLS = [
             "properties": {},
         },
     },
+    # ─── v1.0: Computer Use Tools ───
+    {
+        "name": "do_action",
+        "description": (
+            "Execute an action on the user's computer using natural language. "
+            "Examples: 'save the file', 'open Chrome', 'click the Submit button', "
+            "'type hello world', 'scroll down', 'copy', 'paste'. "
+            "The AI interprets the instruction, resolves the best method (API > keyboard > UI tree > vision), "
+            "verifies the result, and auto-recovers on failure."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "instruction": {
+                    "type": "string",
+                    "description": "Natural language instruction (e.g. 'save the file', 'click Submit')",
+                },
+            },
+            "required": ["instruction"],
+        },
+    },
+    {
+        "name": "click_element",
+        "description": (
+            "Click on a UI element by name using the accessibility tree. "
+            "No coordinates needed - finds the element automatically. "
+            "Example: click_element('Save') clicks the Save button."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Element name or label"},
+                "role": {"type": "string", "description": "Element role (button, textfield, etc)", "default": ""},
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "type_text",
+        "description": (
+            "Type text using the keyboard. Supports unicode. "
+            "The text is typed at the current cursor position."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "Text to type"},
+            },
+            "required": ["text"],
+        },
+    },
+    {
+        "name": "run_command",
+        "description": (
+            "Execute a shell command and return the output. "
+            "Example: 'npm test', 'python script.py', 'git status'."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "description": "Shell command to execute"},
+                "timeout": {"type": "number", "description": "Timeout in seconds (default 30)", "default": 30},
+            },
+            "required": ["command"],
+        },
+    },
+    {
+        "name": "list_windows",
+        "description": (
+            "List all visible windows on the desktop with their titles, positions, and sizes."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "find_ui_element",
+        "description": (
+            "Find a UI element on screen using the accessibility tree. "
+            "Returns element info including position, size, and state. "
+            "Use this before clicking to verify the element exists."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Element name to search for"},
+                "role": {"type": "string", "description": "Element role filter (button, textfield, etc)", "default": ""},
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "read_file",
+        "description": (
+            "Read the contents of a file from the filesystem (sandboxed). "
+            "Returns the file content as text."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "File path to read"},
+            },
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "write_file",
+        "description": (
+            "Write content to a file (sandboxed, auto-backup). "
+            "Creates parent directories if needed."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "File path to write"},
+                "content": {"type": "string", "description": "Content to write"},
+            },
+            "required": ["path", "content"],
+        },
+    },
+    {
+        "name": "get_clipboard",
+        "description": "Read the current clipboard content.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "agent_status",
+        "description": (
+            "Get the full agent status: actions enabled, safety state, "
+            "autonomy level, available capabilities, and recent action log."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
 ]
 
 
@@ -291,6 +432,121 @@ def handle_audio_level(args: dict) -> dict:
         return [{"type": "text", "text": "Audio not enabled. Start with --audio mic"}]
 
 
+# ─── v1.0: Computer Use Handlers ───
+
+def handle_do_action(args: dict) -> list:
+    instruction = args.get("instruction", "")
+    if not instruction:
+        return [{"type": "text", "text": "Error: instruction is required"}]
+    data = _api_post(f"/agent/do?instruction={urllib.parse.quote(instruction)}")
+    intent = data.get("intent", {})
+    result = data.get("result", {})
+    verification = data.get("verification")
+    recovery = data.get("recovery")
+
+    lines = [
+        f"## Action: {intent.get('action', 'unknown')}",
+        f"**Intent**: {instruction} → {intent.get('action')} (confidence: {intent.get('confidence', 0)})",
+        f"**Result**: {'SUCCESS' if result.get('success') else 'FAILED'} via {result.get('method_used', 'none')} ({result.get('total_ms', 0):.0f}ms)",
+        f"**Message**: {result.get('message', '')}",
+    ]
+    if verification:
+        lines.append(f"**Verified**: {'YES' if verification.get('verified') else 'NO'} ({verification.get('method', '')})")
+    if recovery:
+        lines.append(f"**Recovery**: {'Recovered' if recovery.get('recovered') else 'Failed'} - {recovery.get('final_message', '')}")
+    return [{"type": "text", "text": "\n".join(lines)}]
+
+
+def handle_click_element(args: dict) -> list:
+    name = args.get("name", "")
+    role = args.get("role", "")
+    query = f"name={urllib.parse.quote(name)}"
+    if role:
+        query += f"&role={urllib.parse.quote(role)}"
+    data = _api_post(f"/ui/click?{query}")
+    return [{"type": "text", "text": f"Click element '{name}': {'SUCCESS' if data.get('success') else 'FAILED'} - {data.get('message', '')}"}]
+
+
+def handle_type_text(args: dict) -> list:
+    text = args.get("text", "")
+    data = _api_post(f"/action/type?text={urllib.parse.quote(text)}")
+    return [{"type": "text", "text": f"Typed {len(text)} chars: {'SUCCESS' if data.get('success') else 'FAILED'}"}]
+
+
+def handle_run_command(args: dict) -> list:
+    cmd = args.get("command", "")
+    timeout = args.get("timeout", 30)
+    data = _api_post(f"/terminal/exec?cmd={urllib.parse.quote(cmd)}&timeout={timeout}")
+    lines = [
+        f"## Command: `{cmd}`",
+        f"**Status**: {'SUCCESS' if data.get('success') else 'FAILED'} (exit: {data.get('return_code', '?')}, {data.get('duration_ms', 0):.0f}ms)",
+    ]
+    stdout = data.get("stdout", "")
+    stderr = data.get("stderr", "")
+    if stdout:
+        lines.append(f"\n**stdout**:\n```\n{stdout[:3000]}\n```")
+    if stderr:
+        lines.append(f"\n**stderr**:\n```\n{stderr[:1000]}\n```")
+    return [{"type": "text", "text": "\n".join(lines)}]
+
+
+def handle_list_windows(args: dict) -> list:
+    data = _api_get("/windows/list")
+    windows = data.get("windows", [])
+    lines = [f"## Windows ({len(windows)})"]
+    for w in windows[:30]:
+        lines.append(f"- **{w.get('title', '?')[:60]}** (pid:{w.get('pid')}, {w.get('width')}x{w.get('height')})")
+    return [{"type": "text", "text": "\n".join(lines)}]
+
+
+def handle_find_ui_element(args: dict) -> list:
+    name = args.get("name", "")
+    role = args.get("role", "")
+    query = f"name={urllib.parse.quote(name)}"
+    if role:
+        query += f"&role={urllib.parse.quote(role)}"
+    data = _api_get(f"/ui/find?{query}")
+    el = data.get("element")
+    if el:
+        return [{"type": "text", "text": f"Found: **{el.get('name')}** ({el.get('role')}) at ({el.get('x')},{el.get('y')}) {el.get('width')}x{el.get('height')} enabled={el.get('is_enabled')}"}]
+    return [{"type": "text", "text": f"Element '{name}' not found on screen."}]
+
+
+def handle_read_file(args: dict) -> list:
+    path = args.get("path", "")
+    data = _api_get(f"/files/read?path={urllib.parse.quote(path)}")
+    if data.get("success"):
+        content = data.get("content", "")
+        return [{"type": "text", "text": f"## {path} ({data.get('lines', 0)} lines, {data.get('size', 0)}B)\n```\n{content[:5000]}\n```"}]
+    return [{"type": "text", "text": f"Failed to read {path}: {data.get('error', 'unknown')}"}]
+
+
+def handle_write_file(args: dict) -> list:
+    path = args.get("path", "")
+    content = args.get("content", "")
+    data = _api_post(f"/files/write?path={urllib.parse.quote(path)}&content={urllib.parse.quote(content)}")
+    if data.get("success"):
+        return [{"type": "text", "text": f"Written {data.get('size', 0)}B to {path}"}]
+    return [{"type": "text", "text": f"Failed to write {path}: {data.get('error', 'unknown')}"}]
+
+
+def handle_get_clipboard(args: dict) -> list:
+    data = _api_get("/clipboard/read")
+    text = data.get("text", "")
+    return [{"type": "text", "text": f"Clipboard ({len(text)} chars):\n```\n{text[:2000]}\n```" if text else "Clipboard is empty."}]
+
+
+def handle_agent_status(args: dict) -> list:
+    data = _api_get("/agent/status")
+    lines = ["## Agent Status"]
+    for section, info in data.items():
+        if isinstance(info, dict):
+            lines.append(f"\n**{section}**:")
+            for k, v in list(info.items())[:10]:
+                lines.append(f"  - {k}: {v}")
+    return [{"type": "text", "text": "\n".join(lines)}]
+
+
 HANDLERS = {
     "see_screen": handle_see_screen,
     "see_changes": handle_see_changes,
@@ -299,6 +555,17 @@ HANDLERS = {
     "screen_status": handle_status,
     "get_context": handle_context,
     "get_audio_level": handle_audio_level,
+    # v1.0: Computer Use
+    "do_action": handle_do_action,
+    "click_element": handle_click_element,
+    "type_text": handle_type_text,
+    "run_command": handle_run_command,
+    "list_windows": handle_list_windows,
+    "find_ui_element": handle_find_ui_element,
+    "read_file": handle_read_file,
+    "write_file": handle_write_file,
+    "get_clipboard": handle_get_clipboard,
+    "agent_status": handle_agent_status,
 }
 
 
@@ -353,7 +620,7 @@ def run_mcp_stdio():
                         "capabilities": {"tools": {}},
                         "serverInfo": {
                             "name": "iluminaty",
-                            "version": "0.2.0",
+                            "version": "1.0.0",
                         },
                     },
                 })

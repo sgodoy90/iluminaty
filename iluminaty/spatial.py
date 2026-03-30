@@ -46,13 +46,19 @@ class SpatialMap:
     """
     Mapa espacial de la pantalla.
     Divide la pantalla en zonas semanticas y las nombra.
+    Integra datos de OCR + UI Tree (Capa 2) cuando disponible.
     """
 
     def __init__(self):
         self._zones: list[ScreenZone] = []
+        self._ui_elements: list[dict] = []  # Elementos del UI Tree
         self._frame_width: int = 0
         self._frame_height: int = 0
         self._last_analysis: float = 0
+
+    def set_ui_elements(self, elements: list[dict]):
+        """Inyecta elementos del UI Tree para enriquecer el mapa."""
+        self._ui_elements = elements
 
     def analyze_from_ocr(self, ocr_blocks: list, frame_width: int, frame_height: int):
         """
@@ -114,6 +120,44 @@ class SpatialMap:
             coverage_pct=100.0, content_type="unknown"
         )]
 
+        # Enriquecer con UI Tree si disponible
+        if self._ui_elements:
+            self._enrich_with_ui_tree()
+
+    def _enrich_with_ui_tree(self):
+        """Agrega elementos del UI Tree como zonas interactivas."""
+        for el in self._ui_elements:
+            role = el.get("role", "")
+            name = el.get("name", "")
+            if not name or role in ("pane", "window", "group"):
+                continue  # Skip containers
+
+            x, y = el.get("x", 0), el.get("y", 0)
+            w, h = el.get("width", 0), el.get("height", 0)
+            if w <= 0 or h <= 0:
+                continue
+
+            # Mapear role a content_type
+            content_type = "ui"
+            if role in ("edit", "textfield", "document"):
+                content_type = "text"
+            elif role in ("button", "menuitem", "checkbox", "radiobutton"):
+                content_type = "ui"
+
+            total_area = max(self._frame_width * self._frame_height, 1)
+            coverage = (w * h) / total_area * 100
+
+            # Solo agregar elementos significativos
+            if coverage > 0.5:
+                zone_name = f"{role}:{name[:30]}" if name else role
+                self._zones.append(ScreenZone(
+                    name=zone_name,
+                    x=x, y=y, width=w, height=h,
+                    coverage_pct=round(coverage, 1),
+                    content_type=content_type,
+                    last_updated=time.time(),
+                ))
+
     def _classify_content(self, text: str) -> str:
         """Clasifica el tipo de contenido basado en el texto."""
         text_lower = text.lower()
@@ -168,6 +212,19 @@ class SpatialMap:
     def get_zones(self) -> list[dict]:
         return [z.to_dict() for z in self._zones]
 
+    def element_at(self, x: int, y: int) -> Optional[dict]:
+        """Retorna el elemento UI en una posicion (si hay UI Tree data)."""
+        for el in self._ui_elements:
+            ex, ey = el.get("x", 0), el.get("y", 0)
+            ew, eh = el.get("width", 0), el.get("height", 0)
+            if ex <= x < ex + ew and ey <= y < ey + eh:
+                return el
+        return None
+
     @property
     def zone_count(self) -> int:
         return len(self._zones)
+
+    @property
+    def has_ui_tree(self) -> bool:
+        return len(self._ui_elements) > 0

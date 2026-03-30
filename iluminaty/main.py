@@ -20,9 +20,9 @@ from iluminaty.server import app, init_server
 
 BANNER = """
   =============================================
-   ILUMINATY v0.5.0
-   Real-time visual perception for AI
-   Zero-disk - RAM-only - Universal API
+   ILUMINATY v1.0.0
+   Real-time visual perception + action for AI
+   7 Layers - 42+ Actions - Zero-disk
   =============================================
 """
 
@@ -49,7 +49,16 @@ def main():
     parser.add_argument("--audio", type=str, default="off", choices=["off", "mic", "system", "all"],
                         help="Audio capture mode (default: off)")
     parser.add_argument("--audio-buffer", type=int, default=60, help="Audio buffer seconds (default: 60)")
-    
+
+    # v1.0: Computer Use args
+    parser.add_argument("--actions", action="store_true", help="Enable action bridge (mouse/keyboard control)")
+    parser.add_argument("--autonomy", type=str, default="suggest", choices=["suggest", "confirm", "auto"],
+                        help="Autonomy level (default: suggest)")
+    parser.add_argument("--browser-debug-port", type=int, default=9222,
+                        help="Chrome DevTools debug port (default: 9222)")
+    parser.add_argument("--file-sandbox", type=str, nargs="*", default=None,
+                        help="Allowed file system paths for sandbox (default: current dir)")
+
     args = parser.parse_args()
     
     if args.command == "version":
@@ -91,6 +100,10 @@ def main():
         api_key=args.api_key,
         audio_buffer=audio_buffer,
         audio_capture=audio_capture,
+        enable_actions=args.actions,
+        autonomy_level=args.autonomy,
+        browser_debug_port=args.browser_debug_port,
+        file_sandbox_paths=args.file_sandbox,
     )
     
     # ─── Info de arranque ───
@@ -103,16 +116,25 @@ def main():
     print(f"  Audio:     {args.audio}" + (f" ({args.audio_buffer}s buffer)" if args.audio != "off" else ""))
     print(f"  Auth:      {'enabled' if args.api_key else 'disabled'}")
     print(f"  Disk:      ZERO (RAM-only ring buffer)")
+    print(f"  Actions:   {'ENABLED' if args.actions else 'disabled'} (autonomy: {args.autonomy})")
+    print(f"  Browser:   debug port {args.browser_debug_port}")
     print()
-    print(f"  Endpoints:")
-    print(f"    GET  /frame/latest        - last frame (JPEG)")
-    print(f"    GET  /frame/latest?base64 - last frame (base64 JSON)")
-    print(f"    GET  /frames?last=5       - last N frames")
-    print(f"    GET  /frames?seconds=10   - recent frames")
-    print(f"    GET  /buffer/stats        - stats")
+    print(f"  Core Endpoints:")
+    print(f"    GET  /frame/latest        - last frame")
+    print(f"    GET  /vision/snapshot     - AI-ready enriched frame")
     print(f"    WS   /ws/stream           - live stream")
-    print(f"    POST /config              - change config live")
-    print(f"    POST /buffer/flush        - destroy buffer")
+    print(f"    GET  /system/overview     - full system status")
+    print(f"  Action Endpoints (v1.0):")
+    print(f"    POST /agent/do            - intent-based action")
+    print(f"    POST /action/click        - mouse click")
+    print(f"    POST /action/type         - keyboard input")
+    print(f"    GET  /ui/elements         - accessibility tree")
+    print(f"    GET  /windows/list        - window manager")
+    print(f"    POST /terminal/exec       - run commands")
+    print(f"    GET  /git/status          - git operations")
+    print(f"    POST /browser/navigate    - browser control")
+    print(f"    GET  /files/read          - file system sandbox")
+    print(f"    POST /safety/kill         - emergency kill switch")
     print()
     
     # ─── Arrancar captura ───

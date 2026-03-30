@@ -62,6 +62,12 @@ class UnifiedPerception:
     # Profile
     user_context: str
 
+    # Agent State (v1.0)
+    actions_enabled: bool
+    autonomy_level: str  # "suggest", "confirm", "auto"
+    recent_actions: list  # last few actions executed
+    safety_killed: bool
+
     # Meta
     timestamp: float
     monitor_count: int
@@ -115,11 +121,42 @@ class UnifiedPerception:
         if self.user_context:
             sections.append(f"\n{self.user_context}")
 
+        # Agent capabilities (v1.0)
+        if self.actions_enabled and not self.safety_killed:
+            sections.append(
+                f"\n### Agent Capabilities"
+                f"\n**Autonomy**: {self.autonomy_level.upper()} | "
+                f"**Actions**: ENABLED | **Safety**: OK"
+            )
+            if self.autonomy_level == "suggest":
+                sections.append("Mode: SUGGEST — I can see but NOT act. I will suggest actions for the user to approve.")
+            elif self.autonomy_level == "confirm":
+                sections.append("Mode: CONFIRM — I can act but need confirmation for each action.")
+            else:
+                sections.append("Mode: AUTO — I can execute safe and normal actions autonomously. Destructive actions still need confirmation.")
+
+            if self.recent_actions:
+                sections.append("\n**Recent actions**:")
+                for a in self.recent_actions[-5:]:
+                    sections.append(f"  - {a.get('action', '?')}: {'OK' if a.get('success') else 'FAIL'} ({a.get('time', '')})")
+        elif self.safety_killed:
+            sections.append("\n### SAFETY: KILL SWITCH ACTIVE — All actions disabled")
+        else:
+            sections.append("\n### Agent: Actions DISABLED (read-only mode)")
+
         # Instructions
         sections.append(
             "\n### How to Help"
             "\nAn image of the current screen is attached. "
             "You have full visual, audio, and contextual awareness. "
+        )
+        if self.actions_enabled and not self.safety_killed:
+            sections.append(
+                "You can also TAKE ACTIONS on the computer: click, type, "
+                "open apps, manage windows, run commands, navigate browser, "
+                "read/write files, and more. Use the do_action tool. "
+            )
+        sections.append(
             "If there are ALERTS, address them first. "
             "Otherwise, observe and assist based on what the user is doing."
         )
@@ -140,6 +177,10 @@ class UnifiedPerception:
             "alerts": self.active_alerts,
             "layout_zones": self.layout_zones,
             "monitor_count": self.monitor_count,
+            "actions_enabled": self.actions_enabled,
+            "autonomy_level": self.autonomy_level,
+            "safety_killed": self.safety_killed,
+            "recent_actions": self.recent_actions[-5:] if self.recent_actions else [],
             "ai_prompt": self.to_ai_prompt(),
         }
         if include_image:
@@ -182,6 +223,11 @@ class PerceptionFusion:
         active_alerts: list = None,
         # Profile
         user_context: str = "",
+        # Agent State (v1.0)
+        actions_enabled: bool = False,
+        autonomy_level: str = "suggest",
+        recent_actions: list = None,
+        safety_killed: bool = False,
         # Meta
         monitor_count: int = 1,
     ) -> UnifiedPerception:
@@ -216,6 +262,10 @@ class PerceptionFusion:
             screen_description=" ".join(screen_desc_parts),
             active_alerts=active_alerts or [],
             user_context=user_context,
+            actions_enabled=actions_enabled,
+            autonomy_level=autonomy_level,
+            recent_actions=recent_actions or [],
+            safety_killed=safety_killed,
             timestamp=time.time(),
             monitor_count=monitor_count,
         )

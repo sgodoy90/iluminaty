@@ -41,6 +41,26 @@ from .watchdog import Watchdog
 from .router import AIRouter
 from .collab import CollaborativeManager
 
+# v1.0 imports: Computer Use capas
+from .actions import ActionBridge
+from .windows import WindowManager
+from .clipboard import ClipboardManager
+from .process_mgr import ProcessManager
+from .ui_tree import UITree
+from .vscode import VSCodeBridge
+from .terminal import TerminalManager
+from .git_ops import GitOps
+from .browser import BrowserBridge
+from .filesystem import FileSystemSandbox
+from .resolver import ActionResolver
+from .intent import IntentClassifier
+from .planner import TaskPlanner
+from .verifier import ActionVerifier
+from .recovery import ErrorRecovery
+from .safety import SafetySystem
+from .autonomy import AutonomyManager
+from .audit import AuditLog
+
 
 # ─── Server State (BUG-005 fix: single state object with lock) ───
 import threading as _threading
@@ -49,6 +69,7 @@ class _ServerState:
     """Thread-safe server state container."""
     def __init__(self):
         self.lock = _threading.Lock()
+        # Core (v0.5)
         self.buffer: Optional[RingBuffer] = None
         self.capture: Optional[ScreenCapture] = None
         self.api_key: Optional[str] = None
@@ -65,6 +86,25 @@ class _ServerState:
         self.router: Optional[AIRouter] = None
         self.collab: Optional[CollaborativeManager] = None
         self.ws_clients: set = set()
+        # v1.0: Computer Use capas
+        self.actions: Optional[ActionBridge] = None
+        self.windows: Optional[WindowManager] = None
+        self.clipboard: Optional[ClipboardManager] = None
+        self.process_mgr: Optional[ProcessManager] = None
+        self.ui_tree: Optional[UITree] = None
+        self.vscode: Optional[VSCodeBridge] = None
+        self.terminal: Optional[TerminalManager] = None
+        self.git_ops: Optional[GitOps] = None
+        self.browser: Optional[BrowserBridge] = None
+        self.filesystem: Optional[FileSystemSandbox] = None
+        self.resolver: Optional[ActionResolver] = None
+        self.intent: Optional[IntentClassifier] = None
+        self.planner: Optional[TaskPlanner] = None
+        self.verifier: Optional[ActionVerifier] = None
+        self.recovery: Optional[ErrorRecovery] = None
+        self.safety: Optional[SafetySystem] = None
+        self.autonomy: Optional[AutonomyManager] = None
+        self.audit: Optional[AuditLog] = None
 
 _state = _ServerState()
 
@@ -114,7 +154,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="ILUMINATY",
     description="Real-time visual perception for AI. Zero-disk, RAM-only.",
-    version="0.5.0",
+    version="1.0.0",
     lifespan=lifespan,
 )
 
@@ -348,9 +388,14 @@ def init_server(
     api_key: Optional[str] = None,
     audio_buffer: Optional[AudioRingBuffer] = None,
     audio_capture: Optional[AudioCapture] = None,
+    enable_actions: bool = False,
+    autonomy_level: str = "suggest",
+    browser_debug_port: int = 9222,
+    file_sandbox_paths: Optional[list[str]] = None,
 ):
     """Inyecta las dependencias al modulo del server (thread-safe)."""
     with _state.lock:
+        # ─── Core (v0.5) ───
         _state.buffer = buffer
         _state.capture = capture
         _state.api_key = api_key
@@ -368,6 +413,60 @@ def init_server(
         _state.watchdog = Watchdog()
         _state.router = AIRouter()
         _state.collab = CollaborativeManager()
+
+        # ─── v1.0: Computer Use capas ───
+
+        # Capa 7: Safety (primero, todo pasa por aqui)
+        _state.safety = SafetySystem()
+        _state.autonomy = AutonomyManager()
+        _state.autonomy.set_level(autonomy_level)
+        _state.audit = AuditLog()
+
+        # Capa 1: OS Control
+        _state.actions = ActionBridge(enabled=enable_actions)
+        _state.windows = WindowManager()
+        _state.clipboard = ClipboardManager()
+        _state.process_mgr = ProcessManager()
+
+        # Capa 2: UI Intelligence
+        _state.ui_tree = UITree()
+        # Conectar UI Tree al ActionBridge
+        if _state.ui_tree.available:
+            _state.actions.set_ui_tree(_state.ui_tree)
+
+        # Capa 3: App Control
+        _state.vscode = VSCodeBridge()
+        _state.terminal = TerminalManager()
+        _state.git_ops = GitOps()
+
+        # Capa 4: Web
+        _state.browser = BrowserBridge(debug_port=browser_debug_port)
+
+        # Capa 5: File System
+        _state.filesystem = FileSystemSandbox(
+            allowed_paths=file_sandbox_paths or ["."],
+        )
+
+        # Capa 6: Brain (conecta todas las capas)
+        _state.resolver = ActionResolver()
+        _state.resolver.set_layers(
+            actions=_state.actions,
+            ui_tree=_state.ui_tree,
+            vscode=_state.vscode,
+            browser=_state.browser,
+            filesystem=_state.filesystem,
+        )
+        _state.intent = IntentClassifier()
+        _state.planner = TaskPlanner()
+        _state.verifier = ActionVerifier()
+        _state.verifier.set_layers(
+            filesystem=_state.filesystem,
+            ui_tree=_state.ui_tree,
+            browser=_state.browser,
+            actions=_state.actions,
+        )
+        _state.recovery = ErrorRecovery()
+        _state.recovery.set_resolver(_state.resolver)
 
 
 # ─── Vision / AI-ready endpoints ───
@@ -992,6 +1091,647 @@ async def collab_annotate(
     return result
 
 
+# ═══════════════════════════════════════════════════════════════
+# v1.0 ENDPOINTS: Computer Use — 7 Capas
+# ═══════════════════════════════════════════════════════════════
+
+
+# ─── Capa 7: Safety / Autonomy / Audit ───
+
+@app.get("/safety/status")
+async def safety_status(x_api_key: Optional[str] = Header(None)):
+    """Estado del sistema de seguridad."""
+    _check_auth(x_api_key)
+    return {
+        "safety": _state.safety.stats if _state.safety else {},
+        "autonomy": _state.autonomy.stats if _state.autonomy else {},
+        "audit": _state.audit.stats if _state.audit else {},
+    }
+
+
+@app.post("/safety/kill")
+async def safety_kill(x_api_key: Optional[str] = Header(None)):
+    """KILL SWITCH: detiene toda actividad del agente."""
+    _check_auth(x_api_key)
+    if _state.safety:
+        _state.safety.kill()
+    if _state.actions:
+        _state.actions.disable()
+    return {"killed": True}
+
+
+@app.post("/safety/resume")
+async def safety_resume(x_api_key: Optional[str] = Header(None)):
+    """Reactiva el agente despues de un kill."""
+    _check_auth(x_api_key)
+    if _state.safety:
+        _state.safety.resume()
+    return {"killed": False}
+
+
+@app.get("/safety/whitelist")
+async def safety_whitelist(x_api_key: Optional[str] = Header(None)):
+    _check_auth(x_api_key)
+    return {"whitelist": _state.safety.get_whitelist() if _state.safety else []}
+
+
+@app.post("/autonomy/level")
+async def set_autonomy_level(
+    level: str = Query(..., description="suggest, confirm, auto"),
+    x_api_key: Optional[str] = Header(None),
+):
+    """Cambia el nivel de autonomia."""
+    _check_auth(x_api_key)
+    if not _state.autonomy:
+        raise HTTPException(503, "Not initialized")
+    _state.autonomy.set_level(level)
+    return {"level": level}
+
+
+@app.get("/audit/recent")
+async def audit_recent(
+    count: int = Query(20, ge=1, le=100),
+    x_api_key: Optional[str] = Header(None),
+):
+    """Ultimas entradas del audit log."""
+    _check_auth(x_api_key)
+    if not _state.audit:
+        return {"entries": []}
+    return {"entries": _state.audit.get_recent(count)}
+
+
+@app.get("/audit/failures")
+async def audit_failures(
+    count: int = Query(20, ge=1, le=100),
+    x_api_key: Optional[str] = Header(None),
+):
+    _check_auth(x_api_key)
+    return {"entries": _state.audit.get_failures(count) if _state.audit else []}
+
+
+# ─── Capa 1: Actions ───
+
+@app.get("/action/status")
+async def action_status(x_api_key: Optional[str] = Header(None)):
+    _check_auth(x_api_key)
+    return _state.actions.stats if _state.actions else {"enabled": False}
+
+
+@app.post("/action/enable")
+async def action_enable(x_api_key: Optional[str] = Header(None)):
+    _check_auth(x_api_key)
+    if _state.actions:
+        _state.actions.enable()
+    return {"enabled": True}
+
+
+@app.post("/action/disable")
+async def action_disable(x_api_key: Optional[str] = Header(None)):
+    _check_auth(x_api_key)
+    if _state.actions:
+        _state.actions.disable()
+    return {"enabled": False}
+
+
+@app.post("/action/click")
+async def action_click(
+    x: int = Query(...), y: int = Query(...),
+    button: str = Query("left"),
+    x_api_key: Optional[str] = Header(None),
+):
+    _check_auth(x_api_key)
+    if not _state.actions:
+        raise HTTPException(503, "Actions not initialized")
+    result = _state.actions.click(x, y, button)
+    return result.to_dict()
+
+
+@app.post("/action/double_click")
+async def action_double_click(
+    x: int = Query(...), y: int = Query(...),
+    x_api_key: Optional[str] = Header(None),
+):
+    _check_auth(x_api_key)
+    if not _state.actions:
+        raise HTTPException(503, "Actions not initialized")
+    return _state.actions.double_click(x, y).to_dict()
+
+
+@app.post("/action/type")
+async def action_type(
+    text: str = Query(...),
+    interval: float = Query(0.02),
+    x_api_key: Optional[str] = Header(None),
+):
+    _check_auth(x_api_key)
+    if not _state.actions:
+        raise HTTPException(503, "Actions not initialized")
+    return _state.actions.type_text(text, interval).to_dict()
+
+
+@app.post("/action/hotkey")
+async def action_hotkey(
+    keys: str = Query(..., description="Keys separated by + (e.g. ctrl+s)"),
+    x_api_key: Optional[str] = Header(None),
+):
+    _check_auth(x_api_key)
+    if not _state.actions:
+        raise HTTPException(503, "Actions not initialized")
+    key_list = [k.strip() for k in keys.split("+")]
+    return _state.actions.hotkey(*key_list).to_dict()
+
+
+@app.post("/action/scroll")
+async def action_scroll(
+    amount: int = Query(...),
+    x: Optional[int] = Query(None), y: Optional[int] = Query(None),
+    x_api_key: Optional[str] = Header(None),
+):
+    _check_auth(x_api_key)
+    if not _state.actions:
+        raise HTTPException(503, "Actions not initialized")
+    return _state.actions.scroll(amount, x, y).to_dict()
+
+
+@app.post("/action/drag")
+async def action_drag(
+    start_x: int = Query(...), start_y: int = Query(...),
+    end_x: int = Query(...), end_y: int = Query(...),
+    duration: float = Query(0.5),
+    x_api_key: Optional[str] = Header(None),
+):
+    _check_auth(x_api_key)
+    if not _state.actions:
+        raise HTTPException(503, "Actions not initialized")
+    return _state.actions.drag_drop(start_x, start_y, end_x, end_y, duration).to_dict()
+
+
+@app.get("/action/mouse")
+async def action_mouse(x_api_key: Optional[str] = Header(None)):
+    _check_auth(x_api_key)
+    if not _state.actions:
+        return {"x": 0, "y": 0}
+    return _state.actions.get_mouse_position()
+
+
+@app.get("/action/log")
+async def action_log(
+    count: int = Query(20),
+    x_api_key: Optional[str] = Header(None),
+):
+    _check_auth(x_api_key)
+    return {"log": _state.actions.get_action_log(count) if _state.actions else []}
+
+
+# ─── Capa 1: Windows ───
+
+@app.get("/windows/list")
+async def windows_list(x_api_key: Optional[str] = Header(None)):
+    _check_auth(x_api_key)
+    if not _state.windows:
+        return {"windows": []}
+    return {"windows": [w.to_dict() for w in _state.windows.list_windows()]}
+
+
+@app.get("/windows/active")
+async def windows_active(x_api_key: Optional[str] = Header(None)):
+    _check_auth(x_api_key)
+    if not _state.windows:
+        return {}
+    win = _state.windows.get_active_window()
+    return win.to_dict() if win else {}
+
+
+@app.post("/windows/focus")
+async def windows_focus(
+    title: str = Query(...),
+    x_api_key: Optional[str] = Header(None),
+):
+    _check_auth(x_api_key)
+    if not _state.windows:
+        raise HTTPException(503, "Not initialized")
+    return {"success": _state.windows.focus_window(title=title)}
+
+
+@app.post("/windows/minimize")
+async def windows_minimize(title: str = Query(...), x_api_key: Optional[str] = Header(None)):
+    _check_auth(x_api_key)
+    return {"success": _state.windows.minimize_window(title=title) if _state.windows else False}
+
+
+@app.post("/windows/maximize")
+async def windows_maximize(title: str = Query(...), x_api_key: Optional[str] = Header(None)):
+    _check_auth(x_api_key)
+    return {"success": _state.windows.maximize_window(title=title) if _state.windows else False}
+
+
+@app.post("/windows/close")
+async def windows_close(title: str = Query(...), x_api_key: Optional[str] = Header(None)):
+    """DESTRUCTIVE: cierra una ventana."""
+    _check_auth(x_api_key)
+    return {"success": _state.windows.close_window(title=title) if _state.windows else False}
+
+
+@app.post("/windows/move")
+async def windows_move(
+    title: str = Query(...),
+    x: int = Query(...), y: int = Query(...),
+    width: int = Query(-1), height: int = Query(-1),
+    x_api_key: Optional[str] = Header(None),
+):
+    _check_auth(x_api_key)
+    return {"success": _state.windows.move_window(x, y, width, height, title=title) if _state.windows else False}
+
+
+# ─── Capa 1: Clipboard ───
+
+@app.get("/clipboard/read")
+async def clipboard_read(x_api_key: Optional[str] = Header(None)):
+    _check_auth(x_api_key)
+    if not _state.clipboard:
+        return {"text": ""}
+    return {"text": _state.clipboard.read()}
+
+
+@app.post("/clipboard/write")
+async def clipboard_write(text: str = Query(...), x_api_key: Optional[str] = Header(None)):
+    _check_auth(x_api_key)
+    return {"success": _state.clipboard.write(text) if _state.clipboard else False}
+
+
+@app.get("/clipboard/history")
+async def clipboard_history(count: int = Query(20), x_api_key: Optional[str] = Header(None)):
+    _check_auth(x_api_key)
+    return {"history": _state.clipboard.get_history(count) if _state.clipboard else []}
+
+
+# ─── Capa 1: Process Manager ───
+
+@app.get("/process/list")
+async def process_list(
+    sort_by: str = Query("memory"),
+    x_api_key: Optional[str] = Header(None),
+):
+    _check_auth(x_api_key)
+    return {"processes": _state.process_mgr.list_processes(sort_by) if _state.process_mgr else []}
+
+
+@app.get("/process/find")
+async def process_find(name: str = Query(...), x_api_key: Optional[str] = Header(None)):
+    _check_auth(x_api_key)
+    return {"matches": _state.process_mgr.find_process(name) if _state.process_mgr else []}
+
+
+@app.post("/process/launch")
+async def process_launch(command: str = Query(...), x_api_key: Optional[str] = Header(None)):
+    _check_auth(x_api_key)
+    return _state.process_mgr.launch(command) if _state.process_mgr else {"success": False}
+
+
+@app.post("/process/terminate")
+async def process_terminate(
+    name: Optional[str] = Query(None),
+    pid: Optional[int] = Query(None),
+    x_api_key: Optional[str] = Header(None),
+):
+    """DESTRUCTIVE: termina un proceso."""
+    _check_auth(x_api_key)
+    return _state.process_mgr.terminate(pid=pid, name=name) if _state.process_mgr else {"success": False}
+
+
+# ─── Capa 2: UI Tree ───
+
+@app.get("/ui/elements")
+async def ui_elements(
+    pid: Optional[int] = Query(None),
+    x_api_key: Optional[str] = Header(None),
+):
+    _check_auth(x_api_key)
+    return {"elements": _state.ui_tree.get_elements(pid=pid) if _state.ui_tree else []}
+
+
+@app.get("/ui/find")
+async def ui_find(
+    name: Optional[str] = Query(None),
+    role: Optional[str] = Query(None),
+    x_api_key: Optional[str] = Header(None),
+):
+    _check_auth(x_api_key)
+    if not _state.ui_tree:
+        return {"element": None}
+    return {"element": _state.ui_tree.find_element(name=name, role=role)}
+
+
+@app.get("/ui/find_all")
+async def ui_find_all(
+    name: Optional[str] = Query(None),
+    role: Optional[str] = Query(None),
+    x_api_key: Optional[str] = Header(None),
+):
+    _check_auth(x_api_key)
+    return {"elements": _state.ui_tree.find_all(name=name, role=role) if _state.ui_tree else []}
+
+
+@app.post("/ui/click")
+async def ui_click(
+    name: str = Query(...),
+    role: Optional[str] = Query(None),
+    x_api_key: Optional[str] = Header(None),
+):
+    _check_auth(x_api_key)
+    if not _state.actions:
+        raise HTTPException(503, "Actions not initialized")
+    return _state.actions.click_element(name, role).to_dict()
+
+
+@app.post("/ui/type")
+async def ui_type(
+    field: str = Query(...),
+    text: str = Query(...),
+    x_api_key: Optional[str] = Header(None),
+):
+    _check_auth(x_api_key)
+    if not _state.actions:
+        raise HTTPException(503, "Actions not initialized")
+    return _state.actions.type_in_field(field, text).to_dict()
+
+
+# ─── Capa 3: VS Code ───
+
+@app.post("/vscode/command")
+async def vscode_command(cmd: str = Query(...), x_api_key: Optional[str] = Header(None)):
+    _check_auth(x_api_key)
+    return _state.vscode.execute_command(cmd) if _state.vscode else {"success": False}
+
+
+@app.post("/vscode/open")
+async def vscode_open(
+    path: str = Query(...),
+    line: Optional[int] = Query(None),
+    x_api_key: Optional[str] = Header(None),
+):
+    _check_auth(x_api_key)
+    return _state.vscode.open_file(path, line) if _state.vscode else {"success": False}
+
+
+# ─── Capa 3: Terminal ───
+
+@app.post("/terminal/exec")
+async def terminal_exec(
+    cmd: str = Query(...),
+    cwd: Optional[str] = Query(None),
+    timeout: float = Query(30),
+    x_api_key: Optional[str] = Header(None),
+):
+    _check_auth(x_api_key)
+    if not _state.terminal:
+        raise HTTPException(503, "Not initialized")
+    return _state.terminal.run_command(cmd, cwd=cwd, timeout=timeout).to_dict()
+
+
+@app.post("/terminal/background")
+async def terminal_background(
+    cmd: str = Query(...), name: str = Query(...),
+    x_api_key: Optional[str] = Header(None),
+):
+    _check_auth(x_api_key)
+    return _state.terminal.run_background(cmd, name) if _state.terminal else {"success": False}
+
+
+@app.get("/terminal/background/{name}")
+async def terminal_bg_status(name: str, x_api_key: Optional[str] = Header(None)):
+    _check_auth(x_api_key)
+    return _state.terminal.get_background_status(name) if _state.terminal else {}
+
+
+@app.get("/terminal/history")
+async def terminal_history(count: int = Query(20), x_api_key: Optional[str] = Header(None)):
+    _check_auth(x_api_key)
+    return {"history": _state.terminal.get_history(count) if _state.terminal else []}
+
+
+# ─── Capa 3: Git ───
+
+@app.get("/git/status")
+async def git_status(x_api_key: Optional[str] = Header(None)):
+    _check_auth(x_api_key)
+    return _state.git_ops.status() if _state.git_ops else {"success": False}
+
+
+@app.get("/git/log")
+async def git_log(count: int = Query(10), x_api_key: Optional[str] = Header(None)):
+    _check_auth(x_api_key)
+    return _state.git_ops.log(count) if _state.git_ops else {"success": False}
+
+
+@app.get("/git/diff")
+async def git_diff(staged: bool = Query(False), x_api_key: Optional[str] = Header(None)):
+    _check_auth(x_api_key)
+    return _state.git_ops.diff(staged) if _state.git_ops else {"success": False}
+
+
+@app.post("/git/commit")
+async def git_commit(message: str = Query(...), x_api_key: Optional[str] = Header(None)):
+    _check_auth(x_api_key)
+    if not _state.git_ops:
+        raise HTTPException(503, "Not initialized")
+    add_result = _state.git_ops.add()
+    commit_result = _state.git_ops.commit(message)
+    return commit_result
+
+
+@app.post("/git/push")
+async def git_push(x_api_key: Optional[str] = Header(None)):
+    """DESTRUCTIVE: push al remoto."""
+    _check_auth(x_api_key)
+    return _state.git_ops.push() if _state.git_ops else {"success": False}
+
+
+@app.post("/git/pull")
+async def git_pull(x_api_key: Optional[str] = Header(None)):
+    _check_auth(x_api_key)
+    return _state.git_ops.pull() if _state.git_ops else {"success": False}
+
+
+# ─── Capa 4: Browser ───
+
+@app.get("/browser/tabs")
+async def browser_tabs(x_api_key: Optional[str] = Header(None)):
+    _check_auth(x_api_key)
+    return {"tabs": _state.browser.list_tabs() if _state.browser else []}
+
+
+@app.post("/browser/navigate")
+async def browser_navigate(url: str = Query(...), x_api_key: Optional[str] = Header(None)):
+    _check_auth(x_api_key)
+    return _state.browser.navigate(url) if _state.browser else {"success": False}
+
+
+@app.post("/browser/click")
+async def browser_click(selector: str = Query(...), x_api_key: Optional[str] = Header(None)):
+    _check_auth(x_api_key)
+    return _state.browser.click_selector(selector) if _state.browser else {"success": False}
+
+
+@app.post("/browser/fill")
+async def browser_fill(selector: str = Query(...), value: str = Query(...), x_api_key: Optional[str] = Header(None)):
+    _check_auth(x_api_key)
+    return _state.browser.fill_input(selector, value) if _state.browser else {"success": False}
+
+
+@app.get("/browser/text")
+async def browser_text(x_api_key: Optional[str] = Header(None)):
+    _check_auth(x_api_key)
+    return {"text": _state.browser.get_page_text() if _state.browser else ""}
+
+
+@app.post("/browser/eval")
+async def browser_eval(expression: str = Query(...), x_api_key: Optional[str] = Header(None)):
+    _check_auth(x_api_key)
+    return _state.browser.evaluate(expression) if _state.browser else {}
+
+
+# ─── Capa 5: File System ───
+
+@app.get("/files/read")
+async def files_read(path: str = Query(...), x_api_key: Optional[str] = Header(None)):
+    _check_auth(x_api_key)
+    return _state.filesystem.read_file(path) if _state.filesystem else {"success": False}
+
+
+@app.post("/files/write")
+async def files_write(
+    path: str = Query(...), content: str = Query(...),
+    x_api_key: Optional[str] = Header(None),
+):
+    _check_auth(x_api_key)
+    return _state.filesystem.write_file(path, content) if _state.filesystem else {"success": False}
+
+
+@app.get("/files/list")
+async def files_list(
+    path: str = Query("."),
+    pattern: Optional[str] = Query(None),
+    x_api_key: Optional[str] = Header(None),
+):
+    _check_auth(x_api_key)
+    return _state.filesystem.list_dir(path, pattern) if _state.filesystem else {"success": False}
+
+
+@app.get("/files/search")
+async def files_search(
+    pattern: str = Query("*"),
+    contains: Optional[str] = Query(None),
+    path: str = Query("."),
+    x_api_key: Optional[str] = Header(None),
+):
+    _check_auth(x_api_key)
+    return _state.filesystem.search_files(pattern, contains, path) if _state.filesystem else {"success": False}
+
+
+@app.delete("/files/delete")
+async def files_delete(path: str = Query(...), x_api_key: Optional[str] = Header(None)):
+    """DESTRUCTIVE: elimina un archivo."""
+    _check_auth(x_api_key)
+    return _state.filesystem.delete_file(path) if _state.filesystem else {"success": False}
+
+
+# ─── Capa 6: Agent / Brain ───
+
+@app.post("/agent/do")
+async def agent_do(
+    instruction: str = Query(..., description="Natural language instruction"),
+    x_api_key: Optional[str] = Header(None),
+):
+    """
+    Intent-based action: la IA interpreta y ejecuta.
+    "guarda el archivo" → clasifica → resuelve → verifica
+    """
+    _check_auth(x_api_key)
+    if not _state.intent or not _state.resolver:
+        raise HTTPException(503, "Brain not initialized")
+
+    # 1. Classify intent
+    intent = _state.intent.classify_or_default(instruction)
+
+    # 2. Safety check
+    if _state.safety:
+        check = _state.safety.check_action(intent.action, intent.category)
+        if not check["allowed"]:
+            if _state.audit:
+                _state.audit.log(intent.action, intent.category, intent.params,
+                                 "blocked", check["reason"],
+                                 _state.autonomy.current_level if _state.autonomy else "unknown")
+            return {"success": False, "reason": check["reason"], "intent": intent.to_dict()}
+
+    # 3. Resolve (cascade)
+    pre_state = _state.verifier.capture_pre_state(intent.action, intent.params) if _state.verifier else None
+    result = _state.resolver.resolve(intent.action, intent.params)
+
+    # 4. Verify
+    verification = None
+    if _state.verifier and result.success:
+        verification = _state.verifier.verify(intent.action, intent.params, pre_state)
+
+    # 5. Recovery if failed
+    recovery = None
+    if not result.success and _state.recovery:
+        recovery = _state.recovery.recover(intent.action, intent.params, result.message)
+        if recovery.recovered:
+            result = _state.resolver.resolve(intent.action, intent.params)
+
+    # 6. Audit log
+    if _state.audit:
+        _state.audit.log(
+            intent.action, intent.category, intent.params,
+            "success" if result.success else "failed",
+            result.message,
+            _state.autonomy.current_level if _state.autonomy else "unknown",
+            duration_ms=result.total_ms,
+        )
+
+    return {
+        "intent": intent.to_dict(),
+        "result": result.to_dict(),
+        "verification": verification.to_dict() if verification else None,
+        "recovery": recovery.to_dict() if recovery else None,
+    }
+
+
+@app.post("/agent/plan")
+async def agent_plan(
+    description: str = Query(...),
+    x_api_key: Optional[str] = Header(None),
+):
+    """Crea un plan de ejecucion (dry run)."""
+    _check_auth(x_api_key)
+    if not _state.planner:
+        raise HTTPException(503, "Not initialized")
+    plan = _state.planner.create_plan(description)
+    return plan.to_dict()
+
+
+@app.get("/agent/plans")
+async def agent_plans(x_api_key: Optional[str] = Header(None)):
+    _check_auth(x_api_key)
+    return {"plans": _state.planner.list_plans() if _state.planner else []}
+
+
+@app.get("/agent/status")
+async def agent_status(x_api_key: Optional[str] = Header(None)):
+    """Estado completo del agente."""
+    _check_auth(x_api_key)
+    return {
+        "actions": _state.actions.stats if _state.actions else {},
+        "safety": _state.safety.stats if _state.safety else {},
+        "autonomy": _state.autonomy.stats if _state.autonomy else {},
+        "resolver": _state.resolver.stats if _state.resolver else {},
+        "intent": _state.intent.stats if _state.intent else {},
+        "planner": _state.planner.stats if _state.planner else {},
+        "recovery": _state.recovery.stats if _state.recovery else {},
+    }
+
+
 # ─── System overview ───
 
 @app.get("/system/overview")
@@ -999,7 +1739,7 @@ async def system_overview(x_api_key: Optional[str] = Header(None)):
     """Complete system overview - all components status."""
     _check_auth(x_api_key)
     overview = {
-        "version": "0.5.0",
+        "version": "1.0.0",
         "capture": {
             "running": _state.capture.is_running if _state.capture else False,
             "fps": _state.capture.current_fps if _state.capture else 0,
@@ -1019,5 +1759,19 @@ async def system_overview(x_api_key: Optional[str] = Header(None)):
         "collab": _state.collab.stats if _state.collab else {},
         "memory": _state.memory.stats if _state.memory else {},
         "plugins": len(_state.plugin_mgr.loaded) if _state.plugin_mgr else 0,
+        # v1.0: Computer Use
+        "actions": _state.actions.stats if _state.actions else {},
+        "windows": _state.windows.stats if _state.windows else {},
+        "clipboard": _state.clipboard.stats if _state.clipboard else {},
+        "process_mgr": _state.process_mgr.stats if _state.process_mgr else {},
+        "ui_tree": _state.ui_tree.stats if _state.ui_tree else {},
+        "vscode": _state.vscode.stats if _state.vscode else {},
+        "terminal": _state.terminal.stats if _state.terminal else {},
+        "git": _state.git_ops.stats if _state.git_ops else {},
+        "browser": _state.browser.stats if _state.browser else {},
+        "filesystem": _state.filesystem.stats if _state.filesystem else {},
+        "safety": _state.safety.stats if _state.safety else {},
+        "autonomy": _state.autonomy.stats if _state.autonomy else {},
+        "resolver": _state.resolver.stats if _state.resolver else {},
     }
     return overview
