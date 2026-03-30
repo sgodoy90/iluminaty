@@ -104,7 +104,18 @@ class WindowManager:
             pid = ctypes.wintypes.DWORD()
             self._user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
 
-            placement = ctypes.wintypes.WINDOWPLACEMENT()
+            # Define WINDOWPLACEMENT struct (not in ctypes.wintypes)
+            class WINDOWPLACEMENT(ctypes.Structure):
+                _fields_ = [
+                    ("length", ctypes.c_uint),
+                    ("flags", ctypes.c_uint),
+                    ("showCmd", ctypes.c_uint),
+                    ("ptMinPosition", ctypes.wintypes.POINT),
+                    ("ptMaxPosition", ctypes.wintypes.POINT),
+                    ("rcNormalPosition", ctypes.wintypes.RECT),
+                ]
+
+            placement = WINDOWPLACEMENT()
             placement.length = ctypes.sizeof(placement)
             self._user32.GetWindowPlacement(hwnd, ctypes.byref(placement))
 
