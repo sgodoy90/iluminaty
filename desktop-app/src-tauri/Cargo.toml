@@ -1,0 +1,22 @@
+[package]
+name = "iluminaty-app"
+version = "1.0.0"
+description = "ILUMINATY — Eye of God Desktop App"
+authors = ["Godo <sgodoy90@github.com>"]
+edition = "2021"
+
+[lib]
+name = "iluminaty_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-opener = "2"
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", features = ["json"] }
+tokio = { version = "1", features = ["full"] }

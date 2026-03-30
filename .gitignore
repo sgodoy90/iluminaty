@@ -20,11 +20,19 @@ Thumbs.db
 dist/
 build/
 *.egg-info/
+target/
+
+# Tauri build artifacts
+desktop-app/src-tauri/target/
+
+# Office temp files
+~$*
+
+# Strategy docs (local only)
+*.docx
 
 # Never commit secrets
 auth.json
 *.key
 *.pem
-dist/
-build/
 *.spec
