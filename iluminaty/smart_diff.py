@@ -199,11 +199,14 @@ class SmartDiff:
         deltas = []
 
         for region in diff.changed_regions:
-            crop = img.crop((
-                region.pixel_x, region.pixel_y,
-                region.pixel_x + region.pixel_w,
-                region.pixel_y + region.pixel_h,
-            ))
+            # BUG-012 fix: bounds check before crop
+            x1 = max(0, region.pixel_x)
+            y1 = max(0, region.pixel_y)
+            x2 = min(img.width, region.pixel_x + region.pixel_w)
+            y2 = min(img.height, region.pixel_y + region.pixel_h)
+            if x2 <= x1 or y2 <= y1:
+                continue
+            crop = img.crop((x1, y1, x2, y2))
             buf = io.BytesIO()
             crop.save(buf, format="WEBP", quality=80)
             import base64

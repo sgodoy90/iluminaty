@@ -85,6 +85,7 @@ class ProfileLearner:
         )
         self.profile = UserProfile()
         self._session_start = time.time()
+        self._last_save_time = time.time()  # BUG-002 fix: separate save tracker
 
         if enabled:
             self._load()
@@ -172,8 +173,9 @@ class ProfileLearner:
         # Horas de observacion
         self.profile.observation_hours = (now - self._session_start) / 3600
 
-        # Auto-save cada 5 minutos
-        if now - self.profile.last_updated > 300:
+        # Auto-save cada 5 minutos (BUG-002 fix: use _last_save_time not last_updated)
+        if now - self._last_save_time > 300:
+            self._last_save_time = now
             self._save()
 
     def get_profile(self) -> dict:

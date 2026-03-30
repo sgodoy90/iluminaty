@@ -19,6 +19,7 @@ import secrets
 import hashlib
 import hmac
 import re
+from collections import defaultdict, deque
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Optional
@@ -108,7 +109,7 @@ class RateLimiter:
 
     def __init__(self, max_requests_per_minute: int = 120):
         self.max_rpm = max_requests_per_minute
-        self._windows: dict[str, list[float]] = defaultdict(list)
+        self._windows: dict[str, deque] = defaultdict(lambda: deque(maxlen=max_requests_per_minute))
 
     def check(self, client_id: str) -> tuple[bool, int]:
         """
@@ -118,9 +119,9 @@ class RateLimiter:
         now = time.time()
         window = self._windows[client_id]
 
-        # Limpiar requests viejos (> 60 segundos)
-        self._windows[client_id] = [t for t in window if now - t < 60]
-        window = self._windows[client_id]
+        # Remove old entries (> 60 seconds)
+        while window and now - window[0] > 60:
+            window.popleft()
 
         remaining = self.max_rpm - len(window)
 
@@ -141,6 +142,10 @@ SENSITIVE_PATTERNS = {
     "ssn": re.compile(r'\b\d{3}-\d{2}-\d{4}\b'),
     "api_key": re.compile(r'\b(?:sk-|pk-|api[_-]?key)[A-Za-z0-9_-]{20,}\b', re.IGNORECASE),
     "password_field": re.compile(r'(?:password|passwd|pwd|contraseña)[\s:=]+\S+', re.IGNORECASE),
+    "oauth_token": re.compile(r'\b(?:Bearer|token|oauth)[:\s]+[A-Za-z0-9_\-\.]{20,}\b', re.IGNORECASE),
+    "connection_string": re.compile(r'(?:mongodb|postgres|mysql|redis|amqp)://[^\s]{10,}', re.IGNORECASE),
+    "private_key": re.compile(r'-----BEGIN (?:RSA |EC |DSA )?PRIVATE KEY-----', re.IGNORECASE),
+    "aws_key": re.compile(r'\b(?:AKIA|ASIA)[A-Z0-9]{16}\b'),
 }
 
 

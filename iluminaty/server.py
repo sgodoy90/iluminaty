@@ -100,13 +100,13 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="ILUMINATY",
     description="Real-time visual perception for AI. Zero-disk, RAM-only.",
-    version="0.1.0",
+    version="0.5.0",
     lifespan=lifespan,
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://127.0.0.1:8420", "http://localhost:8420", "tauri://localhost"],
     allow_methods=["*"],
     allow_headers=["*"],
 )

@@ -24,8 +24,10 @@ import base64
 import time
 import urllib.request
 
-# ILUMINATY API base URL
-API_BASE = "http://127.0.0.1:8420"
+import os
+
+# ILUMINATY API base URL - configurable via env var
+API_BASE = os.environ.get("ILUMINATY_API_URL", "http://127.0.0.1:8420")
 
 
 def _api_get(path: str) -> dict:

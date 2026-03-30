@@ -193,14 +193,13 @@ class ScreenCapture:
                     # No crashear el loop por un frame fallido
                     print(f"[iluminaty] capture error: {e}")
                 
-                # Dormir hasta el próximo frame
+                # Dormir hasta el proximo frame
                 elapsed = time.time() - loop_start
                 sleep_time = max(0, (1.0 / self._current_fps) - elapsed)
                 
-                # Sleep interruptible (para poder hacer stop rápido)
-                if sleep_time > 0:
-                    stop_event = threading.Event()
-                    stop_event.wait(timeout=sleep_time)
+                # BUG-007 fix: use time.sleep instead of creating Event per iteration
+                if sleep_time > 0 and self._running:
+                    time.sleep(sleep_time)
 
     def start(self):
         """Inicia la captura en background."""

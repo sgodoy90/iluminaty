@@ -20,7 +20,7 @@ from iluminaty.server import app, init_server
 
 BANNER = """
   =============================================
-   ILUMINATY v0.1.0
+   ILUMINATY v0.5.0
    Real-time visual perception for AI
    Zero-disk - RAM-only - Universal API
   =============================================
@@ -53,7 +53,7 @@ def main():
     args = parser.parse_args()
     
     if args.command == "version":
-        print("iluminaty v0.3.0")
+        from iluminaty import __version__; print(f"iluminaty v{__version__}")
         return
     
     print(BANNER)
