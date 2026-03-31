@@ -15,6 +15,7 @@ let serverOnline = false;
 let pollTimer = null;
 let visionTimer = null;
 let logs = [];
+let currentOperatingMode = "SAFE";
 
 // ─── DOM Cache ───
 const $ = (sel) => document.querySelector(sel);
@@ -110,7 +111,7 @@ function updatePlanBanner(session) {
     const badge = $("#plan-banner-badge");
     if (badge) { badge.textContent = "PRO"; badge.classList.add("pro"); }
     const text = $(".plan-banner-text");
-    if (text) text.textContent = "42+ actions \u00b7 17 MCP tools \u00b7 Full access";
+    if (text) text.textContent = "42+ actions \u00b7 44 MCP tools \u00b7 Full access";
     const btn = $("#plan-banner-upgrade");
     if (btn) btn.classList.add("hidden");
   }
@@ -250,7 +251,7 @@ function updateApiKeyCard(session) {
     if (isPro) {
       info.innerHTML = `
         <div class="plan-feature"><span class="plan-check">&#10003;</span> 42+ actions</div>
-        <div class="plan-feature"><span class="plan-check">&#10003;</span> 17 MCP tools</div>
+        <div class="plan-feature"><span class="plan-check">&#10003;</span> 44 MCP tools</div>
         <div class="plan-feature"><span class="plan-check">&#10003;</span> Vision + OCR</div>
         <div class="plan-feature"><span class="plan-check">&#10003;</span> Browser + Terminal</div>
         <div class="plan-feature"><span class="plan-check">&#10003;</span> File System</div>
@@ -633,14 +634,38 @@ async function pollData() {
     }
   }
 
-  // Perception state
-  const perc = await apiGet("/perception/state");
-  if (perc) {
-    const world = perc.world || {};
+  // Perception state (v2 contract first, legacy fallback)
+  const world = await apiGet("/perception/world");
+  const readiness = await apiGet("/perception/readiness");
+  if (world) {
     $("#perc-ocr").textContent = world.visual_facts && world.visual_facts.length > 0 ? "Yes" : "No";
     $("#perc-interval").textContent = (world.staleness_ms ?? "--") + "ms";
-    $("#perc-buffer").textContent = (perc.event_count || 0) + " events";
-    $("#perc-status").textContent = perc.scene_state || "unknown";
+    $("#perc-buffer").textContent = `${(world.evidence || []).length} evidence`;
+    $("#perc-status").textContent = world.task_phase || "unknown";
+    if (readiness && readiness.uncertainty !== undefined) {
+      $("#perc-changes").textContent = `${Math.round((1 - Number(readiness.uncertainty || 0)) * 100)}% ready`;
+    }
+  } else {
+    const perc = await apiGet("/perception/state");
+    if (perc) {
+      const oldWorld = perc.world || {};
+      $("#perc-ocr").textContent = oldWorld.visual_facts && oldWorld.visual_facts.length > 0 ? "Yes" : "No";
+      $("#perc-interval").textContent = (oldWorld.staleness_ms ?? "--") + "ms";
+      $("#perc-buffer").textContent = (perc.event_count || 0) + " events";
+      $("#perc-status").textContent = perc.scene_state || "unknown";
+    }
+  }
+
+  // Operating mode sync (SAFE / HYBRID / RAW)
+  const modeInfo = await apiGet("/operating/mode");
+  if (modeInfo && modeInfo.mode) {
+    currentOperatingMode = String(modeInfo.mode).toUpperCase();
+    const modeSelect = $("#set-operating-mode");
+    if (modeSelect && modeSelect.value !== currentOperatingMode) {
+      modeSelect.value = currentOperatingMode;
+    }
+    const visionMode = $("#vision-mode");
+    if (visionMode) visionMode.textContent = currentOperatingMode;
   }
 
   // Recent actions from audit
@@ -721,7 +746,11 @@ async function executeAgent() {
   result.textContent = "Executing...";
   result.style.color = "var(--yellow)";
 
-  const data = await apiPost("/action/execute", { instruction, verify: true });
+  const data = await apiPost("/action/execute", {
+    instruction,
+    verify: true,
+    mode: getPreferredMode(),
+  });
 
   if (data) {
     const actionResult = data.result || {};
@@ -807,12 +836,30 @@ const ACTION_PARAMS = {
   browser_click: { prompt: "Enter CSS selector to click:", param: "selector" },
   browser_fill: { prompt: "Enter selector and value (selector: value):", param: "input" },
   browser_eval: { prompt: "Enter JavaScript to evaluate:", param: "code" },
+  vision_query: { prompt: "Ask a visual question:", param: "question" },
+  grounding_resolve: { prompt: "Enter target query (optional: query|role):", param: "target" },
+  grounded_click: { prompt: "Enter target query (optional: query|role):", param: "target" },
+  grounded_type: { prompt: "Enter target and text (query: text):", param: "input" },
   file_read: { prompt: "Enter file path:", param: "path" },
   file_write: { prompt: "Enter file path:", param: "path" },
   file_list: { prompt: "Enter directory path:", param: "path" },
   file_search: { prompt: "Enter search pattern:", param: "pattern" },
   file_copy: { prompt: "Enter source and destination (src: dst):", param: "paths" },
 };
+
+function getPreferredMode() {
+  const mode = $("#set-operating-mode")?.value || currentOperatingMode || "SAFE";
+  return String(mode).toUpperCase();
+}
+
+function parseTargetAndRole(raw) {
+  const value = String(raw || "");
+  const [queryPart, rolePart] = value.split("|");
+  return {
+    query: (queryPart || "").trim(),
+    role: (rolePart || "").trim() || undefined,
+  };
+}
 
 function initActionButtons() {
   $$(".action-btn").forEach((btn) => {
@@ -854,17 +901,74 @@ function initActionButtons() {
           data = await apiPost(`/clipboard/write?text=${encodeURIComponent(body.text || "")}`);
         } else if (action === "click_element") {
           data = await apiPost(`/ui/click?name=${encodeURIComponent(body.selector || "")}`);
+        } else if (action === "grounding_resolve") {
+          const { query, role } = parseTargetAndRole(body.target);
+          data = await apiPost("/grounding/resolve", {
+            query,
+            role,
+            mode: getPreferredMode(),
+            top_k: 5,
+          });
+          if (data && data.success !== undefined) {
+            data.message = data.success
+              ? `Resolved: ${data.target?.name || query} (${Math.round((data.target?.confidence || 0) * 100)}%)`
+              : `Resolve blocked: ${data.reason || "unknown"}`;
+          }
+        } else if (action === "grounded_click") {
+          const { query, role } = parseTargetAndRole(body.target);
+          data = await apiPost("/grounding/click", {
+            query,
+            role,
+            mode: getPreferredMode(),
+            verify: true,
+          });
+          if (data && data.success !== undefined) {
+            data.message = data.success
+              ? "Grounded click executed"
+              : `Grounded click blocked: ${data.message || data.grounding?.reason || "unknown"}`;
+          }
+        } else if (action === "grounded_type") {
+          const raw = String(body.input || "");
+          const sep = raw.indexOf(":");
+          const left = sep >= 0 ? raw.slice(0, sep) : raw;
+          const text = sep >= 0 ? raw.slice(sep + 1).trim() : "";
+          const { query, role } = parseTargetAndRole(left);
+          data = await apiPost("/grounding/type", {
+            query,
+            text,
+            role: role || "textfield",
+            mode: getPreferredMode(),
+            verify: true,
+          });
+          if (data && data.success !== undefined) {
+            data.message = data.success
+              ? "Grounded type executed"
+              : `Grounded type blocked: ${data.message || data.grounding?.reason || "unknown"}`;
+          }
         } else if (action === "find_element") {
           data = await apiGet(`/ui/find?name=${encodeURIComponent(body.query || "")}`);
           if (data?.element) data.success = true;
         } else if (action === "browser_navigate") {
           data = await apiPost(`/browser/navigate?url=${encodeURIComponent(body.url || "")}`);
+        } else if (action === "vision_query") {
+          data = await apiPost("/perception/query", {
+            question: String(body.question || "").trim(),
+            window_seconds: 30,
+          });
+          if (data?.answer) {
+            data.success = true;
+            data.message = `${data.answer} (conf: ${Math.round((data.confidence || 0) * 100)}%)`;
+          }
         } else if (action === "terminal_run") {
           data = await apiPost(`/terminal/exec?cmd=${encodeURIComponent(body.command || "")}&timeout=30`);
         } else {
           // Generic fallback through intent pipeline
           const instruction = `${action}${Object.keys(body).length ? " " + JSON.stringify(body) : ""}`;
-          data = await apiPost("/action/execute", { instruction, verify: true });
+          data = await apiPost("/action/execute", {
+            instruction,
+            verify: true,
+            mode: getPreferredMode(),
+          });
           if (data?.result) {
             data.success = !!data.result.success;
             data.message = data.result.message || "";
@@ -926,9 +1030,12 @@ function init() {
     };
     const interval = Math.max(100, settings.capture_interval || 1000);
     const fps = +(1000 / interval).toFixed(2);
+    const mode = getPreferredMode();
     const result = await apiPost(`/config?fps=${fps}`);
-    if (result) {
-      addLog("settings", "Capture settings applied", "ok");
+    const modeResult = await apiPost(`/operating/mode?mode=${encodeURIComponent(mode)}`);
+    if (result && modeResult?.mode) {
+      currentOperatingMode = String(modeResult.mode).toUpperCase();
+      addLog("settings", `Capture + mode (${currentOperatingMode}) applied`, "ok");
     } else {
       addLog("settings", "Failed to save settings", "fail");
     }

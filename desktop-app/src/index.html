@@ -129,7 +129,7 @@
       <div class="plan-banner" id="plan-banner">
         <div class="plan-banner-left">
           <span class="plan-banner-badge" id="plan-banner-badge">FREE</span>
-          <span class="plan-banner-text">7 actions &middot; 7 MCP tools</span>
+          <span class="plan-banner-text">7 actions &middot; 25 MCP tools</span>
         </div>
         <button class="plan-banner-btn" id="plan-banner-upgrade">Unlock all 42+ actions &rarr;</button>
       </div>
@@ -144,7 +144,7 @@
           <div class="stat-label">Endpoints</div>
         </div>
         <div class="stat-card">
-          <div class="stat-value" id="stat-mcp">17</div>
+          <div class="stat-value" id="stat-mcp">44</div>
           <div class="stat-label">MCP Tools</div>
         </div>
         <div class="stat-card">
@@ -214,10 +214,10 @@
           </div>
           <div class="apikey-plan-info" id="apikey-plan-info">
             <div class="plan-feature"><span class="plan-check">&#10003;</span> 7 actions</div>
-            <div class="plan-feature"><span class="plan-check">&#10003;</span> 7 MCP tools</div>
+            <div class="plan-feature"><span class="plan-check">&#10003;</span> 25 MCP tools</div>
             <div class="plan-feature"><span class="plan-check">&#10003;</span> Vision + OCR</div>
             <div class="plan-feature locked"><span class="plan-lock">&#128274;</span> 42+ actions</div>
-            <div class="plan-feature locked"><span class="plan-lock">&#128274;</span> 17 MCP tools</div>
+            <div class="plan-feature locked"><span class="plan-lock">&#128274;</span> 44 MCP tools</div>
             <div class="plan-feature locked"><span class="plan-lock">&#128274;</span> Browser + Terminal</div>
           </div>
           <button class="btn-upgrade-card" id="btn-upgrade-card">Upgrade to Pro</button>
@@ -320,6 +320,7 @@
           <button class="action-btn" data-action="press_key"><span class="action-icon">⌨</span><span class="action-name">Press Key</span></button>
           <button class="action-btn" data-action="hotkey"><span class="action-icon">⌨</span><span class="action-name">Hotkey</span></button>
           <button class="action-btn" data-action="screenshot"><span class="action-icon">📸</span><span class="action-name">Screenshot</span></button>
+          <button class="action-btn" data-action="vision_query"><span class="action-icon">👁</span><span class="action-name">Vision Query</span></button>
           <button class="action-btn" data-action="get_clipboard"><span class="action-icon">📋</span><span class="action-name">Get Clipboard</span></button>
           <button class="action-btn" data-action="set_clipboard"><span class="action-icon">📋</span><span class="action-name">Set Clipboard</span></button>
         </div>
@@ -333,6 +334,9 @@
         </div>
         <div class="action-grid">
           <button class="action-btn" data-action="click_element"><span class="action-icon">🎯</span><span class="action-name">Click Element</span></button>
+          <button class="action-btn" data-action="grounding_resolve"><span class="action-icon">🧭</span><span class="action-name">Grounding Resolve</span></button>
+          <button class="action-btn" data-action="grounded_click"><span class="action-icon">✅</span><span class="action-name">Grounded Click</span></button>
+          <button class="action-btn" data-action="grounded_type"><span class="action-icon">✍</span><span class="action-name">Grounded Type</span></button>
           <button class="action-btn" data-action="type_in_field"><span class="action-icon">📝</span><span class="action-name">Type in Field</span></button>
           <button class="action-btn" data-action="select_option"><span class="action-icon">☰</span><span class="action-name">Select Option</span></button>
           <button class="action-btn" data-action="find_element"><span class="action-icon">🔍</span><span class="action-name">Find Element</span></button>
@@ -458,7 +462,7 @@
           <div class="stat-label">Total Actions</div>
         </div>
         <div class="stat-card">
-          <div class="stat-value">17</div>
+          <div class="stat-value">44</div>
           <div class="stat-label">MCP Tools</div>
         </div>
       </div>
@@ -495,6 +499,17 @@
               <option value="suggest">SUGGEST</option>
               <option value="confirm" selected>CONFIRM</option>
               <option value="auto">AUTO</option>
+            </select>
+          </div>
+          <div class="setting-row">
+            <div>
+              <div class="setting-label">Operating Mode</div>
+              <div class="setting-desc">SAFE enforces checks, HYBRID balances speed, RAW bypasses guardrails</div>
+            </div>
+            <select class="setting-input" id="set-operating-mode">
+              <option value="SAFE" selected>SAFE</option>
+              <option value="HYBRID">HYBRID</option>
+              <option value="RAW">RAW</option>
             </select>
           </div>
         </div>

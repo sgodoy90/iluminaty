@@ -62,6 +62,7 @@ from .safety import SafetySystem
 from .autonomy import AutonomyManager, AutonomyLevel
 from .audit import AuditLog
 from .licensing import LicenseManager, get_license, init_license
+from .grounding import GroundingEngine
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as StarletteRequest
@@ -114,6 +115,7 @@ class _ServerState:
         self.audit: Optional[AuditLog] = None
         self.license: Optional[LicenseManager] = None
         self.perception = None  # PerceptionEngine (lazy import)
+        self.grounding: Optional[GroundingEngine] = None
         self.agent_coordinator = None  # IPA v2: Multi-Agent Workbench
         self.operating_mode: str = "SAFE"  # SAFE | RAW | HYBRID
         self.bootstrap_warnings: list[str] = []
@@ -190,12 +192,71 @@ def _intent_from_payload(payload: dict) -> Intent:
     )
 
 
+def _grounding_request_from_payload(payload: dict, intent: Intent) -> Optional[dict]:
+    use_grounding = bool(payload.get("use_grounding", False))
+    if not use_grounding:
+        return None
+    params = payload.get("params") or {}
+    query = (
+        payload.get("target_query")
+        or payload.get("name")
+        or params.get("name")
+        or params.get("target")
+        or intent.raw_input
+        or ""
+    )
+    role = payload.get("target_role") or params.get("role")
+    monitor_id = payload.get("monitor_id")
+    top_k = int(payload.get("grounding_top_k", 5))
+    return {
+        "query": str(query).strip(),
+        "role": str(role).strip() if role else None,
+        "monitor_id": monitor_id,
+        "top_k": max(1, min(10, top_k)),
+        "inject_coordinates": bool(payload.get("inject_coordinates", True)),
+    }
+
+
+def _enrich_intent_with_grounding(intent: Intent, grounding_check: dict) -> Intent:
+    target = grounding_check.get("target") or {}
+    center = target.get("center_xy")
+    if not center or not isinstance(center, (list, tuple)) or len(center) != 2:
+        return intent
+    try:
+        gx = int(center[0])
+        gy = int(center[1])
+    except Exception:
+        return intent
+
+    action = (intent.action or "").strip().lower()
+    click_like = {"click", "double_click", "right_click", "click_screen"}
+    if action not in click_like:
+        return intent
+
+    params = dict(intent.params or {})
+    params.setdefault("x", gx)
+    params.setdefault("y", gy)
+    if action == "right_click":
+        params.setdefault("button", "right")
+        action_name = "click"
+    else:
+        action_name = "click"
+    return Intent(
+        action=action_name,
+        params=params,
+        confidence=intent.confidence,
+        raw_input=intent.raw_input,
+        category=intent.category,
+    )
+
+
 def _build_precheck(
     intent: Intent,
     mode: str,
     include_readiness: bool = True,
     context_tick_id: Optional[int] = None,
     max_staleness_ms: int = 1500,
+    grounding_request: Optional[dict] = None,
 ) -> dict:
     mode_norm = _normalize_operating_mode(mode)
     readiness = {
@@ -261,11 +322,67 @@ def _build_precheck(
             logger.debug("Failed context freshness check during precheck: %s", e)
             context_check = {"allowed": True, "reason": "context_check_unavailable", "latest_tick_id": readiness.get("tick_id"), "staleness_ms": readiness.get("staleness_ms", 0)}
 
+    grounding_applies = bool(grounding_request)
+    grounding_check = {
+        "allowed": True,
+        "reason": "skipped",
+        "target": None,
+        "confidence": 0.0,
+        "candidates": [],
+    }
+    if grounding_applies:
+        if not _state.grounding:
+            grounding_check = {
+                "allowed": False,
+                "reason": "grounding_unavailable",
+                "target": None,
+                "confidence": 0.0,
+                "candidates": [],
+            }
+        elif not grounding_request.get("query"):
+            grounding_check = {
+                "allowed": False,
+                "reason": "grounding_query_required",
+                "target": None,
+                "confidence": 0.0,
+                "candidates": [],
+            }
+        else:
+            try:
+                result = _state.grounding.resolve(
+                    query=grounding_request.get("query"),
+                    role=grounding_request.get("role"),
+                    monitor_id=grounding_request.get("monitor_id"),
+                    mode=mode_norm,
+                    category=intent.category,
+                    context_tick_id=context_tick_id,
+                    max_staleness_ms=max_staleness_ms,
+                    top_k=grounding_request.get("top_k", 5),
+                )
+                target = result.get("target")
+                grounding_check = {
+                    "allowed": not bool(result.get("blocked", False)),
+                    "reason": result.get("reason", "grounding_blocked"),
+                    "target": target,
+                    "confidence": float((target or {}).get("confidence", 0.0)),
+                    "candidates": result.get("candidates", []),
+                }
+            except Exception as e:
+                logger.debug("Grounding resolve failed during precheck: %s", e)
+                grounding_check = {
+                    "allowed": False,
+                    "reason": "grounding_error",
+                    "target": None,
+                    "confidence": 0.0,
+                    "candidates": [],
+                }
+
     blocked = (
         not kill_check["allowed"]
         or not safety_check["allowed"]
         or not readiness_check["allowed"]
         or not context_check["allowed"]
+        or not grounding_check["allowed"]
     )
     return {
         "mode": mode_norm,
@@ -280,6 +397,8 @@ def _build_precheck(
         "context_tick_id": context_tick_id,
         "max_staleness_ms": int(max_staleness_ms),
         "context_check": context_check,
+        "grounding_applies": grounding_applies,
+        "grounding_check": grounding_check,
         "blocked": blocked,
     }
 
@@ -290,6 +409,7 @@ def _execute_intent(
     verify: bool = True,
     context_tick_id: Optional[int] = None,
     max_staleness_ms: int = 1500,
+    grounding_request: Optional[dict] = None,
 ) -> dict:
     if not _state.resolver:
         raise HTTPException(status_code=503, detail="Resolver not initialized")
@@ -300,13 +420,15 @@ def _execute_intent(
         include_readiness=True,
         context_tick_id=context_tick_id,
         max_staleness_ms=max_staleness_ms,
+        grounding_request=grounding_request,
     )
     if precheck["blocked"]:
         blocked_reason = (
             precheck["kill_check"]["reason"] if not precheck["kill_check"]["allowed"] else
             precheck["safety_check"]["reason"] if not precheck["safety_check"]["allowed"] else
             precheck.get("readiness_check", {}).get("reason") if not precheck.get("readiness_check", {}).get("allowed", True) else
-            precheck.get("context_check", {}).get("reason", "stale_context")
+            precheck.get("context_check", {}).get("reason") if not precheck.get("context_check", {}).get("allowed", True) else
+            precheck.get("grounding_check", {}).get("reason", "grounding_blocked")
         )
         if _state.audit:
             _state.audit.log(
@@ -331,6 +453,9 @@ def _execute_intent(
             "verification": None,
             "recovery": None,
         }
+
+    if grounding_request and grounding_request.get("inject_coordinates", True):
+        intent = _enrich_intent_with_grounding(intent, precheck.get("grounding_check", {}))
 
     pre_state = _state.verifier.capture_pre_state(intent.action, intent.params) if (_state.verifier and verify) else None
     result = _state.resolver.resolve(intent.action, intent.params)
@@ -854,6 +979,13 @@ def init_server(
         )
         _state.recovery = ErrorRecovery()
         _state.recovery.set_resolver(_state.resolver)
+        _state.grounding = GroundingEngine()
+        _state.grounding.set_layers(
+            ui_tree=_state.ui_tree,
+            vision=_state.vision,
+            perception=_state.perception,
+            buffer=_state.buffer,
+        )
 
 
 # ─── Vision / AI-ready endpoints ───
@@ -1241,6 +1373,208 @@ async def perception_query(
         window_seconds=window_seconds,
         monitor_id=monitor_id,
     )
+
+
+# ─── Grounding (Hybrid UI+Text Targeting) ───
+
+@app.get("/grounding/status")
+async def grounding_status(x_api_key: Optional[str] = Header(None)):
+    _check_auth(x_api_key)
+    if not _state.grounding:
+        raise HTTPException(503, "Grounding engine not initialized")
+    return _state.grounding.status()
+
+
+@app.post("/grounding/resolve")
+async def grounding_resolve(
+    request_body: dict,
+    x_api_key: Optional[str] = Header(None),
+):
+    _check_auth(x_api_key)
+    if not _state.grounding:
+        raise HTTPException(503, "Grounding engine not initialized")
+    query = (request_body.get("query") or "").strip()
+    if not query:
+        raise HTTPException(400, "query is required")
+    role = request_body.get("role")
+    monitor_id = request_body.get("monitor_id")
+    mode = request_body.get("mode") or _state.operating_mode
+    category = request_body.get("category") or "normal"
+    context_tick_id = request_body.get("context_tick_id")
+    max_staleness_ms = request_body.get("max_staleness_ms")
+    top_k = int(request_body.get("top_k", 5))
+    return _state.grounding.resolve(
+        query=query,
+        role=role,
+        monitor_id=monitor_id,
+        mode=mode,
+        category=category,
+        context_tick_id=context_tick_id,
+        max_staleness_ms=max_staleness_ms,
+        top_k=top_k,
+    )
+
+
+@app.post("/grounding/click")
+async def grounding_click(
+    request_body: dict,
+    x_api_key: Optional[str] = Header(None),
+):
+    _check_auth(x_api_key)
+    if not _state.grounding:
+        raise HTTPException(503, "Grounding engine not initialized")
+    query = (request_body.get("query") or "").strip()
+    if not query:
+        raise HTTPException(400, "query is required")
+    mode = request_body.get("mode") or _state.operating_mode
+    category = request_body.get("category") or "normal"
+    verify = bool(request_body.get("verify", True))
+    context_tick_id = request_body.get("context_tick_id")
+    max_staleness_ms = int(request_body.get("max_staleness_ms", 1500))
+    resolved = _state.grounding.resolve(
+        query=query,
+        role=request_body.get("role"),
+        monitor_id=request_body.get("monitor_id"),
+        mode=mode,
+        category=category,
+        context_tick_id=context_tick_id,
+        max_staleness_ms=max_staleness_ms,
+        top_k=int(request_body.get("top_k", 5)),
+    )
+    if resolved.get("blocked"):
+        return {
+            "grounding": resolved,
+            "execution": None,
+            "success": False,
+            "message": resolved.get("reason", "grounding_blocked"),
+        }
+
+    target = resolved.get("target") or {}
+    center = target.get("center_xy") or []
+    if not isinstance(center, (list, tuple)) or len(center) != 2:
+        return {
+            "grounding": resolved,
+            "execution": None,
+            "success": False,
+            "message": "grounding_target_missing_coordinates",
+        }
+
+    intent = Intent(
+        action="click",
+        params={
+            "x": int(center[0]),
+            "y": int(center[1]),
+            "button": request_body.get("button", "left"),
+        },
+        confidence=1.0,
+        raw_input=query,
+        category=(category or "normal"),
+    )
+    execution = _execute_intent(
+        intent,
+        mode=mode,
+        verify=verify,
+        context_tick_id=context_tick_id,
+        max_staleness_ms=max_staleness_ms,
+    )
+    return {
+        "grounding": resolved,
+        "execution": execution,
+        "success": bool(execution.get("result", {}).get("success")),
+    }
+
+
+@app.post("/grounding/type")
+async def grounding_type(
+    request_body: dict,
+    x_api_key: Optional[str] = Header(None),
+):
+    _check_auth(x_api_key)
+    if not _state.grounding:
+        raise HTTPException(503, "Grounding engine not initialized")
+    query = (request_body.get("query") or "").strip()
+    text = request_body.get("text")
+    if not query:
+        raise HTTPException(400, "query is required")
+    if text is None:
+        raise HTTPException(400, "text is required")
+    mode = request_body.get("mode") or _state.operating_mode
+    verify = bool(request_body.get("verify", True))
+    category = request_body.get("category") or "normal"
+    context_tick_id = request_body.get("context_tick_id")
+    max_staleness_ms = int(request_body.get("max_staleness_ms", 1500))
+
+    resolved = _state.grounding.resolve(
+        query=query,
+        role=request_body.get("role") or "textfield",
+        monitor_id=request_body.get("monitor_id"),
+        mode=mode,
+        category=category,
+        context_tick_id=context_tick_id,
+        max_staleness_ms=max_staleness_ms,
+        top_k=int(request_body.get("top_k", 5)),
+    )
+    if resolved.get("blocked"):
+        return {
+            "grounding": resolved,
+            "click_execution": None,
+            "type_execution": None,
+            "success": False,
+            "message": resolved.get("reason", "grounding_blocked"),
+        }
+
+    target = resolved.get("target") or {}
+    center = target.get("center_xy") or []
+    if not isinstance(center, (list, tuple)) or len(center) != 2:
+        return {
+            "grounding": resolved,
+            "click_execution": None,
+            "type_execution": None,
+            "success": False,
+            "message": "grounding_target_missing_coordinates",
+        }
+
+    click_exec = _execute_intent(
+        Intent(
+            action="click",
+            params={"x": int(center[0]), "y": int(center[1]), "button": "left"},
+            confidence=1.0,
+            raw_input=query,
+            category=(category or "normal"),
+        ),
+        mode=mode,
+        verify=verify,
+        context_tick_id=context_tick_id,
+        max_staleness_ms=max_staleness_ms,
+    )
+    if not click_exec.get("result", {}).get("success"):
+        return {
+            "grounding": resolved,
+            "click_execution": click_exec,
+            "type_execution": None,
+            "success": False,
+            "message": click_exec.get("result", {}).get("message", "click_failed"),
+        }
+
+    type_exec = _execute_intent(
+        Intent(
+            action="type_text",
+            params={"text": str(text)},
+            confidence=1.0,
+            raw_input=f"type:{query}",
+            category=(category or "normal"),
+        ),
+        mode=mode,
+        verify=verify,
+        context_tick_id=context_tick_id,
+        max_staleness_ms=max_staleness_ms,
+    )
+    return {
+        "grounding": resolved,
+        "click_execution": click_exec,
+        "type_execution": type_exec,
+        "success": bool(type_exec.get("result", {}).get("success")),
+    }
 
 
 # ─── Multi-Agent Workbench (IPA v2) ───
@@ -1988,6 +2322,7 @@ async def action_precheck(
     """
     _check_auth(x_api_key)
     intent = _intent_from_payload(request_body)
+    grounding_request = _grounding_request_from_payload(request_body, intent)
     mode = request_body.get("mode") or _state.operating_mode
     context_tick_id = request_body.get("context_tick_id")
     max_staleness_ms = int(request_body.get("max_staleness_ms", 1500))
@@ -1997,6 +2332,7 @@ async def action_precheck(
         include_readiness=True,
         context_tick_id=context_tick_id,
         max_staleness_ms=max_staleness_ms,
+        grounding_request=grounding_request,
     )
 
 
@@ -2011,6 +2347,7 @@ async def action_execute(
     """
     _check_auth(x_api_key)
     intent = _intent_from_payload(request_body)
+    grounding_request = _grounding_request_from_payload(request_body, intent)
     mode = request_body.get("mode") or _state.operating_mode
     verify = bool(request_body.get("verify", True))
     context_tick_id = request_body.get("context_tick_id")
@@ -2021,6 +2358,7 @@ async def action_execute(
         verify=verify,
         context_tick_id=context_tick_id,
         max_staleness_ms=max_staleness_ms,
+        grounding_request=grounding_request,
     )
 
 
@@ -2466,6 +2804,7 @@ async def agent_status(x_api_key: Optional[str] = Header(None)):
         "intent": _state.intent.stats if _state.intent else {},
         "planner": _state.planner.stats if _state.planner else {},
         "recovery": _state.recovery.stats if _state.recovery else {},
+        "grounding": _state.grounding.status() if _state.grounding else {},
         "perception_readiness": _state.perception.get_readiness() if _state.perception else {},
         "bootstrap_warnings": list(_state.bootstrap_warnings),
     }
@@ -2513,6 +2852,7 @@ async def system_overview(x_api_key: Optional[str] = Header(None)):
         "safety": _state.safety.stats if _state.safety else {},
         "autonomy": _state.autonomy.stats if _state.autonomy else {},
         "resolver": _state.resolver.stats if _state.resolver else {},
+        "grounding": _state.grounding.status() if _state.grounding else {},
         "license": {
             "plan": _state.license.plan.value if _state.license else "free",
             "is_pro": _state.license.is_pro if _state.license else False,

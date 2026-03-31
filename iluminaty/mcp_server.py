@@ -42,6 +42,7 @@ FREE_MCP_TOOLS = {
     "action_precheck", "verify_action",
     "perception_world", "perception_trace", "set_operating_mode",
     "vision_query",
+    "grounding_status", "grounding_resolve", "click_grounded", "type_grounded",
     "window_minimize", "window_maximize", "window_close",
     "get_audio_level",
     "token_status", "set_token_mode", "set_token_budget",
@@ -55,6 +56,7 @@ ALL_MCP_TOOLS = {
     "do_action", "raw_action", "action_precheck", "verify_action",
     "set_operating_mode",
     "vision_query",
+    "grounding_status", "grounding_resolve", "click_grounded", "type_grounded",
     "click_element", "type_text", "run_command",
     "list_windows", "find_ui_element", "read_file", "write_file",
     "window_minimize", "window_maximize", "window_close",
@@ -308,6 +310,23 @@ TOOLS = [
                     "type": "integer",
                     "description": "Optional max context age in ms (default 1500)",
                 },
+                "use_grounding": {
+                    "type": "boolean",
+                    "description": "Enable hybrid grounding for target resolution before execute",
+                    "default": False,
+                },
+                "target_query": {
+                    "type": "string",
+                    "description": "Optional grounding target query (e.g. 'Save button')",
+                },
+                "target_role": {
+                    "type": "string",
+                    "description": "Optional role hint for grounding",
+                },
+                "monitor_id": {
+                    "type": "integer",
+                    "description": "Optional monitor id for grounding",
+                },
             },
             "required": ["instruction"],
         },
@@ -344,6 +363,10 @@ TOOLS = [
                 "mode": {"type": "string", "enum": ["SAFE", "RAW", "HYBRID"], "description": "Optional override mode"},
                 "context_tick_id": {"type": "integer", "description": "Optional expected world tick id"},
                 "max_staleness_ms": {"type": "integer", "description": "Optional max context age in ms"},
+                "use_grounding": {"type": "boolean", "description": "Enable hybrid grounding checks", "default": False},
+                "target_query": {"type": "string", "description": "Optional grounding target query"},
+                "target_role": {"type": "string", "description": "Optional grounding role hint"},
+                "monitor_id": {"type": "integer", "description": "Optional monitor id for grounding"},
             },
         },
     },
@@ -394,6 +417,76 @@ TOOLS = [
                 "monitor_id": {"type": "integer", "description": "Optional monitor id"},
             },
             "required": ["question"],
+        },
+    },
+    {
+        "name": "grounding_status",
+        "description": (
+            "Get hybrid grounding engine status and performance metrics."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "grounding_resolve",
+        "description": (
+            "Resolve an actionable UI target using hybrid grounding (UI tree + OCR + visual hints). "
+            "Returns ranked candidates with confidence and selected target."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Target query (e.g. 'Save button')"},
+                "role": {"type": "string", "description": "Optional role hint (button, textfield, etc.)"},
+                "monitor_id": {"type": "integer", "description": "Optional monitor id"},
+                "mode": {"type": "string", "enum": ["SAFE", "RAW", "HYBRID"], "default": "SAFE"},
+                "category": {"type": "string", "description": "safe|normal|destructive", "default": "normal"},
+                "top_k": {"type": "integer", "description": "Max candidates", "default": 5},
+                "context_tick_id": {"type": "integer", "description": "Optional expected world tick id"},
+                "max_staleness_ms": {"type": "integer", "description": "Optional context max age in ms"},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "click_grounded",
+        "description": (
+            "Resolve a target via grounding and click it with SAFE/HYBRID/RAW policy."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "What to click"},
+                "role": {"type": "string", "description": "Optional role hint"},
+                "monitor_id": {"type": "integer", "description": "Optional monitor id"},
+                "button": {"type": "string", "description": "Mouse button", "default": "left"},
+                "mode": {"type": "string", "enum": ["SAFE", "RAW", "HYBRID"], "default": "SAFE"},
+                "category": {"type": "string", "description": "safe|normal|destructive", "default": "normal"},
+                "verify": {"type": "boolean", "default": True},
+                "context_tick_id": {"type": "integer"},
+                "max_staleness_ms": {"type": "integer"},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "type_grounded",
+        "description": (
+            "Resolve a text field via grounding, focus it, and type text."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Field target query"},
+                "text": {"type": "string", "description": "Text to type"},
+                "role": {"type": "string", "description": "Optional role hint", "default": "textfield"},
+                "monitor_id": {"type": "integer", "description": "Optional monitor id"},
+                "mode": {"type": "string", "enum": ["SAFE", "RAW", "HYBRID"], "default": "SAFE"},
+                "category": {"type": "string", "description": "safe|normal|destructive", "default": "normal"},
+                "verify": {"type": "boolean", "default": True},
+                "context_tick_id": {"type": "integer"},
+                "max_staleness_ms": {"type": "integer"},
+            },
+            "required": ["query", "text"],
         },
     },
     {
@@ -849,6 +942,125 @@ def handle_vision_query(args: dict) -> list:
     return [{"type": "text", "text": "\n".join(lines)}]
 
 
+def handle_grounding_status(args: dict) -> list:
+    try:
+        data = _api_get("/grounding/status")
+        stats = data.get("stats", {})
+        lines = [
+            "## Grounding Status",
+            f"Mode: {data.get('mode', 'hybrid_ui_text')}",
+            f"Profile: {data.get('profile', 'balanced')}",
+            f"Resolves: {stats.get('resolves', 0)}",
+            f"Success rate: {stats.get('success_rate_pct', 0)}%",
+            f"Blocked rate: {stats.get('blocked_rate_pct', 0)}%",
+            f"Avg latency: {stats.get('avg_latency_ms', 0)}ms",
+            f"Last reason: {stats.get('last_reason', 'n/a')}",
+        ]
+        return [{"type": "text", "text": "\n".join(lines)}]
+    except Exception as e:
+        return [{"type": "text", "text": f"Grounding status unavailable: {e}"}]
+
+
+def handle_grounding_resolve(args: dict) -> list:
+    query = (args.get("query") or "").strip()
+    if not query:
+        return [{"type": "text", "text": "Error: query is required"}]
+    body = {
+        "query": query,
+        "role": args.get("role"),
+        "monitor_id": args.get("monitor_id"),
+        "mode": args.get("mode", "SAFE"),
+        "category": args.get("category", "normal"),
+        "top_k": args.get("top_k", 5),
+        "context_tick_id": args.get("context_tick_id"),
+        "max_staleness_ms": args.get("max_staleness_ms"),
+    }
+    try:
+        data = _api_post("/grounding/resolve", body=body)
+    except Exception as e:
+        return [{"type": "text", "text": f"Grounding resolve failed: {e}"}]
+
+    target = data.get("target")
+    lines = [
+        "## Grounding Resolve",
+        f"Query: {query}",
+        f"Success: {data.get('success', False)}",
+        f"Blocked: {data.get('blocked', False)}",
+        f"Reason: {data.get('reason', 'unknown')}",
+    ]
+    if target:
+        lines.append(
+            f"Target: {target.get('name', '')} ({target.get('role', '')}) "
+            f"at {target.get('center_xy')} conf={target.get('confidence', 0)}"
+        )
+    lines.append(f"Candidates: {len(data.get('candidates', []))}")
+    return [{"type": "text", "text": "\n".join(lines)}]
+
+
+def handle_click_grounded(args: dict) -> list:
+    query = (args.get("query") or "").strip()
+    if not query:
+        return [{"type": "text", "text": "Error: query is required"}]
+    body = {
+        "query": query,
+        "role": args.get("role"),
+        "monitor_id": args.get("monitor_id"),
+        "button": args.get("button", "left"),
+        "mode": args.get("mode", "SAFE"),
+        "category": args.get("category", "normal"),
+        "verify": bool(args.get("verify", True)),
+        "context_tick_id": args.get("context_tick_id"),
+        "max_staleness_ms": args.get("max_staleness_ms"),
+        "top_k": args.get("top_k", 5),
+    }
+    try:
+        data = _api_post("/grounding/click", body=body)
+    except Exception as e:
+        return [{"type": "text", "text": f"Grounded click failed: {e}"}]
+    lines = [
+        "## Grounded Click",
+        f"Query: {query}",
+        f"Success: {data.get('success', False)}",
+    ]
+    grd = data.get("grounding", {})
+    lines.append(f"Grounding reason: {grd.get('reason', 'n/a')}")
+    return [{"type": "text", "text": "\n".join(lines)}]
+
+
+def handle_type_grounded(args: dict) -> list:
+    query = (args.get("query") or "").strip()
+    text = args.get("text")
+    if not query:
+        return [{"type": "text", "text": "Error: query is required"}]
+    if text is None:
+        return [{"type": "text", "text": "Error: text is required"}]
+    body = {
+        "query": query,
+        "text": str(text),
+        "role": args.get("role", "textfield"),
+        "monitor_id": args.get("monitor_id"),
+        "mode": args.get("mode", "SAFE"),
+        "category": args.get("category", "normal"),
+        "verify": bool(args.get("verify", True)),
+        "context_tick_id": args.get("context_tick_id"),
+        "max_staleness_ms": args.get("max_staleness_ms"),
+        "top_k": args.get("top_k", 5),
+    }
+    try:
+        data = _api_post("/grounding/type", body=body)
+    except Exception as e:
+        return [{"type": "text", "text": f"Grounded type failed: {e}"}]
+    lines = [
+        "## Grounded Type",
+        f"Query: {query}",
+        f"Chars: {len(str(text))}",
+        f"Success: {data.get('success', False)}",
+    ]
+    grd = data.get("grounding", {})
+    lines.append(f"Grounding reason: {grd.get('reason', 'n/a')}")
+    return [{"type": "text", "text": "\n".join(lines)}]
+
+
 def handle_watch_screen(args: dict) -> list:
     """Return last N frames as images — like watching a video replay."""
     n = min(args.get("frames", 3), 5)
@@ -1042,7 +1254,14 @@ def handle_do_action(args: dict) -> list:
     if not instruction:
         return [{"type": "text", "text": "Error: instruction is required"}]
     payload = {"instruction": instruction, "verify": True}
-    for key in ("context_tick_id", "max_staleness_ms"):
+    for key in (
+        "context_tick_id",
+        "max_staleness_ms",
+        "use_grounding",
+        "target_query",
+        "target_role",
+        "monitor_id",
+    ):
         if key in args and args[key] is not None:
             payload[key] = args[key]
     data = _api_post("/action/execute", body=payload)
@@ -1053,6 +1272,12 @@ def handle_do_action(args: dict) -> list:
         f"Mode: {precheck.get('mode', '?')} | blocked: {precheck.get('blocked', False)}",
         f"Action: {'SUCCESS' if result.get('success') else 'FAILED'} - {result.get('message', '')}",
     ]
+    grounding = precheck.get("grounding_check") or {}
+    if precheck.get("grounding_applies"):
+        lines.append(
+            f"Grounding: {'OK' if grounding.get('allowed') else 'BLOCKED'} "
+            f"reason={grounding.get('reason', 'n/a')} conf={grounding.get('confidence', 0)}"
+        )
     if verification:
         lines.append(
             f"Verification: {'OK' if verification.get('verified') else 'FAILED'} "
@@ -1086,7 +1311,19 @@ def handle_raw_action(args: dict) -> list:
 
 def handle_action_precheck(args: dict) -> list:
     payload = {}
-    for key in ("instruction", "action", "params", "category", "mode", "context_tick_id", "max_staleness_ms"):
+    for key in (
+        "instruction",
+        "action",
+        "params",
+        "category",
+        "mode",
+        "context_tick_id",
+        "max_staleness_ms",
+        "use_grounding",
+        "target_query",
+        "target_role",
+        "monitor_id",
+    ):
         if key in args and args[key] is not None:
             payload[key] = args[key]
     if not payload:
@@ -1100,6 +1337,12 @@ def handle_action_precheck(args: dict) -> list:
         f"Readiness: {readiness.get('readiness')} | uncertainty: {readiness.get('uncertainty')}",
         f"Safety: {safety.get('reason', 'n/a')} (applies={data.get('safety_applies')})",
     ]
+    if data.get("grounding_applies"):
+        grd = data.get("grounding_check", {})
+        lines.append(
+            f"Grounding: {'OK' if grd.get('allowed') else 'BLOCKED'} "
+            f"reason={grd.get('reason', 'n/a')} conf={grd.get('confidence', 0)}"
+        )
     return [{"type": "text", "text": "\n".join(lines)}]
 
 
@@ -1392,6 +1635,10 @@ HANDLERS = {
     "perception_world": handle_perception_world,
     "perception_trace": handle_perception_trace,
     "vision_query": handle_vision_query,
+    "grounding_status": handle_grounding_status,
+    "grounding_resolve": handle_grounding_resolve,
+    "click_grounded": handle_click_grounded,
+    "type_grounded": handle_type_grounded,
     "watch_screen": handle_watch_screen,
     "see_changes": handle_see_changes,
     "annotate_screen": handle_annotate,

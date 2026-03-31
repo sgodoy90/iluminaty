@@ -63,18 +63,20 @@ class AgentSession:
 OBSERVER_TOOLS = frozenset({
     "see_screen", "see_changes", "read_screen_text", "perception",
     "perception_world", "perception_trace", "vision_query",
+    "grounding_status",
     "screen_status", "get_context", "get_audio_level", "token_status",
     "set_token_mode", "set_token_budget",
 })
 
 PLANNER_TOOLS = OBSERVER_TOOLS | frozenset({
-    "action_precheck",
+    "action_precheck", "grounding_resolve",
     "list_windows", "find_ui_element", "monitor_info", "see_monitor",
 })
 
 EXECUTOR_TOOLS = frozenset({
     "do_action", "raw_action", "action_precheck", "verify_action",
     "set_operating_mode",
+    "grounding_resolve", "click_grounded", "type_grounded",
     "click_element", "type_text", "run_command",
     "keyboard", "scroll", "click_screen", "browser_navigate",
     "focus_window", "window_minimize", "window_maximize", "window_close",
@@ -82,7 +84,7 @@ EXECUTOR_TOOLS = frozenset({
 }) | OBSERVER_TOOLS
 
 VERIFIER_TOOLS = OBSERVER_TOOLS | frozenset({
-    "verify_action",
+    "verify_action", "grounding_resolve",
     "read_file", "get_clipboard", "find_ui_element", "list_windows",
 })
 

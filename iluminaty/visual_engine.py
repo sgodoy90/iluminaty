@@ -3,8 +3,7 @@ ILUMINATY - Local Visual Engine (IPA v2.1)
 ===========================================
 Deep visual loop provider abstraction.
 
-Default provider is lightweight/local and CPU-safe.
-If optional dependencies are available, it can be upgraded via env vars.
+Default provider is fully local, dependency-free, and CPU-safe.
 """
 
 from __future__ import annotations
@@ -19,7 +18,7 @@ from typing import Optional
 
 try:
     from PIL import Image
-except Exception:  # pragma: no cover - pillow is a core dependency
+except Exception:  # pragma: no cover - pillow is expected in runtime but keep soft-fail
     Image = None
 
 
@@ -76,44 +75,13 @@ class BaseVisualProvider:
         raise NotImplementedError
 
 
-class LocalSmolVLMProvider(BaseVisualProvider):
+class LocalNativeVisionProvider(BaseVisualProvider):
     """
     Local default provider.
-    Uses robust heuristics + optional caption backend if available.
+    Uses native heuristics (OCR + motion + UI/window context) only.
     """
 
-    name = "local_smolvlm"
-
-    def __init__(self):
-        self._caption_backend = None
-        self._caption_enabled = os.environ.get("ILUMINATY_VLM_CAPTION", "0") == "1"
-        if self._caption_enabled:
-            self._try_init_caption_backend()
-
-    def _try_init_caption_backend(self) -> None:
-        # Optional lazy backend; kept disabled by default for CPU budget.
-        try:
-            from transformers import pipeline  # type: ignore
-            self._caption_backend = pipeline(
-                "image-to-text",
-                model=os.environ.get("ILUMINATY_VLM_MODEL", "Salesforce/blip-image-captioning-base"),
-                device=-1,
-            )
-        except Exception:
-            self._caption_backend = None
-
-    def _caption(self, image_bytes: bytes) -> str:
-        if not self._caption_backend or Image is None:
-            return ""
-        try:
-            img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-            out = self._caption_backend(img, max_new_tokens=40)
-            if not out:
-                return ""
-            text = out[0].get("generated_text", "")
-            return str(text).strip()[:180]
-        except Exception:
-            return ""
+    name = "local_native_vision"
 
     def analyze(self, task: VisualTask) -> VisualInference:
         t0 = time.time()
@@ -167,16 +135,30 @@ class LocalSmolVLMProvider(BaseVisualProvider):
                 )
             )
 
-        caption = self._caption(task.frame_bytes)
-        if caption:
+        low_blob = f"{app} {title} {ocr} {motion}".lower()
+        if ("youtube" in low_blob or "video" in low_blob or "player" in low_blob) and motion:
             facts.append(
                 VisualFact(
-                    kind="image_caption",
-                    text=f"Frame caption: {caption}",
-                    confidence=0.55,
+                    kind="activity",
+                    text="Likely video/media playback on active surface",
+                    confidence=0.64,
                     monitor=task.monitor,
                     timestamp_ms=now_ms,
-                    source=f"{self.name}:caption",
+                    source=self.name,
+                    evidence_ref=task.ref_id,
+                    tick_id=task.tick_id,
+                )
+            )
+
+        if any(token in low_blob for token in ("chart", "tradingview", "candlestick", "buy", "sell", "rsi", "macd")):
+            facts.append(
+                VisualFact(
+                    kind="domain_hint",
+                    text="Possible trading/chart context detected",
+                    confidence=0.61,
+                    monitor=task.monitor,
+                    timestamp_ms=now_ms,
+                    source=self.name,
                     evidence_ref=task.ref_id,
                     tick_id=task.tick_id,
                 )
@@ -199,6 +181,101 @@ class LocalSmolVLMProvider(BaseVisualProvider):
         )
 
 
+class LocalSmolVLMProvider(BaseVisualProvider):
+    """
+    Optional local caption augmentation provider.
+    Default remains native/local heuristics; this provider is opt-in.
+    """
+
+    name = "local_smolvlm"
+
+    def __init__(self, caption_enabled: Optional[bool] = None):
+        self._base = LocalNativeVisionProvider()
+        if caption_enabled is None:
+            caption_enabled = os.environ.get("ILUMINATY_VLM_CAPTION", "0") == "1"
+        self._caption_enabled = bool(caption_enabled)
+        self._caption_backend = None
+        if self._caption_enabled:
+            self._try_init_caption_backend()
+
+    def _try_init_caption_backend(self) -> None:
+        try:
+            from transformers import pipeline  # type: ignore
+
+            self._caption_backend = pipeline(
+                "image-to-text",
+                model=os.environ.get("ILUMINATY_VLM_MODEL", "Salesforce/blip-image-captioning-base"),
+                device=-1,
+            )
+        except Exception:
+            self._caption_backend = None
+
+    def _caption(self, image_bytes: bytes) -> str:
+        if not self._caption_backend or Image is None:
+            return ""
+        try:
+            img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+            out = self._caption_backend(img, max_new_tokens=40)
+            if not out:
+                return ""
+            text = out[0].get("generated_text", "")
+            return str(text).strip()[:180]
+        except Exception:
+            return ""
+
+    def _coerce_base(self, base: VisualInference, source: str, facts: list[VisualFact], latency_ms: float) -> VisualInference:
+        summary_parts = [f.text for f in facts[:3]]
+        summary = " | ".join(summary_parts)[:360] if summary_parts else "No visual facts"
+        confidence = sum(f.confidence for f in facts) / max(1, len(facts))
+        return VisualInference(
+            timestamp_ms=base.timestamp_ms,
+            tick_id=base.tick_id,
+            monitor=base.monitor,
+            summary=summary,
+            confidence=confidence,
+            source=source,
+            evidence_ref=base.evidence_ref,
+            facts=facts,
+            latency_ms=latency_ms,
+        )
+
+    def analyze(self, task: VisualTask) -> VisualInference:
+        t0 = time.time()
+        base = self._base.analyze(task)
+        facts = list(base.facts)
+
+        if self._caption_enabled:
+            caption = self._caption(task.frame_bytes)
+            if caption:
+                facts.append(
+                    VisualFact(
+                        kind="image_caption",
+                        text=f"Frame caption: {caption}",
+                        confidence=0.55,
+                        monitor=task.monitor,
+                        timestamp_ms=base.timestamp_ms,
+                        source=f"{self.name}:caption",
+                        evidence_ref=task.ref_id,
+                        tick_id=task.tick_id,
+                    )
+                )
+        latency_ms = max(base.latency_ms, (time.time() - t0) * 1000.0)
+        return self._coerce_base(base=base, source=self.name, facts=facts, latency_ms=latency_ms)
+
+
+def _build_default_provider() -> BaseVisualProvider:
+    """
+    Provider strategy:
+    - default: fully local/native heuristics (`native`)
+    - optional: caption-augmented local provider (`smolvlm` / env flag)
+    """
+    mode = os.environ.get("ILUMINATY_VISION_PROVIDER", "native").strip().lower()
+    caption_flag = os.environ.get("ILUMINATY_VLM_CAPTION", "0") == "1"
+    if mode in ("smolvlm", "caption", "hybrid") or caption_flag:
+        return LocalSmolVLMProvider(caption_enabled=True)
+    return LocalNativeVisionProvider()
+
+
 class VisualEngine:
     """
     Dedicated worker for deep visual inference.
@@ -211,7 +288,7 @@ class VisualEngine:
         max_queue: int = 24,
         max_history: int = 600,
     ):
-        self._provider = provider or LocalSmolVLMProvider()
+        self._provider = provider or _build_default_provider()
         self._queue: deque[VisualTask] = deque(maxlen=max(4, max_queue))
         self._history: deque[VisualInference] = deque(maxlen=max(60, max_history))
         self._latest_by_monitor: dict[int, VisualInference] = {}
