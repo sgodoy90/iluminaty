@@ -1,886 +1,258 @@
 # AUDITORIA CODEX
 
-## Resumen Ejecutivo
+Fecha de auditoría: 2026-03-30  
+Proyecto: ILUMINATY (IPA v2)  
+Alcance: auditoría global de arquitectura, seguridad, flujo operativo, contexto perceptual, estructura y robustez.
+
+Nota de alcance acordada: los *master keys* de pruebas **no** se marcan como hallazgo de seguridad en este informe (quedan como pendiente explícito para limpieza final).
+
+## 1) Resumen Ejecutivo
+El proyecto dio un salto fuerte hacia IPA v2: ya existe un núcleo semántico real (`WorldState` + `trace` + `readiness`), control en bucle cerrado (`precheck -> execute -> verify -> recover`) y contrato MCP/API bastante sólido para operar con IA externa.
 
-ILUMINATY tiene una propuesta de producto excepcionalmente ambiciosa y valiosa: no solo darle ojos a una IA, sino también manos, contexto, memoria operativa y capacidad de actuar sobre el entorno real del usuario. La visión es potente, diferenciada y comercialmente atractiva. El proyecto ya contiene una base técnica relevante, una arquitectura conceptual clara por capas y un posicionamiento de producto fuerte.
+Estado general:
+- Arquitectura: **fuerte y escalable** para “ojos + manos”.
+- Flujo de control: **funcional**, con mejoras críticas ya aplicadas.
+- Riesgo global actual: **medio-bajo** (persisten pendientes de performance hardening y pruebas e2e de alta carga).
+- Potencial de producto: **alto** (base correcta para convertir ILUMINATY en capa universal de percepción/acción).
 
-La conclusión principal de esta auditoría es la siguiente:
+## 2) Metodología
+Se ejecutó auditoría en 3 capas:
+- Inspección estructural de módulos núcleo (`server`, `perception`, `world_state`, `mcp_server`, `ring_buffer`, `smart_diff`, `agents`, `main`).
+- Escaneo estático de riesgos (`exec/eval/shell`, excepciones silenciadas, endpoints sin auth, coherencia de contratos).
+- Smoke tests funcionales con stubs y con inicialización real de servidor.
 
-- La visión del producto es fuerte.
-- La base técnica es prometedora.
-- El mayor riesgo actual no es la falta de features, sino la falta de consolidación estructural.
-- El sistema necesita endurecer seguridad, unificar contratos internos y ordenar su arquitectura antes de seguir creciendo agresivamente.
+Validaciones técnicas realizadas:
+- Compilación: `python -m compileall iluminaty` (OK).
+- Import sweep completo: 46 módulos `iluminaty.*` (OK).
+- Smoke tests de contrato:
+  - `SAFE` bloquea por falta de contexto (`readiness=false`) (OK).
+  - `RAW` permite ejecución sin readiness (OK).
+  - Endpoints de tokens con auth (`401` sin key, `200` con key) (OK).
+  - MCP reenvía `x-api-key` al API local (OK).
+  - Endpoints IPA v2 (`/perception/world`, `/perception/readiness`, `/action/precheck`, `/operating/mode`) responden correctamente tras `init_server` (OK).
+- Regresión automatizada con `pytest`:
+  - `7` tests (`7 passed`).
+  - Cobertura base sobre `WorldState`, `precheck SAFE/RAW`, auth en tokens, contrato de tools por rol, y forwarding de `x-api-key` en MCP.
+- Saneamiento de errores silenciosos:
+  - `except ...: pass` en repo: `41 -> 0`.
 
-Hoy ILUMINATY se percibe como un prototipo avanzado con potencial real de plataforma. Para dar el salto a un producto robusto, confiable y escalable, hace falta corregir inconsistencias entre promesa e implementación, centralizar la gobernanza del sistema y formalizar el modelo de ejecución segura para agentes.
+## 3) Cambios Críticos Aplicados en esta Iteración
 
-En una frase:
+### C1. Precheck contextual real en SAFE/HYBRID
+Problema:
+- `precheck` no bloqueaba por contexto insuficiente; solo evaluaba kill/safety.
 
-**ILUMINATY ya tiene la ambición correcta; ahora necesita una base operativa igual de fuerte que su visión.**
+Corrección:
+- Se agregó `readiness_check` y `readiness_applies` al precheck.
+- En `SAFE/HYBRID` (cuando aplica safety), se bloquea ejecución si `readiness=false`.
 
----
+Impacto:
+- Evita acciones “a ciegas”.
+- Alinea el sistema con el objetivo principal de percepción con razonamiento contextual.
 
-## Diagnóstico General
+Referencia:
+- `iluminaty/server.py` (aprox. líneas 190, 243).
 
-### Lo más fuerte del proyecto
+### C2. Seguridad de endpoints de token economy
+Problema:
+- `/tokens/status`, `/tokens/mode`, `/tokens/budget`, `/tokens/reset` no exigían auth.
 
-- La propuesta "AI that can see and act" es clara, memorable y diferencial.
-- La división conceptual por capas está bien pensada.
-- La mezcla de visión, OCR, UI tree, browser, terminal, filesystem y acciones OS crea una base muy poderosa.
-- El enfoque de resolvedor en cascada es una idea sólida de producto y de sistema.
-- La narrativa del proyecto está bien construida y transmite dirección.
-- Hay suficiente volumen de implementación como para considerar que esto ya supera una demo simple.
+Corrección:
+- Se añadió `_check_auth(...)` a los 4 endpoints.
 
-### Lo más delicado del proyecto
+Impacto:
+- El control de consumo/costos ya no queda expuesto cuando hay API key activa.
 
-- El sistema expone superficies de alto riesgo sin una política unificada de seguridad.
-- Existen inconsistencias importantes entre README, servidor, licensing y MCP.
-- El código está modularizado, pero el acoplamiento real sigue alto.
-- La seguridad prometida no siempre coincide con la seguridad aplicada.
-- La base de testing no parece proporcional al riesgo operativo del producto.
-- La app desktop contiene señales de bypass de desarrollo incompatibles con una distribución seria.
+Referencia:
+- `iluminaty/server.py` (aprox. líneas 2473, 2490, 2503, 2514).
 
----
+### C3. MCP compatible con servidores protegidos por API key
+Problema:
+- MCP no enviaba `x-api-key`, rompiendo integración en entornos con auth.
 
-## Hallazgos Críticos
+Corrección:
+- `ILUMINATY_API_KEY` incorporado en `mcp_server.py`.
+- `_api_get` y `_api_post` ya envían header cuando está configurado.
 
-## 1. Seguridad del producto insuficiente para el poder que expone
+Impacto:
+- Integración robusta con despliegues reales, no solo en local abierto.
 
-ILUMINATY no es una app común. Está diseñándose como una capa operativa que puede:
+Referencia:
+- `iluminaty/mcp_server.py` (aprox. líneas 33, 92, 103).
 
-- ver la pantalla,
-- interpretar UI,
-- escribir teclado,
-- mover mouse,
-- leer y escribir archivos,
-- ejecutar terminal,
-- operar browser,
-- interactuar con ventanas y procesos.
+### C4. Robustez de WorldState en etiquetas de atención
+Problema:
+- `_zone_label` podía fallar si `row/col` llegaban nulos o no enteros.
 
-Ese nivel de poder requiere un modelo de seguridad mucho más estricto que el que suele necesitar una API local tradicional.
+Corrección:
+- Coerción defensiva a entero con fallback seguro.
 
-### Problemas detectados
+Impacto:
+- Evita fallos por datos incompletos en el pipeline semántico.
 
-- Existe bypass de desarrollo embebido en la app desktop.
-- Se usan credenciales o llaves privilegiadas hardcodeadas.
-- Muchas acciones sensibles pueden invocarse directo por endpoint.
-- El `SafetySystem` no gobierna uniformemente todas las acciones directas.
-- La autonomía del agente no parece ser la puerta obligatoria para toda operación riesgosa.
-- El modelo actual depende demasiado de "tener API key" en vez de permisos finos.
+Referencia:
+- `iluminaty/world_state.py` (aprox. línea 21).
 
-### Impacto
+### C5. Observabilidad de fallas de bootstrap
+Problema:
+- Fallos en init de percepción/coordinador quedaban silenciados.
 
-- Una fuga de key o bug de autorización puede dar control amplio del entorno.
-- El usuario puede asumir que el sistema está más blindado de lo que realmente está.
-- La confianza del producto puede quebrarse si una integración actúa por fuera del flujo esperado.
+Corrección:
+- Se añadió `bootstrap_warnings` en estado de servidor.
+- Se registran errores de init y se exponen en `agent_status` y `system_overview`.
 
-### Recomendación
+Impacto:
+- Diagnóstico rápido sin necesidad de buscar en logs externos.
 
-Toda acción sensible debe pasar por una misma política central, sin excepciones.
+Referencia:
+- `iluminaty/server.py` (aprox. líneas 116, 715, 2349).
 
-Esa política debe resolver:
+### C6. Consistencia de herramientas por rol de agentes
+Problema:
+- Mapeos de tools por rol incluían herramientas no existentes en MCP.
 
-- si la acción está permitida,
-- bajo qué plan está disponible,
-- qué nivel de autonomía exige,
-- si requiere confirmación,
-- si requiere contexto válido,
-- si debe registrarse con auditoría obligatoria,
-- si puede ejecutarse según app, dominio, ventana o path.
+Corrección:
+- Se alinearon `OBSERVER/PLANNER/EXECUTOR/VERIFIER` con herramientas reales.
 
----
+Impacto:
+- Menos confusión operativa para multi-agent orchestration.
 
-## 2. Deriva entre promesa de producto e implementación real
+Referencia:
+- `iluminaty/agents.py` (aprox. líneas 63, 70, 75, 83).
 
-La promesa de "zero disk" es muy fuerte comercialmente, pero hoy no está representada con precisión.
+### C7. Eliminación de silencios críticos + observabilidad transversal
+Problema:
+- El sistema ocultaba fallas en múltiples módulos (`except ...: pass`), dificultando diagnóstico y resiliencia.
 
-### Problemas detectados
+Corrección:
+- Se reemplazaron silencios por logging estructurado/fallback explícito en módulos core (`server`, `perception`, `capture`, `ring_buffer`, `multi_capture`, `watchdog`, `profile`, `windows`, etc.).
+- Se refactorizó `filesystem._check_path` para evitar excepciones de control de flujo.
 
-- Hay auditoría persistente en SQLite.
-- Hay cache local de licencias.
-- MCP genera archivo de debug.
-- El mensaje "nada se guarda" no es exacto en todas las rutas del sistema.
+Impacto:
+- Mejor trazabilidad en producción.
+- Menor riesgo de fallas “fantasma”.
 
-### Impacto
+Referencia:
+- `iluminaty/*.py` (múltiples módulos core).
 
-- Riesgo reputacional.
-- Riesgo de soporte.
-- Riesgo de generar una expectativa de privacidad que no coincide con el comportamiento real.
+## 4) Hallazgos Globales (Pendientes)
 
-### Recomendación
+### H1. Manejo silencioso de excepciones (estado: mitigado)
+Dato:
+- Se detectaron inicialmente `41` ocurrencias de `except ...: pass`.
+- Tras la corrección: `0` ocurrencias.
 
-Reformular el modelo de privacidad con precisión:
+Riesgo:
+- Residual bajo. Ahora el foco es calibrar niveles de logging para evitar ruido en carga alta.
 
-- `Ephemeral visual mode`: frames y buffer solo en RAM.
-- `Audit mode`: persistencia de metadata operativa.
-- `Compliance mode`: trazabilidad extendida.
-- `Privacy hardened mode`: sin cache, sin logs, sin audit persistente.
+Acción recomendada:
+- Añadir política de observabilidad por niveles (`DEBUG/INFO/WARN`) por entorno.
 
-La comunicación del producto debe ser exacta. En seguridad y privacidad, la precisión importa más que el marketing.
+### H2. Cobertura de pruebas del core runtime (estado: parcial)
+Dato:
+- Ya existe base de regresión (`7` tests verdes), pero aún no cubre escenarios de stress y multi-monitor profundo.
 
----
+Riesgo:
+- Riesgo medio residual de regresión en condiciones de alta carga.
 
-## 3. Modelo de licencias y capacidades desalineado
+Acción recomendada:
+- Crear batería mínima obligatoria de regresión para:
+  - Precheck modes (`SAFE/RAW/HYBRID`).
+  - Contrato WorldState/readiness.
+  - Integración MCP/API.
+  - Multi-monitor isolation.
 
-El sistema de planes, herramientas y endpoints necesita consolidación.
+### H3. Endpoints públicos mínimos (riesgo bajo, intencional)
+Dato:
+- Permanecen públicos: `/`, `/health`, `/license/status`.
 
-### Problemas detectados
+Riesgo:
+- Enumeración básica de estado/servicio si el host se expone fuera de localhost.
 
-- Rutas declaradas en licensing no coinciden totalmente con rutas reales del servidor.
-- Hay múltiples catálogos manuales de endpoints y tools.
-- Los permisos del MCP y del server no parecen salir de una misma fuente de verdad.
-- El enfoque "permit unknown endpoints" es peligroso.
+Acción recomendada:
+- Mantener público en local dev.
+- En despliegue remoto, proteger por reverse proxy o API gateway.
 
-### Impacto
+## 5) Estado de Arquitectura IPA v2
+Evaluación por objetivo:
+- Percepción semántica continua: **implementada**.
+- Contrato WorldState estable: **implementado**.
+- Memoria episódica RAM 90s: **implementada**.
+- Closed-loop control: **implementado**.
+- Modo RAW explícito: **implementado**.
+- Compatibilidad MCP cross-provider: **parcial alta** (base sólida; falta endurecer pruebas automatizadas de compatibilidad).
 
-- Nuevos endpoints podrían quedar abiertos accidentalmente.
-- Cambios futuros rompen consistencia.
-- El producto se vuelve difícil de auditar y mantener.
+## 6) Features Visionarios Recomendados (Siguiente Nivel)
 
-### Recomendación
+### V1. Intent-Aware Attention Controller (prioridad alta)
+Qué es:
+- La IA define objetivo explícito y IPA prioriza regiones/entidades relevantes al objetivo.
 
-Crear un catálogo único declarativo de capacidades.
+Ejemplo:
+- En trading, priorizar velas, order book, pnl, estado de posición y botones críticos.
 
-Ejemplo conceptual:
+Beneficio:
+- Menos ruido visual, más precisión de ejecución.
 
-- `capability_id`
-- `transport` (`http`, `mcp`, `desktop`)
-- `plan_required`
-- `permission_scope`
-- `risk_level`
-- `confirmation_mode`
-- `audit_required`
-- `feature_flag`
+### V2. Domain Packs con políticas de contexto (prioridad alta)
+Qué es:
+- Packs por dominio: `trading`, `coding`, `support`, `backoffice`.
+- Cada pack define affordances, riesgos, verificadores y readiness rules propios.
 
-Luego:
+Beneficio:
+- Mejora fuerte de “entendimiento humano” por contexto.
 
-- FastAPI deriva permisos desde ese catálogo.
-- MCP deriva tools desde ese catálogo.
-- Desktop deriva UI/availability desde ese catálogo.
-- README puede derivar documentación visible desde ese catálogo.
+### V3. Verificador semántico multi-evidencia (prioridad alta)
+Qué es:
+- Verificación por consenso entre OCR + UI tree + ventana + diff.
 
----
+Beneficio:
+- Baja falsos positivos en “acción completada”.
 
-## 4. Acoplamiento excesivo en la capa de servidor
+### V4. Attention Memory Graph en RAM (prioridad media)
+Qué es:
+- Grafo temporal de entidades/vistas/acciones en 90s sin persistencia de imagen.
 
-Aunque el repositorio tiene muchos módulos, la capa central sigue tomando demasiadas decisiones manuales.
+Beneficio:
+- Razonamiento de continuidad más humano sin romper requisito RAM-only.
 
-### Problemas detectados
+### V5. Adaptive Latency Governor (prioridad media)
+Qué es:
+- Regulador dinámico para sostener `p95 <= 300ms` degradando calidad selectivamente cuando sube carga.
 
-- `server.py` concentra demasiada orquestación.
-- Las reglas de negocio están repartidas.
-- El crecimiento del sistema depende de sincronización manual entre archivos.
-- Hay demasiado conocimiento implícito entre módulos.
+Beneficio:
+- Estabilidad operativa en hardware heterogéneo.
 
-### Impacto
+## 7) Roadmap de Corrección y Hardening
 
-- El sistema escala en features más rápido que en claridad.
-- Cada mejora aumenta el riesgo de desalineación.
-- Refactorizar se vuelve más costoso con el tiempo.
+## Fase R1 (0-7 días) — Estabilidad y trazabilidad
+- Estado: **completada**.
+- Logging estructurado en rutas críticas.
+- Tests base para `WorldStateEngine` y `precheck`.
+- Contract tests base MCP/API.
 
-### Recomendación
+## Fase R2 (7-14 días) — Fiabilidad operacional
+- Tests de integración multi-monitor con escenarios de conmutación de ventana.
+- Métricas de bloqueo por readiness/safety/mode.
+- Panel de observabilidad para `bootstrap_warnings`, fallos de verify/recover y latencia.
 
-Reorganizar el proyecto por dominios funcionales y no solo por módulos aislados.
+## Fase R3 (14-28 días) — Inteligencia contextual avanzada
+- Domain Pack `trading` y `coding` como MVP.
+- Verificación semántica multi-evidencia.
+- Reglas de atención por objetivo (intent-aware attention).
 
----
+## Fase R4 (28+ días) — Escala y ecosistema
+- Benchmarks reproducibles p50/p95.
+- Playbook de compatibilidad con múltiples proveedores IA.
+- Perfilado de CPU/memoria con límites por modo operativo.
 
-## Bugs y Riesgos Detectados
+## 8) Criterios de Aceptación Recomendados
+- `p95` de actualización semántica `<= 300ms` en carga nominal.
+- Tasa de acciones fallidas por falta de contexto reducida >= 40%.
+- Recuperación automática funcional tras error UI sin pérdida de objetivo principal.
+- Contrato MCP estable para OpenAI/Anthropic con mismo set de tools IPA v2.
 
-## Bugs críticos
-
-### 1. Bypass de autenticación/desarrollo en cliente desktop
-
-Esto es un hallazgo severo.
-
-- Hay lógica para aceptar credenciales de desarrollo si el auth server no responde.
-- Se entrega una llave privilegiada desde el cliente.
-
-Esto no debe existir en una build distribuible.
-
-### 2. Puerta de seguridad inconsistente entre `agent/do` y endpoints directos
-
-- `agent/do` aplica validaciones más ricas.
-- Muchas rutas directas ejecutan acciones sin pasar por la misma política.
-
-Esto genera dos modelos de seguridad distintos dentro del mismo sistema.
-
-### 3. Licencias potencialmente bypassables por deriva de rutas
-
-- Si cambia una ruta y licensing no se actualiza, el endpoint puede quedar sin control real.
-- La política permisiva para endpoints desconocidos lo agrava.
-
-### 4. Exposición excesiva de ejecución arbitraria
-
-- Terminal, browser eval, git y filesystem combinados forman una superficie muy poderosa.
-- Si no están gobernados por scopes finos, el riesgo es muy alto.
-
-## Bugs medios
-
-### 5. Inconsistencia de versiones
-
-- `pyproject` y banner/API no coinciden.
-- Esto rompe claridad de release, soporte y debugging.
-
-### 6. Promesas de producto no exactas
-
-- "Zero disk" no es completamente cierto.
-- Eso puede convertirse en bug de confianza.
-
-### 7. Soporte cross-platform desigual
-
-- Algunas piezas parecen mucho más maduras en Windows que en macOS/Linux.
-- Algunas rutas de soporte están en estado parcial o aspiracional.
-
-## Bugs de diseño/arquitectura
-
-### 8. Falta de una fuente única de verdad
-
-- Planes.
-- Tools.
-- Endpoints.
-- Versionado.
-- Claims del producto.
-- Riesgos por acción.
-
-Todo esto debe salir de una misma metadata central.
-
-### 9. Testing insuficiente para el nivel de riesgo
-
-No parece haber cobertura suficiente para:
-
-- policy enforcement,
-- licensing,
-- sandboxing,
-- destructive actions,
-- consistency contracts,
-- regression safety.
-
----
-
-## Reordenamiento de Código Recomendado
-
-## Objetivo
-
-Pasar de una organización "muchos módulos con coordinación manual" a una arquitectura basada en dominios, contratos y políticas centralizadas.
-
-## Estructura sugerida
-
-```text
-iluminaty/
-  core/
-    config.py
-    version.py
-    registry.py
-    errors.py
-    types.py
-
-  policy/
-    capabilities.py
-    plans.py
-    scopes.py
-    risk.py
-    enforcement.py
-    confirmation.py
-
-  perception/
-    capture.py
-    ring_buffer.py
-    vision.py
-    smart_diff.py
-    audio.py
-    context.py
-    monitors.py
-    fusion.py
-
-  actuation/
-    actions.py
-    windows.py
-    clipboard.py
-    process_mgr.py
-    browser.py
-    terminal.py
-    filesystem.py
-    vscode.py
-    git_ops.py
-
-  intelligence/
-    intent.py
-    resolver.py
-    planner.py
-    verifier.py
-    recovery.py
-
-  safety/
-    safety.py
-    autonomy.py
-    audit.py
-    secrets.py
-    watchdog.py
-
-  licensing/
-    manager.py
-    cache.py
-    gating.py
-
-  transports/
-    http/
-      routes_vision.py
-      routes_actions.py
-      routes_system.py
-      routes_admin.py
-    mcp/
-      server.py
-      tools.py
-    desktop/
-      bridge.py
-
-  integrations/
-    adapters.py
-    plugin_system.py
-    collab.py
-    relay.py
-```
-
-## Qué ganarías con ese reordenamiento
-
-- Menos acoplamiento accidental.
-- Mejor mantenibilidad.
-- Seguridad más gobernable.
-- Más facilidad para agregar apps, plugins y capabilities.
-- Mejor testing por dominio.
-
----
-
-## Nuevo Modelo de Seguridad Propuesto
-
-## 1. Capability Registry
-
-Cada capacidad del sistema debe existir como una entidad formal.
-
-Ejemplos:
-
-- `vision.snapshot`
-- `vision.ocr`
-- `actions.click`
-- `actions.type`
-- `browser.navigate`
-- `browser.eval`
-- `terminal.exec`
-- `filesystem.read`
-- `filesystem.write`
-- `git.commit`
-- `windows.focus`
-
-Cada una debe tener:
-
-- plan requerido,
-- nivel de riesgo,
-- scope permitido,
-- modo de confirmación,
-- si requiere audit,
-- si es reversible,
-- si se puede ejecutar en `AUTO`.
-
-## 2. Deny by default
-
-Ninguna capability nueva debe quedar expuesta automáticamente.
-
-Todo capability nuevo debe declararse de forma explícita.
-
-## 3. Scopes finos
-
-No basta con una API key global.
-
-Debe haber scopes como:
-
-- `vision.read`
-- `audio.read`
-- `actions.mouse`
-- `actions.keyboard`
-- `browser.read`
-- `browser.write`
-- `terminal.exec`
-- `filesystem.read`
-- `filesystem.write`
-- `git.read`
-- `git.write`
-
-## 4. Restricciones contextuales
-
-Poder permitir o negar según:
-
-- aplicación,
-- ventana,
-- dominio web,
-- directorio,
-- tipo de acción,
-- horario,
-- agente/proveedor.
-
-## 5. Confirmación contextual
-
-No todo requiere la misma fricción.
-
-Ejemplos:
-
-- `click` en UI conocida: bajo riesgo.
-- `type_text` en campo no sensible: riesgo medio.
-- `terminal.exec`: alto riesgo.
-- `git push`: alto riesgo.
-- `files.delete`: alto riesgo.
-- `browser submit/purchase/send`: muy alto riesgo.
-
----
-
-## Modelo de Flujo Recomendado
-
-La ejecución ideal de una acción debería seguir este pipeline:
-
-1. Percepción.
-2. Clasificación de intención.
-3. Resolución de capability requerida.
-4. Policy check.
-5. Preview/dry-run opcional.
-6. Confirmación si aplica.
-7. Ejecución.
-8. Verificación.
-9. Recovery o rollback.
-10. Audit y evidencia.
-
-Ese pipeline debe ser transversal a todos los transportes:
-
-- API HTTP,
-- MCP,
-- Desktop app,
-- futuros SDKs.
-
----
-
-## Features Prioritarios de Producto
-
-## 1. Policy Engine Visual
-
-Este puede ser uno de los features más importantes del proyecto.
-
-Permitir configurar reglas como:
-
-- "Esta IA puede ver pantalla pero no usar terminal."
-- "Solo puede actuar dentro de VS Code."
-- "Puede leer archivos, pero no escribir."
-- "No puede interactuar con apps bancarias."
-- "No puede enviar formularios sin confirmación."
-- "Solo puede operar dentro del workspace actual."
-
-### Por qué importa
-
-- Convierte poder técnico en confianza de producto.
-- Hace el sistema adoptable para usuarios reales.
-- Te diferencia de soluciones más "demo" o más peligrosas.
-
----
-
-## 2. Session Sandboxes
-
-Perfiles de sesión listos para usar:
-
-- `Observe Only`
-- `Suggest Only`
-- `Safe Assist`
-- `Developer Operator`
-- `Browser Assistant`
-- `Workspace-Limited Agent`
-
-### Valor
-
-- Reduce miedo.
-- Facilita onboarding.
-- Hace más claro lo que la IA puede y no puede hacer.
-
----
-
-## 3. Action Preview / Dry Run
-
-Antes de actuar, el sistema muestra:
-
-- qué entendió,
-- qué acción piensa ejecutar,
-- sobre qué app/ventana,
-- con qué método,
-- qué espera verificar.
-
-### Valor
-
-- Aumenta confianza.
-- Reduce errores.
-- Convierte el sistema en algo más explicable.
-
----
-
-## 4. Verification Engine Avanzado
-
-La verificación debe convertirse en una gran fortaleza del producto.
-
-No basta con ejecutar; hay que confirmar.
-
-### Modos de verificación
-
-- visual,
-- OCR,
-- DOM,
-- UI tree,
-- filesystem,
-- terminal output,
-- process/window state.
-
-### Valor
-
-- Diferenciación real.
-- Menos acciones fantasmas.
-- Más robustez de agente.
-
----
-
-## 5. Intelligent App Profiles
-
-ILUMINATY puede crecer muchísimo si deja de pensar solo en acciones genéricas y empieza a pensar en perfiles por aplicación.
-
-Ejemplos:
-
-- VS Code profile
-- Chrome profile
-- Terminal profile
-- Slack profile
-- Notion profile
-- Figma profile
-- Excel profile
-
-Cada perfil puede exponer:
-
-- operaciones comunes,
-- métodos seguros,
-- validadores específicos,
-- scopes por defecto.
-
----
-
-## Features Visionarios Recomendados
-
-Esta sección enfatiza las oportunidades más grandes del proyecto.
-
-## 1. Teach by Demonstration
-
-### Idea
-
-El usuario realiza una tarea manual una vez y ILUMINATY aprende el flujo:
-
-- qué ventana usó,
-- qué botones tocó,
-- qué textos escribió,
-- qué validaciones ocurrieron,
-- qué condiciones de éxito existían.
-
-Luego la IA puede:
-
-- repetir la tarea,
-- adaptarla,
-- convertirla en workflow,
-- pedir confirmación solo en puntos ambiguos.
-
-### Potencial
-
-Esto puede transformar ILUMINATY de "agente que improvisa acciones" a "agente que aprende operaciones reales del usuario".
-
-### Casos
-
-- publicar contenido,
-- abrir proyecto y correr tests,
-- preparar entorno de trabajo,
-- responder tickets repetitivos,
-- abrir dashboards y recolectar métricas.
-
-### Valor estratégico
-
-Muy alto. Reduce dependencia de prompts perfectos y convierte comportamiento humano en automatización reusable.
-
----
-
-## 2. Watch Mode / Guardian Mode
-
-### Idea
-
-ILUMINATY observa el entorno y solo interviene cuando detecta una condición importante.
-
-Ejemplos:
-
-- build roto,
-- error modal,
-- test suite fallida,
-- app congelada,
-- terminal con stack trace,
-- mensaje crítico en Slack,
-- alerta de seguridad,
-- formulario incompleto.
-
-### Modos posibles
-
-- solo alertar,
-- sugerir acción,
-- auto-remediar si está dentro de policy,
-- pedir confirmación con plan sugerido.
-
-### Valor estratégico
-
-Convierte ILUMINATY en una capa de vigilancia activa, no solo en una herramienta reactiva.
-
----
-
-## 3. Multi-Agent Workbench
-
-### Idea
-
-Separar roles de agentes:
-
-- agente observador,
-- agente planificador,
-- agente ejecutor,
-- agente verificador,
-- agente auditor.
-
-### Beneficios
-
-- mejor trazabilidad,
-- menos errores,
-- mejor explicabilidad,
-- mayor seguridad,
-- más facilidad para rollback.
-
-### Visión
-
-No una IA única haciendo todo, sino una pequeña orquesta de agentes con responsabilidades claras.
-
-### Valor estratégico
-
-Altísimo si apuntas a usuarios avanzados, equipos técnicos o flujos críticos.
-
----
-
-## 4. Declarative Workflows
-
-### Idea
-
-Convertir tareas comunes en workflows formales y guardables.
-
-Ejemplos:
-
-- `debug_local_project`
-- `review_repo_changes`
-- `prepare_daily_report`
-- `open_workspace_and_resume`
-- `collect_browser_research`
-
-Cada workflow podría definir:
-
-- pasos,
-- permisos requeridos,
-- acciones permitidas,
-- verificaciones,
-- rollback,
-- intervención humana esperada.
-
-### Valor estratégico
-
-Esto mueve el producto de herramienta a plataforma.
-
----
-
-## 5. Secret-Aware Computer Use
-
-### Idea
-
-El sistema detecta contextos sensibles y cambia automáticamente su comportamiento.
-
-Ejemplos:
-
-- password fields,
-- secrets managers,
-- cloud consoles,
-- billing pages,
-- bank apps,
-- auth flows,
-- API keys en pantalla o archivos.
-
-### Comportamiento
-
-- bloquear captura detallada,
-- impedir escritura automática,
-- ocultar OCR,
-- deshabilitar copy/read,
-- pedir confirmación reforzada.
-
-### Valor estratégico
-
-Es uno de los mayores diferenciadores posibles en computer use seguro.
-
----
-
-## 6. Semantic UI Memory
-
-### Idea
-
-ILUMINATY recuerda semánticamente interfaces ya vistas:
-
-- dónde suele estar un botón,
-- qué label tiene un campo,
-- qué app usa qué flujo,
-- qué ventanas aparecen antes de cierto paso,
-- qué confirmaciones son normales.
-
-### Resultado
-
-La IA deja de operar como si todo fuera nuevo cada vez.
-
-### Valor estratégico
-
-Hace al agente más rápido, más estable y más humano en su comportamiento.
-
----
-
-## 7. Replay, Evidence and Time Travel
-
-### Idea
-
-Cada operación importante produce una evidencia navegable:
-
-- qué vio,
-- qué interpretó,
-- qué acción eligió,
-- qué ejecutó,
-- qué verificó,
-- qué falló,
-- qué intentó después.
-
-### Valor
-
-- debugging,
-- soporte,
-- confianza,
-- compliance,
-- entrenamiento del sistema.
-
----
-
-## Roadmap Recomendado
-
-## Fase 1. Endurecimiento inmediato
-
-### Objetivo
-
-Cerrar riesgos severos antes de crecer más.
-
-### Acciones
-
-- eliminar bypass dev del cliente distribuible,
-- eliminar llaves privilegiadas embebidas,
-- bloquear exposición permisiva de endpoints desconocidos,
-- unificar política de autorización,
-- hacer pasar terminal/filesystem/browser/git por policy central,
-- revisar claims de privacidad.
-
-## Fase 2. Consolidación arquitectónica
-
-### Objetivo
-
-Reducir deriva y mejorar mantenibilidad.
-
-### Acciones
-
-- crear capability registry,
-- separar server por dominios,
-- generar disponibilidad de tools/endpoints desde metadata,
-- centralizar versiones y feature claims.
-
-## Fase 3. Seguridad operativa y UX de confianza
-
-### Objetivo
-
-Hacer que el producto sea poderoso pero gobernable.
-
-### Acciones
-
-- policy engine visual,
-- session sandboxes,
-- preview de acciones,
-- confirmación contextual,
-- audit y evidencia mejorados.
-
-## Fase 4. Diferenciación fuerte
-
-### Objetivo
-
-Construir features difíciles de copiar.
-
-### Acciones
-
-- teach by demonstration,
-- watch mode,
-- semantic UI memory,
-- declarative workflows,
-- multi-agent workbench.
-
----
-
-## Testing Recomendado
-
-## Prioridades
-
-- tests unitarios para `filesystem`, `licensing`, `safety`, `autonomy`, `resolver`,
-- contract tests para endpoints y MCP,
-- tests de consistencia de capability registry,
-- tests de deny-by-default,
-- tests de destructive actions,
-- tests de verificación post-acción,
-- tests end-to-end con mocks de OS/browser.
-
-## Meta
-
-Tener un sistema donde agregar un nuevo endpoint o nueva tool sin declararla explícitamente provoque fallo de test.
-
----
-
-## Recomendaciones Finales
-
-## Qué no hacer ahora
-
-- No seguir agregando demasiados endpoints sin capability registry.
-- No confiar en que README/manuales sigan sincronizados a mano.
-- No distribuir builds con bypass de auth/dev.
-- No vender "zero disk" sin matices precisos.
-
-## Qué sí hacer ahora
-
-- Endurecer seguridad.
-- Unificar políticas.
-- Reordenar arquitectura.
-- Reducir deriva interna.
-- Construir confianza de ejecución.
-
----
-
-## Conclusión Final
-
-ILUMINATY tiene una de las ideas más interesantes del repositorio: no solo ver el computador, sino operarlo con una IA de manera útil, segura y gobernada. Ese es un espacio con muchísimo potencial.
-
-Pero precisamente porque el poder del sistema es tan alto, el estándar técnico debe subir al mismo nivel que la visión.
-
-La mejor oportunidad del proyecto no está solo en "automatizar clicks". Está en convertirse en una **capa operativa confiable para agentes**, donde percepción, política, ejecución, verificación y recuperación formen un solo sistema.
-
-Si se ejecuta bien, ILUMINATY puede evolucionar desde:
-
-- una herramienta de computer use,
-
-hacia:
-
-- una plataforma de agentes operativos con memoria, policy, workflows y ejecución verificable.
-
-Ese camino sí es ambicioso.
-Y sí vale la pena.
-
+## 9) Veredicto Final
+ILUMINATY está en una base técnicamente correcta para cumplir la visión “IA cerebro + ILUMINATY ojos y manos”.  
+Con los fixes aplicados en esta iteración, el sistema quedó más seguro, más coherente en flujo contextual y más apto para operación real.  
+La prioridad ahora no es reinventar la arquitectura: es endurecerla con observabilidad y tests sistemáticos mientras se agregan Domain Packs de alto impacto.

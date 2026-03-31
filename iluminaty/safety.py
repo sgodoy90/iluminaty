@@ -8,10 +8,13 @@ Todo el sistema de acciones pasa por aqui antes de ejecutarse.
 """
 
 import time
+import logging
 import threading
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 # ─── Whitelist default: acciones permitidas por defecto ───
@@ -118,8 +121,8 @@ class SafetySystem:
         for callback in self._kill_callbacks:
             try:
                 callback()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Kill callback failed: %s", e)
 
     def resume(self):
         """Reactiva el agente despues de un kill."""

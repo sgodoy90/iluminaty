@@ -29,6 +29,8 @@ import os
 
 # ILUMINATY API base URL - configurable via env var
 API_BASE = os.environ.get("ILUMINATY_API_URL", "http://127.0.0.1:8420")
+# Optional API key when ILUMINATY server auth is enabled
+API_KEY = os.environ.get("ILUMINATY_API_KEY", "")
 
 # ILUMINATY license key - gates MCP tools to free/pro plan
 ILUMINATY_KEY = os.environ.get("ILUMINATY_KEY", "")
@@ -36,15 +38,21 @@ ILUMINATY_KEY = os.environ.get("ILUMINATY_KEY", "")
 # Free tier tools (10) — available without license
 FREE_MCP_TOOLS = {
     "see_screen", "see_changes", "read_screen_text", "perception",
-    "screen_status", "get_context", "do_action", "get_audio_level",
+    "screen_status", "get_context", "do_action", "raw_action",
+    "action_precheck", "verify_action",
+    "perception_world", "perception_trace", "set_operating_mode",
+    "get_audio_level",
     "token_status", "set_token_mode", "set_token_budget",
 }
 
 # All tools (28) — available with Pro license
 ALL_MCP_TOOLS = {
     "see_screen", "see_changes", "annotate_screen", "read_screen_text", "perception",
+    "perception_world", "perception_trace",
     "screen_status", "get_context", "get_audio_level",
-    "do_action", "click_element", "type_text", "run_command",
+    "do_action", "raw_action", "action_precheck", "verify_action",
+    "set_operating_mode",
+    "click_element", "type_text", "run_command",
     "list_windows", "find_ui_element", "read_file", "write_file",
     "get_clipboard", "agent_status",
     # Human-like navigation
@@ -84,7 +92,10 @@ def _get_allowed_tools() -> set:
 def _api_get(path: str) -> dict:
     """GET request to ILUMINATY API."""
     url = API_BASE + path
-    req = urllib.request.Request(url)
+    headers = {}
+    if API_KEY:
+        headers["x-api-key"] = API_KEY
+    req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req, timeout=5) as resp:
         return json.loads(resp.read().decode())
 
@@ -92,12 +103,15 @@ def _api_get(path: str) -> dict:
 def _api_post(path: str, body: dict | None = None) -> dict:
     """POST request to ILUMINATY API."""
     url = API_BASE + path
+    headers = {}
+    if API_KEY:
+        headers["x-api-key"] = API_KEY
     if body is not None:
         data = json.dumps(body).encode("utf-8")
-        req = urllib.request.Request(url, method="POST", data=data,
-                                     headers={"Content-Type": "application/json"})
+        headers["Content-Type"] = "application/json"
+        req = urllib.request.Request(url, method="POST", data=data, headers=headers)
     else:
-        req = urllib.request.Request(url, method="POST", data=b"")
+        req = urllib.request.Request(url, method="POST", data=b"", headers=headers)
     with urllib.request.urlopen(req, timeout=5) as resp:
         return json.loads(resp.read().decode())
 
@@ -272,11 +286,8 @@ TOOLS = [
     {
         "name": "do_action",
         "description": (
-            "Execute an action on the user's computer using natural language. "
-            "Examples: 'save the file', 'open Chrome', 'click the Submit button', "
-            "'type hello world', 'scroll down', 'copy', 'paste'. "
-            "The AI interprets the instruction, resolves the best method (API > keyboard > UI tree > vision), "
-            "verifies the result, and auto-recovers on failure."
+            "Execute an action using SAFE/HYBRID control loop (precheck -> execute -> verify -> recover). "
+            "Use this as the default action tool for reliable operation."
         ),
         "inputSchema": {
             "type": "object",
@@ -287,6 +298,71 @@ TOOLS = [
                 },
             },
             "required": ["instruction"],
+        },
+    },
+    {
+        "name": "raw_action",
+        "description": (
+            "Execute an action in RAW mode (0 guardrails except kill switch). "
+            "Use only when the external AI handles all safety."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "instruction": {"type": "string", "description": "Natural language instruction"},
+                "action": {"type": "string", "description": "Direct action name (optional if instruction provided)"},
+                "params": {"type": "object", "description": "Direct action params"},
+                "verify": {"type": "boolean", "description": "Run verifier after execution", "default": False},
+            },
+        },
+    },
+    {
+        "name": "action_precheck",
+        "description": (
+            "Validate readiness + mode + safety before taking an action. "
+            "Returns whether execution would be blocked."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "instruction": {"type": "string", "description": "Natural language instruction"},
+                "action": {"type": "string", "description": "Direct action name"},
+                "params": {"type": "object", "description": "Direct action params"},
+                "category": {"type": "string", "description": "safe|normal|destructive", "default": "normal"},
+                "mode": {"type": "string", "enum": ["SAFE", "RAW", "HYBRID"], "description": "Optional override mode"},
+            },
+        },
+    },
+    {
+        "name": "verify_action",
+        "description": (
+            "Run post-action verification for an action/params pair without executing a new action."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "description": "Action name to verify"},
+                "params": {"type": "object", "description": "Action params used during execution"},
+                "pre_state": {"type": "object", "description": "Optional captured pre-state"},
+            },
+            "required": ["action"],
+        },
+    },
+    {
+        "name": "set_operating_mode",
+        "description": (
+            "Set ILUMINATY operating mode: SAFE (default), RAW, or HYBRID."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "mode": {
+                    "type": "string",
+                    "enum": ["SAFE", "RAW", "HYBRID"],
+                    "description": "Target operating mode",
+                },
+            },
+            "required": ["mode"],
         },
     },
     {
@@ -512,6 +588,29 @@ TOOLS = [
         },
     },
     {
+        "name": "perception_world",
+        "description": (
+            "Get IPA v2 semantic WorldState snapshot (task phase, affordances, uncertainty, readiness)."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "perception_trace",
+        "description": (
+            "Get compressed semantic transitions from RAM-only episodic trace."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "seconds": {
+                    "type": "number",
+                    "description": "Trace window in seconds (default 90)",
+                    "default": 90,
+                },
+            },
+        },
+    },
+    {
         "name": "watch_screen",
         "description": (
             "See the last N frames as a sequence — like watching a video replay. "
@@ -612,6 +711,46 @@ def handle_perception(args: dict) -> list:
         return [{"type": "text", "text": f"Perception not available: {e}. Use see_screen as fallback."}]
 
 
+def handle_perception_world(args: dict) -> list:
+    try:
+        world = _api_get("/perception/world")
+        lines = [
+            "## IPA WorldState",
+            f"- Phase: {world.get('task_phase', 'unknown')}",
+            f"- Surface: {world.get('active_surface', 'unknown')}",
+            f"- Readiness: {world.get('readiness', False)}",
+            f"- Uncertainty: {world.get('uncertainty', 1.0)}",
+            f"- Risk mode: {world.get('risk_mode', 'safe')}",
+        ]
+        entities = world.get("entities", [])
+        if entities:
+            lines.append(f"- Entities: {', '.join(entities[:8])}")
+        affordances = world.get("affordances", [])
+        if affordances:
+            lines.append(f"- Affordances: {', '.join(affordances[:8])}")
+        return [{"type": "text", "text": "\n".join(lines)}]
+    except Exception as e:
+        return [{"type": "text", "text": f"WorldState not available: {e}"}]
+
+
+def handle_perception_trace(args: dict) -> list:
+    seconds = args.get("seconds", 90)
+    try:
+        data = _api_get(f"/perception/trace?seconds={seconds}")
+        trace = data.get("trace", [])
+        if not trace:
+            return [{"type": "text", "text": "No semantic trace entries in the requested window."}]
+        lines = [f"## IPA Trace ({len(trace)} entries / {seconds}s)"]
+        for item in trace[-20:]:
+            ts = item.get("timestamp_ms", 0)
+            summary = item.get("summary", "")
+            reason = item.get("boundary_reason", "")
+            lines.append(f"- [{ts}] {summary} ({reason})")
+        return [{"type": "text", "text": "\n".join(lines)}]
+    except Exception as e:
+        return [{"type": "text", "text": f"Trace not available: {e}"}]
+
+
 def handle_watch_screen(args: dict) -> list:
     """Return last N frames as images — like watching a video replay."""
     n = min(args.get("frames", 3), 5)
@@ -673,7 +812,7 @@ def handle_token_status(args: dict) -> dict:
 
 def handle_set_token_mode(args: dict) -> dict:
     mode = args.get("mode", "text_only")
-    data = _api_post(f"/tokens/mode?mode={mode}")
+    data = _api_post(f"/tokens/mode?mode={urllib.parse.quote(str(mode))}")
     return [{"type": "text", "text": f"Vision mode set to **{data['mode']}** (~{data['estimated_tokens_per_call']} tokens/call)"}]
 
 
@@ -804,120 +943,86 @@ def handle_do_action(args: dict) -> list:
     instruction = args.get("instruction", "")
     if not instruction:
         return [{"type": "text", "text": "Error: instruction is required"}]
+    data = _api_post("/action/execute", body={"instruction": instruction, "verify": True})
+    result = data.get("result", {})
+    precheck = data.get("precheck", {})
+    verification = data.get("verification") or {}
+    lines = [
+        f"Mode: {precheck.get('mode', '?')} | blocked: {precheck.get('blocked', False)}",
+        f"Action: {'SUCCESS' if result.get('success') else 'FAILED'} - {result.get('message', '')}",
+    ]
+    if verification:
+        lines.append(
+            f"Verification: {'OK' if verification.get('verified') else 'FAILED'} "
+            f"({verification.get('method', 'n/a')})"
+        )
+    return [{"type": "text", "text": "\n".join(lines)}]
 
-    low = instruction.lower().strip()
 
-    # --- Parse natural language into direct API calls ---
+def handle_raw_action(args: dict) -> list:
+    payload = {}
+    if args.get("instruction"):
+        payload["instruction"] = args.get("instruction")
+    if args.get("action"):
+        payload["action"] = args.get("action")
+    if args.get("params") is not None:
+        payload["params"] = args.get("params")
+    payload["verify"] = bool(args.get("verify", False))
+    if not payload:
+        return [{"type": "text", "text": "Error: provide instruction or action"}]
 
-    # Click: "click at 500, 300" or "click 500 300"
-    import re
-    click_m = re.search(r'(?:click|tap)\s+(?:at\s+)?(\d+)[,\s]+(\d+)', low)
-    if click_m:
-        x, y = click_m.group(1), click_m.group(2)
-        data = _api_post(f"/action/click?x={x}&y={y}")
-        return [{"type": "text", "text": f"Clicked at ({x},{y}): {'SUCCESS' if data.get('success') else 'FAILED'} - {data.get('message','')}"}]
+    data = _api_post("/action/raw", body=payload)
+    result = data.get("result", {})
+    return [{
+        "type": "text",
+        "text": (
+            f"RAW action: {'SUCCESS' if result.get('success') else 'FAILED'} - "
+            f"{result.get('message', '')}"
+        ),
+    }]
 
-    # Double click
-    dbl_m = re.search(r'double[- ]?click\s+(?:at\s+)?(\d+)[,\s]+(\d+)', low)
-    if dbl_m:
-        x, y = dbl_m.group(1), dbl_m.group(2)
-        data = _api_post(f"/action/double_click?x={x}&y={y}")
-        return [{"type": "text", "text": f"Double-clicked at ({x},{y}): {'SUCCESS' if data.get('success') else 'FAILED'}"}]
 
-    # Right click
-    rclick_m = re.search(r'right[- ]?click\s+(?:at\s+)?(\d+)[,\s]+(\d+)', low)
-    if rclick_m:
-        x, y = rclick_m.group(1), rclick_m.group(2)
-        data = _api_post(f"/action/right_click?x={x}&y={y}")
-        return [{"type": "text", "text": f"Right-clicked at ({x},{y}): {'SUCCESS' if data.get('success') else 'FAILED'}"}]
+def handle_action_precheck(args: dict) -> list:
+    payload = {}
+    for key in ("instruction", "action", "params", "category", "mode"):
+        if key in args and args[key] is not None:
+            payload[key] = args[key]
+    if not payload:
+        return [{"type": "text", "text": "Error: provide instruction or action"}]
 
-    # Type text: "type hello world" or "write hello"
-    type_m = re.match(r'(?:type|write|enter|input)\s+(.+)', low)
-    if type_m:
-        text = type_m.group(1)
-        data = _api_post(f"/action/type?text={urllib.parse.quote(text)}")
-        return [{"type": "text", "text": f"Typed '{text}': {'SUCCESS' if data.get('success') else 'FAILED'}"}]
+    data = _api_post("/action/precheck", body=payload)
+    readiness = data.get("readiness", {})
+    safety = data.get("safety_check", {})
+    lines = [
+        f"Mode: {data.get('mode', '?')} | blocked: {data.get('blocked', False)}",
+        f"Readiness: {readiness.get('readiness')} | uncertainty: {readiness.get('uncertainty')}",
+        f"Safety: {safety.get('reason', 'n/a')} (applies={data.get('safety_applies')})",
+    ]
+    return [{"type": "text", "text": "\n".join(lines)}]
 
-    # Hotkey: "press ctrl+s" or "hotkey alt+tab"
-    key_m = re.match(r'(?:press|hotkey|hit)\s+(.+)', low)
-    if key_m:
-        keys = key_m.group(1).strip()
-        if '+' in keys or keys in ('enter', 'tab', 'escape', 'esc', 'space', 'backspace', 'delete',
-                                     'up', 'down', 'left', 'right', 'home', 'end', 'pageup', 'pagedown',
-                                     'f1','f2','f3','f4','f5','f6','f7','f8','f9','f10','f11','f12'):
-            data = _api_post(f"/action/hotkey?keys={urllib.parse.quote(keys)}")
-            return [{"type": "text", "text": f"Pressed {keys}: {'SUCCESS' if data.get('success') else 'FAILED'}"}]
 
-    # Scroll: "scroll down" or "scroll up 5"
-    scroll_m = re.match(r'scroll\s+(up|down)(?:\s+(\d+))?', low)
-    if scroll_m:
-        direction = scroll_m.group(1)
-        amount = int(scroll_m.group(2) or 3)
-        if direction == "up":
-            amount = -amount
-        data = _api_post(f"/action/scroll?amount={amount}")
-        return [{"type": "text", "text": f"Scrolled {direction}: {'SUCCESS' if data.get('success') else 'FAILED'}"}]
+def handle_verify_action(args: dict) -> list:
+    action = args.get("action", "")
+    if not action:
+        return [{"type": "text", "text": "Error: action is required"}]
+    data = _api_post("/action/verify", body={
+        "action": action,
+        "params": args.get("params", {}),
+        "pre_state": args.get("pre_state"),
+    })
+    return [{
+        "type": "text",
+        "text": (
+            f"Verify {action}: {'OK' if data.get('verified') else 'FAILED'} - "
+            f"{data.get('message', '')}"
+        ),
+    }]
 
-    # Move mouse: "move mouse to 500 300"
-    move_m = re.search(r'move\s+(?:mouse\s+)?(?:to\s+)?(\d+)[,\s]+(\d+)', low)
-    if move_m:
-        x, y = move_m.group(1), move_m.group(2)
-        data = _api_post(f"/action/move_mouse?x={x}&y={y}")
-        return [{"type": "text", "text": f"Moved mouse to ({x},{y}): {'SUCCESS' if data.get('success') else 'FAILED'}"}]
 
-    # Minimize/maximize/restore windows
-    if 'minimize' in low and ('all' in low or 'window' in low):
-        data = _api_post("/action/hotkey?keys=win+d")
-        return [{"type": "text", "text": f"Minimize all: {'SUCCESS' if data.get('success') else 'FAILED'}"}]
-
-    if 'minimize' in low:
-        data = _api_post("/action/hotkey?keys=win+down")
-        return [{"type": "text", "text": f"Minimize window: {'SUCCESS' if data.get('success') else 'FAILED'}"}]
-
-    if 'maximize' in low:
-        data = _api_post("/action/hotkey?keys=win+up")
-        return [{"type": "text", "text": f"Maximize window: {'SUCCESS' if data.get('success') else 'FAILED'}"}]
-
-    # Open app: "open chrome" / "open notepad"
-    open_m = re.match(r'open\s+(.+)', low)
-    if open_m:
-        app = open_m.group(1).strip()
-        data = _api_post(f"/action/hotkey?keys=win")
-        import time; time.sleep(0.5)
-        data2 = _api_post(f"/action/type?text={urllib.parse.quote(app)}")
-        import time; time.sleep(0.5)
-        data3 = _api_post(f"/action/hotkey?keys=enter")
-        return [{"type": "text", "text": f"Opening '{app}': typed in Start menu and pressed Enter"}]
-
-    # Switch window: "switch to chrome" / "alt tab"
-    if 'alt tab' in low or 'switch window' in low:
-        data = _api_post("/action/hotkey?keys=alt+tab")
-        return [{"type": "text", "text": f"Switched window: {'SUCCESS' if data.get('success') else 'FAILED'}"}]
-
-    # Copy/paste
-    if low in ('copy', 'ctrl+c'):
-        data = _api_post("/action/hotkey?keys=ctrl+c")
-        return [{"type": "text", "text": f"Copy: {'SUCCESS' if data.get('success') else 'FAILED'}"}]
-    if low in ('paste', 'ctrl+v'):
-        data = _api_post("/action/hotkey?keys=ctrl+v")
-        return [{"type": "text", "text": f"Paste: {'SUCCESS' if data.get('success') else 'FAILED'}"}]
-    if low in ('save', 'ctrl+s'):
-        data = _api_post("/action/hotkey?keys=ctrl+s")
-        return [{"type": "text", "text": f"Save: {'SUCCESS' if data.get('success') else 'FAILED'}"}]
-    if low in ('undo', 'ctrl+z'):
-        data = _api_post("/action/hotkey?keys=ctrl+z")
-        return [{"type": "text", "text": f"Undo: {'SUCCESS' if data.get('success') else 'FAILED'}"}]
-
-    # Fallback: try agent/do (if brain is initialized), otherwise explain
-    try:
-        data = _api_post(f"/agent/do?instruction={urllib.parse.quote(instruction)}")
-        if data and "result" in data:
-            result = data["result"]
-            return [{"type": "text", "text": f"Action: {'SUCCESS' if result.get('success') else 'FAILED'} - {result.get('message','')}"}]
-    except Exception:
-        pass
-
-    return [{"type": "text", "text": f"Could not parse instruction: '{instruction}'. Try: 'click at X,Y', 'type hello', 'press ctrl+s', 'scroll down', 'open chrome', 'minimize all'."}]
+def handle_set_operating_mode(args: dict) -> list:
+    mode = args.get("mode", "SAFE")
+    data = _api_post(f"/operating/mode?mode={urllib.parse.quote(str(mode))}")
+    return [{"type": "text", "text": f"Operating mode set to {data.get('mode', 'SAFE')}"}]
 
 
 def handle_click_element(args: dict) -> list:
@@ -1158,6 +1263,8 @@ def handle_see_monitor(args: dict) -> list:
 HANDLERS = {
     "see_screen": handle_see_screen,
     "perception": handle_perception,
+    "perception_world": handle_perception_world,
+    "perception_trace": handle_perception_trace,
     "watch_screen": handle_watch_screen,
     "see_changes": handle_see_changes,
     "annotate_screen": handle_annotate,
@@ -1167,6 +1274,10 @@ HANDLERS = {
     "get_audio_level": handle_audio_level,
     # v1.0: Computer Use
     "do_action": handle_do_action,
+    "raw_action": handle_raw_action,
+    "action_precheck": handle_action_precheck,
+    "verify_action": handle_verify_action,
+    "set_operating_mode": handle_set_operating_mode,
     "click_element": handle_click_element,
     "type_text": handle_type_text,
     "run_command": handle_run_command,

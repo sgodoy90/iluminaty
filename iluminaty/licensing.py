@@ -197,8 +197,8 @@ class LicenseManager:
                 if data.get("api_key") == self.api_key:
                     if time.time() - data.get("cached_at", 0) < CACHE_TTL:
                         return data
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed reading license cache: %s", e)
         return None
 
     def _write_cache(self, result: dict):

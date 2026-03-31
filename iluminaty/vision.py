@@ -21,12 +21,15 @@ datos estructurados + imagen como contexto visual.
 
 import io
 import json
+import logging
 import time
 from typing import Optional
 from dataclasses import dataclass, field
 from PIL import Image, ImageDraw, ImageFont
 
 from .ring_buffer import FrameSlot
+
+logger = logging.getLogger(__name__)
 
 
 # ─── OCR Engine (RapidOCR -> Tesseract -> None fallback chain) ───
@@ -357,7 +360,18 @@ def _get_active_window_windows() -> dict:
         rect = ctypes.wintypes.RECT()
         ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect))
 
+        app_name = "unknown"
+        try:
+            import psutil
+            proc = psutil.Process(pid.value)
+            app_name = (proc.name() or "unknown").replace(".exe", "")
+        except Exception as e:
+            logger.debug("Could not resolve active process name from pid %s: %s", pid.value, e)
+
         return {
+            "name": app_name,
+            "app_name": app_name,
+            "window_title": buf.value,
             "title": buf.value,
             "pid": pid.value,
             "bounds": {
@@ -368,7 +382,14 @@ def _get_active_window_windows() -> dict:
             },
         }
     except Exception:
-        return {"title": "unknown", "pid": 0, "bounds": {}}
+        return {
+            "name": "unknown",
+            "app_name": "unknown",
+            "window_title": "unknown",
+            "title": "unknown",
+            "pid": 0,
+            "bounds": {},
+        }
 
 
 def _get_active_window_macos() -> dict:
@@ -394,12 +415,22 @@ def _get_active_window_macos() -> dict:
         app_name = parts[0] if parts else "unknown"
         win_title = parts[1] if len(parts) > 1 else ""
         return {
+            "name": app_name,
+            "app_name": app_name,
+            "window_title": win_title or app_name,
             "title": f"{app_name} - {win_title}" if win_title else app_name,
             "pid": 0,
             "bounds": {},
         }
     except Exception:
-        return {"title": "unknown", "pid": 0, "bounds": {}}
+        return {
+            "name": "unknown",
+            "app_name": "unknown",
+            "window_title": "unknown",
+            "title": "unknown",
+            "pid": 0,
+            "bounds": {},
+        }
 
 
 def _get_active_window_linux() -> dict:
@@ -413,10 +444,16 @@ def _get_active_window_linux() -> dict:
         ).stdout.strip()
 
         # Get window name
-        name = subprocess.run(
+        title = subprocess.run(
             ["xdotool", "getactivewindow", "getwindowname"],
             capture_output=True, text=True, timeout=2
         ).stdout.strip()
+
+        # Get app/class name
+        app_name = subprocess.run(
+            ["xdotool", "getactivewindow", "getwindowclassname"],
+            capture_output=True, text=True, timeout=2
+        ).stdout.strip() or "unknown"
 
         # Get PID
         pid = subprocess.run(
@@ -425,12 +462,22 @@ def _get_active_window_linux() -> dict:
         ).stdout.strip()
 
         return {
-            "title": name,
+            "name": app_name,
+            "app_name": app_name,
+            "window_title": title or app_name,
+            "title": title or app_name,
             "pid": int(pid) if pid.isdigit() else 0,
             "bounds": {},
         }
     except Exception:
-        return {"title": "unknown", "pid": 0, "bounds": {}}
+        return {
+            "name": "unknown",
+            "app_name": "unknown",
+            "window_title": "unknown",
+            "title": "unknown",
+            "pid": 0,
+            "bounds": {},
+        }
 
 
 # ─── Enriched Frame (lo que la IA realmente recibe) ───

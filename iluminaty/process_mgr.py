@@ -10,10 +10,13 @@ Cross-platform usando psutil (fallback a subprocess).
 """
 
 import sys
+import logging
 import time
 import subprocess
 from dataclasses import dataclass
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -50,7 +53,7 @@ class ProcessManager:
             import psutil
             self._psutil = psutil
         except ImportError:
-            pass
+            logger.debug("psutil not installed; process manager will use subprocess fallback")
 
     @property
     def available(self) -> bool:

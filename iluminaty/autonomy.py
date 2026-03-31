@@ -111,6 +111,7 @@ class AutonomyManager:
     def __init__(self, default_level: AutonomyLevel = AutonomyLevel.SUGGEST):
         self.default_level = default_level
         self._app_overrides: dict[str, AppOverride] = {}
+        self._agent_levels: dict[str, AutonomyLevel] = {}  # IPA v2: per-agent
         self._pending: dict[str, PendingAction] = {}
         self._history: list[dict] = []
         self._action_counter: int = 0
@@ -118,6 +119,13 @@ class AutonomyManager:
     def set_level(self, level: AutonomyLevel):
         """Cambia el nivel de autonomia global."""
         self.default_level = level
+
+    def set_agent_level(self, agent_id: str, level: AutonomyLevel):
+        """Set autonomy level for a specific agent."""
+        self._agent_levels[agent_id] = level
+
+    def remove_agent_level(self, agent_id: str):
+        self._agent_levels.pop(agent_id, None)
 
     def set_app_override(self, app_name: str, level: AutonomyLevel,
                          allowed: Optional[set[str]] = None,
@@ -133,8 +141,11 @@ class AutonomyManager:
     def remove_app_override(self, app_name: str):
         self._app_overrides.pop(app_name.lower(), None)
 
-    def get_level(self, app_name: Optional[str] = None) -> AutonomyLevel:
-        """Nivel efectivo para un contexto dado."""
+    def get_level(self, app_name: Optional[str] = None,
+                  agent_id: Optional[str] = None) -> AutonomyLevel:
+        """Nivel efectivo para un contexto dado. Per-agent > per-app > global."""
+        if agent_id and agent_id in self._agent_levels:
+            return self._agent_levels[agent_id]
         if app_name:
             override = self._app_overrides.get(app_name.lower())
             if override:

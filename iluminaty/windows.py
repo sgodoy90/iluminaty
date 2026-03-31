@@ -10,10 +10,13 @@ Linux: wmctrl + xdotool via subprocess
 """
 
 import sys
+import logging
 import time
 import subprocess
 from dataclasses import dataclass
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -62,8 +65,8 @@ class WindowManager:
                 self._user32 = ctypes.windll.user32
                 self._psapi = ctypes.windll.psapi
                 self._ctypes = ctypes
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Windows API bridge init failed: %s", e)
 
     @property
     def available(self) -> bool:
@@ -138,8 +141,8 @@ class WindowManager:
         try:
             WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)
             self._user32.EnumWindows(WNDENUMPROC(callback), 0)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("EnumWindows failed: %s", e)
         return windows
 
     def _list_windows_mac(self) -> list[WindowInfo]:

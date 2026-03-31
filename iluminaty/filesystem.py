@@ -55,21 +55,15 @@ class FileSystemSandbox:
 
         # Check blocked
         for blocked in self._blocked:
-            try:
-                path.relative_to(blocked)
+            if path.is_relative_to(blocked):
                 raise PermissionError(f"Access denied: {path} is in blocked path {blocked}")
-            except ValueError:
-                pass
 
         # Check allowed
         in_allowed = False
         for allowed in self._allowed:
-            try:
-                path.relative_to(allowed)
+            if path.is_relative_to(allowed):
                 in_allowed = True
                 break
-            except ValueError:
-                continue
 
         if not in_allowed:
             raise PermissionError(

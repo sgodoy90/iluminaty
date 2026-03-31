@@ -10,8 +10,11 @@ Status, commit, push, pull, branch, diff, log — todo programatico.
 """
 
 import subprocess
+import logging
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 class GitOps:
@@ -32,8 +35,8 @@ class GitOps:
             )
             if result.returncode == 0:
                 return "git"
-        except (FileNotFoundError, OSError):
-            pass
+        except (FileNotFoundError, OSError) as e:
+            logger.debug("git binary not available: %s", e)
         return None
 
     @property

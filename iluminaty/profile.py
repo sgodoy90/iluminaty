@@ -17,12 +17,15 @@ El usuario puede ver/editar/borrar cualquier dato.
 
 import os
 import json
+import logging
 import time
 import hashlib
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Optional
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -99,8 +102,8 @@ class ProfileLearner:
                 for key, value in data.items():
                     if hasattr(self.profile, key):
                         setattr(self.profile, key, value)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed to load user profile: %s", e)
 
     def _save(self):
         """Guarda perfil a disco."""
@@ -116,8 +119,8 @@ class ProfileLearner:
                 if isinstance(val, (str, int, float, bool, dict, list)):
                     data[key] = val
             path.write_text(json.dumps(data, indent=2))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed to save user profile: %s", e)
 
     def observe(self, app_name: str, window_title: str, workflow: str,
                 ocr_text: str = "", monitor_count: int = 1):
@@ -202,8 +205,8 @@ class ProfileLearner:
         self.profile = UserProfile()
         try:
             Path(self.profile_path).unlink(missing_ok=True)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed to delete user profile file: %s", e)
 
     @property
     def stats(self) -> dict:

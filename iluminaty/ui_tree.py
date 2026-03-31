@@ -12,10 +12,13 @@ Linux: AT-SPI via subprocess (gdbus)
 """
 
 import sys
+import logging
 import time
 import subprocess
 from dataclasses import dataclass
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -218,8 +221,8 @@ class UITree:
             while child:
                 self._walk_win_com(self._uia, child, results, depth + 1, max_depth, target_pid)
                 child = walker.GetNextSiblingElement(child)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("UI tree walk failed at depth %s: %s", depth, e)
 
     def _safe_get_value(self, element) -> str:
         try:

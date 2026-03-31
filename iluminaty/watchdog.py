@@ -19,11 +19,14 @@ y dispara webhooks/callbacks cuando detecta un patron.
 """
 
 import re
+import logging
 import time
 import threading
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Optional, Callable
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -145,16 +148,16 @@ class Watchdog:
         for trigger in self._triggers:
             try:
                 self._compiled[trigger.name] = re.compile(trigger.pattern)
-            except re.error:
-                pass
+            except re.error as e:
+                logger.warning("Invalid watchdog regex '%s': %s", trigger.name, e)
 
     def add_trigger(self, trigger: WatchdogTrigger):
         """Agrega un trigger custom."""
         self._triggers.append(trigger)
         try:
             self._compiled[trigger.name] = re.compile(trigger.pattern)
-        except re.error:
-            pass
+        except re.error as e:
+            logger.warning("Invalid custom watchdog regex '%s': %s", trigger.name, e)
 
     def remove_trigger(self, name: str):
         """Elimina un trigger por nombre."""
@@ -215,8 +218,8 @@ class Watchdog:
                         for cb in self._callbacks:
                             try:
                                 cb(alert)
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.debug("Watchdog callback failed: %s", e)
 
                         break  # one alert per trigger per scan
 

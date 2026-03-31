@@ -9,12 +9,15 @@ en disco porque es un requisito de compliance y debugging.
 """
 
 import json
+import logging
 import time
 import sqlite3
 import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -29,6 +32,7 @@ class AuditEntry:
     autonomy_level: str
     app_context: Optional[str] = None
     duration_ms: float = 0.0
+    agent_id: Optional[str] = None  # IPA v2: which agent performed this action
     entry_id: Optional[int] = None
 
     def to_dict(self) -> dict:
@@ -44,6 +48,7 @@ class AuditEntry:
             "autonomy_level": self.autonomy_level,
             "app_context": self.app_context,
             "duration_ms": self.duration_ms,
+            "agent_id": self.agent_id,
         }
 
 
@@ -94,6 +99,13 @@ class AuditLog:
             conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_audit_result ON audit_log(result)
             """)
+            # IPA v2: add agent_id column (migration-safe)
+            try:
+                conn.execute("ALTER TABLE audit_log ADD COLUMN agent_id TEXT DEFAULT NULL")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_agent ON audit_log(agent_id)")
+                conn.commit()
+            except sqlite3.OperationalError as e:
+                logger.debug("Audit schema migration skipped: %s", e)
             # Contar entradas existentes
             cursor = conn.execute("SELECT COUNT(*) FROM audit_log")
             self._total_logged = cursor.fetchone()[0]
@@ -102,7 +114,7 @@ class AuditLog:
 
     def log(self, action: str, category: str, params: dict, result: str,
             message: str, autonomy_level: str, app_context: Optional[str] = None,
-            duration_ms: float = 0.0) -> AuditEntry:
+            duration_ms: float = 0.0, agent_id: Optional[str] = None) -> AuditEntry:
         """Registra una accion en el audit log."""
         entry = AuditEntry(
             timestamp=time.time(),
@@ -114,17 +126,18 @@ class AuditLog:
             autonomy_level=autonomy_level,
             app_context=app_context,
             duration_ms=duration_ms,
+            agent_id=agent_id,
         )
 
         with self._lock:
             conn = sqlite3.connect(self._db_path)
             cursor = conn.execute(
                 """INSERT INTO audit_log
-                   (timestamp, action, category, params, result, message, autonomy_level, app_context, duration_ms)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (timestamp, action, category, params, result, message, autonomy_level, app_context, duration_ms, agent_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (entry.timestamp, entry.action, entry.category,
                  json.dumps(entry.params), entry.result, entry.message,
-                 entry.autonomy_level, entry.app_context, entry.duration_ms)
+                 entry.autonomy_level, entry.app_context, entry.duration_ms, entry.agent_id)
             )
             entry.entry_id = cursor.lastrowid
             self._total_logged += 1
@@ -142,7 +155,8 @@ class AuditLog:
         return entry
 
     def query(self, action: Optional[str] = None, result: Optional[str] = None,
-              since: Optional[float] = None, limit: int = 50) -> list[dict]:
+              since: Optional[float] = None, agent_id: Optional[str] = None,
+              limit: int = 50) -> list[dict]:
         """Consulta el audit log con filtros."""
         conditions = []
         params = []
@@ -156,6 +170,9 @@ class AuditLog:
         if since:
             conditions.append("timestamp >= ?")
             params.append(since)
+        if agent_id:
+            conditions.append("agent_id = ?")
+            params.append(agent_id)
 
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
@@ -182,6 +199,7 @@ class AuditLog:
                 autonomy_level=row["autonomy_level"],
                 app_context=row["app_context"],
                 duration_ms=row["duration_ms"],
+                agent_id=row["agent_id"] if "agent_id" in row.keys() else None,
             ).to_dict())
 
         return entries

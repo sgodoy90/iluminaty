@@ -11,6 +11,7 @@ Todo en RAM. Cero disco. Cuando el proceso muere, todo desaparece.
 import argparse
 import sys
 import signal
+from collections import deque
 import uvicorn
 
 from iluminaty.ring_buffer import RingBuffer
@@ -73,7 +74,7 @@ def main():
         target_fps=args.fps,
     )
     
-    # ─── Crear capturador ───
+    # ─── Crear capturador (IPA v2: auto multi-monitor) ───
     config = CaptureConfig(
         fps=args.fps,
         quality=args.quality,
@@ -83,7 +84,19 @@ def main():
         adaptive_fps=not args.no_adaptive,
         smart_quality=not args.no_smart_quality,
     )
-    capture = ScreenCapture(buffer=buffer, config=config)
+
+    # Auto-detect multi-monitor: if >1 monitor and not pinned to specific one
+    from iluminaty.monitors import MonitorManager
+    _mon_mgr = MonitorManager()
+    _mon_mgr.refresh()
+    if _mon_mgr.count > 1 and args.monitor in (0, 1):
+        # Multi-monitor: scale buffer for N monitors
+        buffer.max_slots = int(args.buffer_seconds * (args.fps * 2 + (_mon_mgr.count - 1) * 0.5))
+        buffer._buffer = deque(buffer._buffer, maxlen=buffer.max_slots)
+        from iluminaty.multi_capture import MultiMonitorCapture
+        capture = MultiMonitorCapture(buffer=buffer, monitor_mgr=_mon_mgr, base_config=config)
+    else:
+        capture = ScreenCapture(buffer=buffer, config=config)
     
     # ─── Audio (opcional) ───
     audio_buffer = None
@@ -112,7 +125,11 @@ def main():
     print(f"  Format:    {args.format} q{args.quality} (smart: {not args.no_smart_quality})")
     print(f"  Buffer:    {args.buffer_seconds}s ({buffer.max_slots} slots)")
     print(f"  Max width: {args.max_width}px")
-    print(f"  Monitor:   {'all' if args.monitor == 0 else f'#{args.monitor}'}")
+    from iluminaty.multi_capture import MultiMonitorCapture
+    if isinstance(capture, MultiMonitorCapture):
+        print(f"  Monitor:   AUTO ({_mon_mgr.count} monitors, per-monitor capture)")
+    else:
+        print(f"  Monitor:   {'all' if args.monitor == 0 else f'#{args.monitor}'}")
     print(f"  Audio:     {args.audio}" + (f" ({args.audio_buffer}s buffer)" if args.audio != "off" else ""))
     print(f"  Auth:      {'enabled' if args.api_key else 'disabled'}")
     print(f"  Disk:      ZERO (RAM-only ring buffer)")

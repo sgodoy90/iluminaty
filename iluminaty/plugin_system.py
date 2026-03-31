@@ -20,10 +20,13 @@ Plugin lifecycle:
 """
 
 import os
+import logging
 import time
 import importlib
 import importlib.util
 from typing import Optional, Callable
+
+logger = logging.getLogger(__name__)
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -109,8 +112,8 @@ class PluginManager:
         if plugin:
             try:
                 plugin.teardown()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Plugin '%s' teardown error: %s", name, e)
 
     def load_from_directory(self):
         """Carga todos los plugins .py del directorio de plugins."""

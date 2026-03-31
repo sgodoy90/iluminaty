@@ -6,11 +6,14 @@ Cross-platform: Windows (win32), macOS (pbcopy), Linux (xclip).
 """
 
 import time
+import logging
 import sys
 import subprocess
 from collections import deque
 from dataclasses import dataclass
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -96,7 +99,7 @@ class ClipboardManager:
                 self._last_content = current
                 return entry
         except Exception:
-            pass
+            logger.debug("Clipboard poll failed", exc_info=True)
         return None
 
     def get_history(self, count: int = 20) -> list[dict]:

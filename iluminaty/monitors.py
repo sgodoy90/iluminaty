@@ -91,6 +91,17 @@ class MonitorManager:
                 return m
         return None
 
+    def get_active_monitor(self) -> Optional[MonitorInfo]:
+        """Returns the currently active monitor (where the active window is)."""
+        for m in self._monitors:
+            if m.is_active:
+                return m
+        # Fallback: return primary monitor
+        for m in self._monitors:
+            if m.is_primary:
+                return m
+        return self._monitors[0] if self._monitors else None
+
     @property
     def monitors(self) -> list[MonitorInfo]:
         if not self._monitors:

@@ -14,9 +14,12 @@ Integra con SafetySystem (Capa 7) para rate limiting y permisos.
 """
 
 import time
+import logging
 from collections import deque
 from dataclasses import dataclass
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -207,8 +210,8 @@ class ActionBridge:
             for key in list(self._held_keys):
                 try:
                     self._pyautogui.keyUp(key)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Failed to release held key '%s': %s", key, e)
             self._held_keys.clear()
 
     # ─── UI Tree Integration (Capa 2 hooks) ───

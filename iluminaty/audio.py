@@ -19,6 +19,7 @@ Arquitectura:
 """
 
 import io
+import logging
 import time
 import wave
 import threading
@@ -28,6 +29,8 @@ from dataclasses import dataclass
 from typing import Optional, Callable
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -243,8 +246,8 @@ class AudioCapture:
             try:
                 self._stream.stop()
                 self._stream.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Audio stream close failed: %s", e)
             self._stream = None
 
     def get_devices(self) -> list[dict]:
@@ -289,14 +292,14 @@ class TranscriptionEngine:
             from faster_whisper import WhisperModel
             return "faster-whisper"
         except ImportError:
-            pass
+            logger.debug("faster-whisper not installed; trying next transcription engine")
 
         # Try openai-whisper
         try:
             import whisper
             return "whisper"
         except ImportError:
-            pass
+            logger.debug("openai-whisper not installed; transcription disabled")
 
         return "none"
 

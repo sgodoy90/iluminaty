@@ -19,6 +19,7 @@ Headers de seguridad:
 
 import asyncio
 import base64
+import logging
 import time
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -53,7 +54,7 @@ from .git_ops import GitOps
 from .browser import BrowserBridge
 from .filesystem import FileSystemSandbox
 from .resolver import ActionResolver
-from .intent import IntentClassifier
+from .intent import IntentClassifier, Intent
 from .planner import TaskPlanner
 from .verifier import ActionVerifier
 from .recovery import ErrorRecovery
@@ -64,6 +65,8 @@ from .licensing import LicenseManager, get_license, init_license
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as StarletteRequest
+
+logger = logging.getLogger(__name__)
 
 
 # ─── Server State (BUG-005 fix: single state object with lock) ───
@@ -111,6 +114,9 @@ class _ServerState:
         self.audit: Optional[AuditLog] = None
         self.license: Optional[LicenseManager] = None
         self.perception = None  # PerceptionEngine (lazy import)
+        self.agent_coordinator = None  # IPA v2: Multi-Agent Workbench
+        self.operating_mode: str = "SAFE"  # SAFE | RAW | HYBRID
+        self.bootstrap_warnings: list[str] = []
 
 _state = _ServerState()
 
@@ -142,6 +148,179 @@ def _frame_to_json(slot: FrameSlot, include_base64: bool = False) -> dict:
 def _check_auth(api_key: Optional[str]):
     if _state.api_key and api_key != _state.api_key:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
+
+
+def _normalize_operating_mode(mode: Optional[str]) -> str:
+    value = (mode or "SAFE").strip().upper()
+    if value not in {"SAFE", "RAW", "HYBRID"}:
+        value = "SAFE"
+    return value
+
+
+def _mode_requires_safety(mode: str, category: str) -> bool:
+    mode_norm = _normalize_operating_mode(mode)
+    cat = (category or "normal").lower()
+    if mode_norm == "RAW":
+        return False
+    if mode_norm == "HYBRID":
+        return cat == "destructive"
+    return True
+
+
+def _intent_from_payload(payload: dict) -> Intent:
+    if _state.intent is None:
+        raise HTTPException(status_code=503, detail="Brain not initialized")
+    instruction = (payload.get("instruction") or "").strip()
+    if instruction:
+        return _state.intent.classify_or_default(instruction)
+
+    action = (payload.get("action") or "").strip()
+    if not action:
+        raise HTTPException(status_code=400, detail="Provide 'instruction' or 'action'")
+    params = payload.get("params") or {}
+    category = (payload.get("category") or "normal").strip().lower()
+    if category not in {"safe", "normal", "destructive", "system"}:
+        category = "normal"
+    return Intent(
+        action=action,
+        params=params,
+        confidence=1.0,
+        raw_input=instruction or action,
+        category=category,
+    )
+
+
+def _build_precheck(intent: Intent, mode: str, include_readiness: bool = True) -> dict:
+    mode_norm = _normalize_operating_mode(mode)
+    readiness = {
+        "readiness": False,
+        "uncertainty": 1.0,
+        "reasons": ["perception_unavailable"],
+        "task_phase": "unknown",
+        "active_surface": "unknown",
+        "risk_mode": mode_norm.lower(),
+    }
+    if include_readiness and _state.perception:
+        try:
+            readiness = _state.perception.get_readiness()
+        except Exception as e:
+            logger.debug("Failed to read perception readiness during precheck: %s", e)
+
+    kill_check = {"allowed": True, "reason": "ok"}
+    if _state.safety and _state.safety.is_killed:
+        kill_check = {"allowed": False, "reason": "killed"}
+
+    safety_applies = _mode_requires_safety(mode_norm, intent.category)
+    safety_check = {"allowed": True, "reason": "skipped"}
+    if kill_check["allowed"] and safety_applies and _state.safety:
+        safety_check = _state.safety.check_action(intent.action, intent.category)
+
+    readiness_applies = include_readiness and safety_applies and mode_norm != "RAW"
+    readiness_check = {"allowed": True, "reason": "skipped"}
+    if readiness_applies:
+        if readiness.get("readiness"):
+            readiness_check = {"allowed": True, "reason": "ready"}
+        else:
+            reasons = readiness.get("reasons") or ["insufficient_context"]
+            reason_txt = ", ".join(str(r) for r in reasons[:3])
+            readiness_check = {"allowed": False, "reason": reason_txt}
+
+    blocked = (
+        not kill_check["allowed"]
+        or not safety_check["allowed"]
+        or not readiness_check["allowed"]
+    )
+    return {
+        "mode": mode_norm,
+        "intent": intent.to_dict(),
+        "readiness": readiness,
+        "kill_check": kill_check,
+        "safety_applies": safety_applies,
+        "safety_check": safety_check,
+        "readiness_applies": readiness_applies,
+        "readiness_check": readiness_check,
+        "blocked": blocked,
+    }
+
+
+def _execute_intent(intent: Intent, mode: str, verify: bool = True) -> dict:
+    if not _state.resolver:
+        raise HTTPException(status_code=503, detail="Resolver not initialized")
+
+    precheck = _build_precheck(intent, mode, include_readiness=True)
+    if precheck["blocked"]:
+        blocked_reason = (
+            precheck["kill_check"]["reason"] if not precheck["kill_check"]["allowed"] else
+            precheck["safety_check"]["reason"] if not precheck["safety_check"]["allowed"] else
+            precheck.get("readiness_check", {}).get("reason", "insufficient_context")
+        )
+        if _state.audit:
+            _state.audit.log(
+                intent.action,
+                intent.category,
+                intent.params,
+                "blocked",
+                blocked_reason,
+                _state.autonomy.current_level if _state.autonomy else "unknown",
+            )
+        return {
+            "precheck": precheck,
+            "intent": intent.to_dict(),
+            "result": {
+                "action": intent.action,
+                "success": False,
+                "message": blocked_reason,
+                "method_used": "blocked",
+                "attempts": [],
+                "total_ms": 0.0,
+            },
+            "verification": None,
+            "recovery": None,
+        }
+
+    pre_state = _state.verifier.capture_pre_state(intent.action, intent.params) if (_state.verifier and verify) else None
+    result = _state.resolver.resolve(intent.action, intent.params)
+
+    verification = None
+    if verify and _state.verifier and result.success:
+        verification = _state.verifier.verify(intent.action, intent.params, pre_state)
+
+    recovery = None
+    if not result.success and _state.recovery:
+        recovery = _state.recovery.recover(intent.action, intent.params, result.message)
+        if recovery.recovered:
+            result = _state.resolver.resolve(intent.action, intent.params)
+            if verify and _state.verifier and result.success:
+                verification = _state.verifier.verify(intent.action, intent.params, pre_state)
+
+    if _state.audit:
+        _state.audit.log(
+            intent.action,
+            intent.category,
+            intent.params,
+            "success" if result.success else "failed",
+            result.message,
+            _state.autonomy.current_level if _state.autonomy else "unknown",
+            duration_ms=result.total_ms,
+        )
+
+    if _state.perception:
+        try:
+            _state.perception.record_action_feedback(
+                action=intent.action,
+                success=result.success,
+                message=result.message,
+            )
+        except Exception as e:
+            logger.debug("Failed to record action feedback into perception trace: %s", e)
+
+    return {
+        "precheck": precheck,
+        "intent": intent.to_dict(),
+        "result": result.to_dict(),
+        "verification": verification.to_dict() if verification else None,
+        "recovery": recovery.to_dict() if recovery else None,
+    }
 
 
 # ─── Lifespan ───
@@ -418,9 +597,67 @@ async def ws_stream(ws: WebSocket):
             await asyncio.sleep(1.0 / fps)
             
     except WebSocketDisconnect:
-        pass
+        logger.debug("Client disconnected from /ws/stream")
     finally:
         _state.ws_clients.discard(ws)
+
+
+@app.websocket("/perception/stream")
+async def perception_stream(
+    ws: WebSocket,
+    interval_ms: int = Query(300, ge=100, le=2000),
+    include_events: bool = Query(True),
+):
+    """
+    IPA v2 semantic stream for external AI brains.
+    Sends WorldState snapshots (+ optional recent events) in real time.
+    """
+    await ws.accept()
+    try:
+        last_world_ts = 0
+        last_event_ts = 0.0
+        while True:
+            if not _state.perception:
+                await ws.send_json({
+                    "type": "perception_world",
+                    "status": "offline",
+                    "timestamp_ms": int(time.time() * 1000),
+                })
+                await asyncio.sleep(interval_ms / 1000)
+                continue
+
+            world = _state.perception.get_world_state()
+            world_ts = world.get("timestamp_ms", 0)
+            if world_ts != last_world_ts:
+                payload = {
+                    "type": "perception_world",
+                    "status": "active",
+                    "world": world,
+                    "readiness": _state.perception.get_readiness(),
+                }
+                if include_events:
+                    raw_events = _state.perception.get_events(last_seconds=3, min_importance=0.1)
+                    events = []
+                    for e in raw_events:
+                        if e.timestamp <= last_event_ts:
+                            continue
+                        events.append({
+                            "timestamp": e.timestamp,
+                            "type": e.event_type,
+                            "description": e.description,
+                            "importance": e.importance,
+                            "uncertainty": e.uncertainty,
+                            "monitor": e.monitor,
+                        })
+                    if events:
+                        last_event_ts = events[-1]["timestamp"]
+                    payload["events"] = events
+                await ws.send_json(payload)
+                last_world_ts = world_ts
+
+            await asyncio.sleep(interval_ms / 1000)
+    except WebSocketDisconnect:
+        logger.debug("Client disconnected from /perception/stream")
 
 
 def init_server(
@@ -437,6 +674,7 @@ def init_server(
 ):
     """Inyecta las dependencias al modulo del server (thread-safe)."""
     with _state.lock:
+        _state.bootstrap_warnings = []
         # ─── License validation ───
         import asyncio
         _state.license = init_license(api_key=iluminaty_key)
@@ -459,18 +697,36 @@ def init_server(
         _state.transcriber = TranscriptionEngine()
         _state.context = ContextEngine()
 
-        # Perception Engine — continuous vision processing (the AI's visual cortex)
-        try:
-            from .perception import PerceptionEngine
-            _state.perception = PerceptionEngine()
-            _state.perception.start(buffer)
-        except Exception:
-            pass  # Non-critical, degrade gracefully
-
         _state.plugin_mgr = PluginManager()
         _state.plugin_mgr.load_from_directory()
         _state.monitor_mgr = MonitorManager()
         _state.monitor_mgr.refresh()
+
+        # Perception Engine — continuous vision processing (the AI's visual cortex)
+        # Wired AFTER monitor_mgr/diff/context are initialized (IPA Phase 1.3)
+        try:
+            from .perception import PerceptionEngine
+            _state.perception = PerceptionEngine(
+                monitor_mgr=_state.monitor_mgr,
+                smart_diff=_state.diff,
+                context=_state.context,
+            )
+            _state.perception.start(buffer)
+            _state.perception.set_risk_mode(_state.operating_mode.lower())
+        except Exception as e:
+            _state.perception = None
+            _state.bootstrap_warnings.append(f"perception_init_failed: {e}")
+
+        # IPA v2: Multi-Agent Workbench
+        try:
+            from .agents import AgentCoordinator
+            _state.agent_coordinator = AgentCoordinator()
+            if _state.perception:
+                _state.perception._agent_coordinator = _state.agent_coordinator
+        except Exception as e:
+            _state.agent_coordinator = None
+            _state.bootstrap_warnings.append(f"agent_coordinator_init_failed: {e}")
+
         _state.memory = TemporalMemory(enabled=False)
         _state.watchdog = Watchdog()
         _state.router = AIRouter()
@@ -735,7 +991,10 @@ async def context_state(x_api_key: Optional[str] = Header(None)):
     # Update context with current window
     from .vision import get_active_window_info
     win = get_active_window_info()
-    _state.context.update(win.get("name", "unknown"), win.get("title", ""))
+    _state.context.update(
+        win.get("name", win.get("app_name", "unknown")),
+        win.get("window_title", win.get("title", "")),
+    )
 
     state = _state.context.get_state()
     return {
@@ -817,11 +1076,214 @@ async def perception_events(
                 "type": e.event_type,
                 "description": e.description,
                 "importance": e.importance,
+                "uncertainty": e.uncertainty,
                 "monitor": e.monitor,
                 "details": e.details,
             }
             for e in events
         ]
+    }
+
+
+# ─── IPA State (Phase 4.3) ───
+
+@app.get("/perception/state")
+async def perception_state(x_api_key: Optional[str] = Header(None)):
+    """Full IPA introspection — scene states, attention, ROIs, predictor."""
+    _check_auth(x_api_key)
+    if not _state.perception:
+        raise HTTPException(503, "Perception engine not initialized")
+    return _state.perception.get_state()
+
+
+@app.get("/perception/attention")
+async def perception_attention(x_api_key: Optional[str] = Header(None)):
+    """Attention heatmap grid (8x6 float values) for dashboard visualization."""
+    _check_auth(x_api_key)
+    if not _state.perception:
+        raise HTTPException(503, "Perception engine not initialized")
+    return {
+        "grid": _state.perception.get_attention_heatmap(),
+        "rows": 6,
+        "cols": 8,
+        "hot_zones": _state.perception.get_state().get("attention_hot_zones", []),
+    }
+
+
+@app.get("/perception/world")
+async def perception_world(x_api_key: Optional[str] = Header(None)):
+    """IPA v2 semantic snapshot (WorldState)."""
+    _check_auth(x_api_key)
+    if not _state.perception:
+        raise HTTPException(503, "Perception engine not initialized")
+    return _state.perception.get_world_state()
+
+
+@app.get("/perception/trace")
+async def perception_trace(
+    seconds: float = Query(90, ge=1, le=600),
+    x_api_key: Optional[str] = Header(None),
+):
+    """Compressed semantic transitions kept in RAM."""
+    _check_auth(x_api_key)
+    if not _state.perception:
+        raise HTTPException(503, "Perception engine not initialized")
+    trace = _state.perception.get_world_trace(seconds=seconds)
+    return {"trace": trace, "count": len(trace), "seconds": seconds}
+
+
+@app.get("/perception/readiness")
+async def perception_readiness(x_api_key: Optional[str] = Header(None)):
+    """Whether perception has enough context to execute actions safely."""
+    _check_auth(x_api_key)
+    if not _state.perception:
+        raise HTTPException(503, "Perception engine not initialized")
+    return _state.perception.get_readiness()
+
+
+# ─── Multi-Agent Workbench (IPA v2) ───
+
+@app.post("/agents/register")
+async def agent_register(
+    request_body: dict,
+    x_api_key: Optional[str] = Header(None),
+):
+    """Register a new agent with a role."""
+    _check_auth(x_api_key)
+    if not _state.agent_coordinator:
+        raise HTTPException(503, "Agent coordinator not initialized")
+
+    name = request_body.get("name", "unnamed")
+    role = request_body.get("role", "observer")
+    autonomy = request_body.get("autonomy", "suggest")
+    monitors = request_body.get("monitors", [])
+    metadata = request_body.get("metadata", {})
+
+    try:
+        session = _state.agent_coordinator.register(
+            name=name, role=role, autonomy=autonomy,
+            monitors=monitors, metadata=metadata,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+    return session.to_dict()
+
+
+@app.get("/agents")
+async def agent_list(x_api_key: Optional[str] = Header(None)):
+    """List all registered agents."""
+    _check_auth(x_api_key)
+    if not _state.agent_coordinator:
+        raise HTTPException(503, "Agent coordinator not initialized")
+    return _state.agent_coordinator.to_dict()
+
+
+@app.get("/agents/{agent_id}")
+async def agent_details(agent_id: str, x_api_key: Optional[str] = Header(None)):
+    """Get details for a specific agent."""
+    _check_auth(x_api_key)
+    if not _state.agent_coordinator:
+        raise HTTPException(503, "Agent coordinator not initialized")
+    session = _state.agent_coordinator.get_session(agent_id)
+    if not session:
+        raise HTTPException(404, f"Agent {agent_id} not found")
+    return {
+        **session.to_dict(),
+        "allowed_tools": list(_state.agent_coordinator.get_allowed_tools(agent_id)),
+        "pending_messages": _state.agent_coordinator._message_bus.pending_count(agent_id),
+    }
+
+
+@app.delete("/agents/{agent_id}")
+async def agent_unregister(agent_id: str, x_api_key: Optional[str] = Header(None)):
+    """Unregister an agent."""
+    _check_auth(x_api_key)
+    if not _state.agent_coordinator:
+        raise HTTPException(503, "Agent coordinator not initialized")
+    if not _state.agent_coordinator.unregister(agent_id):
+        raise HTTPException(404, f"Agent {agent_id} not found")
+    return {"status": "unregistered", "agent_id": agent_id}
+
+
+@app.post("/agents/{agent_id}/heartbeat")
+async def agent_heartbeat(agent_id: str, x_api_key: Optional[str] = Header(None)):
+    """Update agent heartbeat."""
+    _check_auth(x_api_key)
+    if not _state.agent_coordinator:
+        raise HTTPException(503, "Agent coordinator not initialized")
+    if not _state.agent_coordinator.heartbeat(agent_id):
+        raise HTTPException(404, f"Agent {agent_id} not found")
+    return {"status": "ok"}
+
+
+@app.get("/agents/{agent_id}/perception")
+async def agent_perception(
+    agent_id: str,
+    max_count: int = Query(20, ge=1, le=100),
+    x_api_key: Optional[str] = Header(None),
+):
+    """Get perception events filtered for this agent's role and monitors."""
+    _check_auth(x_api_key)
+    if not _state.agent_coordinator:
+        raise HTTPException(503, "Agent coordinator not initialized")
+    session = _state.agent_coordinator.get_session(agent_id)
+    if not session:
+        raise HTTPException(404, f"Agent {agent_id} not found")
+
+    events = _state.agent_coordinator.get_perception_events(agent_id, max_count)
+    return {
+        "agent_id": agent_id,
+        "role": session.role.value,
+        "events": [
+            {
+                "timestamp": e.timestamp,
+                "type": e.event_type,
+                "description": e.description,
+                "importance": e.importance,
+                "uncertainty": e.uncertainty,
+                "monitor": e.monitor,
+            }
+            for e in events
+        ],
+    }
+
+
+@app.post("/agents/{agent_id}/message")
+async def agent_send_message(
+    agent_id: str,
+    request_body: dict,
+    x_api_key: Optional[str] = Header(None),
+):
+    """Send inter-agent message."""
+    _check_auth(x_api_key)
+    if not _state.agent_coordinator:
+        raise HTTPException(503, "Agent coordinator not initialized")
+
+    to_id = request_body.get("to", "*")
+    msg_type = request_body.get("type", "message")
+    payload = request_body.get("payload", {})
+
+    msg = _state.agent_coordinator.send_message(agent_id, to_id, msg_type, payload)
+    if not msg:
+        raise HTTPException(400, "Failed to send message (invalid agent IDs)")
+    return msg.to_dict()
+
+
+@app.get("/agents/{agent_id}/messages")
+async def agent_get_messages(
+    agent_id: str,
+    max_count: int = Query(10, ge=1, le=50),
+    x_api_key: Optional[str] = Header(None),
+):
+    """Poll messages for an agent."""
+    _check_auth(x_api_key)
+    if not _state.agent_coordinator:
+        raise HTTPException(503, "Agent coordinator not initialized")
+    messages = _state.agent_coordinator.get_messages(agent_id, max_count)
+    return {
+        "agent_id": agent_id,
+        "messages": [m.to_dict() for m in messages],
     }
 
 
@@ -1241,6 +1703,27 @@ async def safety_whitelist(x_api_key: Optional[str] = Header(None)):
     return {"whitelist": _state.safety.get_whitelist() if _state.safety else []}
 
 
+@app.get("/operating/mode")
+async def get_operating_mode(x_api_key: Optional[str] = Header(None)):
+    """Current operating mode: SAFE, RAW, HYBRID."""
+    _check_auth(x_api_key)
+    return {"mode": _state.operating_mode}
+
+
+@app.post("/operating/mode")
+async def set_operating_mode(
+    mode: str = Query(..., description="SAFE | RAW | HYBRID"),
+    x_api_key: Optional[str] = Header(None),
+):
+    """Set operating mode and propagate risk mode into IPA WorldState."""
+    _check_auth(x_api_key)
+    mode_norm = _normalize_operating_mode(mode)
+    _state.operating_mode = mode_norm
+    if _state.perception:
+        _state.perception.set_risk_mode(mode_norm.lower())
+    return {"mode": _state.operating_mode}
+
+
 @app.post("/autonomy/level")
 async def set_autonomy_level(
     level: str = Query(..., description="suggest, confirm, auto"),
@@ -1387,6 +1870,73 @@ async def action_log(
 ):
     _check_auth(x_api_key)
     return {"log": _state.actions.get_action_log(count) if _state.actions else []}
+
+
+@app.post("/action/precheck")
+async def action_precheck(
+    request_body: dict,
+    x_api_key: Optional[str] = Header(None),
+):
+    """
+    Validate if an action is executable with current context/mode.
+    Accepts either:
+      {"instruction":"save file"}
+    or
+      {"action":"click","params":{"x":100,"y":200},"category":"normal"}
+    """
+    _check_auth(x_api_key)
+    intent = _intent_from_payload(request_body)
+    mode = request_body.get("mode") or _state.operating_mode
+    return _build_precheck(intent, mode, include_readiness=True)
+
+
+@app.post("/action/execute")
+async def action_execute(
+    request_body: dict,
+    x_api_key: Optional[str] = Header(None),
+):
+    """
+    Execute action through current operating mode (SAFE/RAW/HYBRID).
+    SAFE applies all guards. HYBRID guards destructive actions only.
+    """
+    _check_auth(x_api_key)
+    intent = _intent_from_payload(request_body)
+    mode = request_body.get("mode") or _state.operating_mode
+    verify = bool(request_body.get("verify", True))
+    return _execute_intent(intent, mode=mode, verify=verify)
+
+
+@app.post("/action/raw")
+async def action_raw(
+    request_body: dict,
+    x_api_key: Optional[str] = Header(None),
+):
+    """
+    Raw execution path (0 guardrails except kill switch).
+    Intended for expert setups where external AI handles all safety.
+    """
+    _check_auth(x_api_key)
+    intent = _intent_from_payload(request_body)
+    verify = bool(request_body.get("verify", False))
+    return _execute_intent(intent, mode="RAW", verify=verify)
+
+
+@app.post("/action/verify")
+async def action_verify(
+    request_body: dict,
+    x_api_key: Optional[str] = Header(None),
+):
+    """Run post-action verification without executing new actions."""
+    _check_auth(x_api_key)
+    if not _state.verifier:
+        raise HTTPException(503, "Verifier not initialized")
+    action = (request_body.get("action") or "").strip()
+    if not action:
+        raise HTTPException(400, "action is required")
+    params = request_body.get("params") or {}
+    pre_state = request_body.get("pre_state")
+    result = _state.verifier.verify(action, params, pre_state)
+    return result.to_dict()
 
 
 # ─── Capa 1: Windows ───
@@ -1762,52 +2312,8 @@ async def agent_do(
     _check_auth(x_api_key)
     if not _state.intent or not _state.resolver:
         raise HTTPException(503, "Brain not initialized")
-
-    # 1. Classify intent
     intent = _state.intent.classify_or_default(instruction)
-
-    # 2. Safety check
-    if _state.safety:
-        check = _state.safety.check_action(intent.action, intent.category)
-        if not check["allowed"]:
-            if _state.audit:
-                _state.audit.log(intent.action, intent.category, intent.params,
-                                 "blocked", check["reason"],
-                                 _state.autonomy.current_level if _state.autonomy else "unknown")
-            return {"success": False, "reason": check["reason"], "intent": intent.to_dict()}
-
-    # 3. Resolve (cascade)
-    pre_state = _state.verifier.capture_pre_state(intent.action, intent.params) if _state.verifier else None
-    result = _state.resolver.resolve(intent.action, intent.params)
-
-    # 4. Verify
-    verification = None
-    if _state.verifier and result.success:
-        verification = _state.verifier.verify(intent.action, intent.params, pre_state)
-
-    # 5. Recovery if failed
-    recovery = None
-    if not result.success and _state.recovery:
-        recovery = _state.recovery.recover(intent.action, intent.params, result.message)
-        if recovery.recovered:
-            result = _state.resolver.resolve(intent.action, intent.params)
-
-    # 6. Audit log
-    if _state.audit:
-        _state.audit.log(
-            intent.action, intent.category, intent.params,
-            "success" if result.success else "failed",
-            result.message,
-            _state.autonomy.current_level if _state.autonomy else "unknown",
-            duration_ms=result.total_ms,
-        )
-
-    return {
-        "intent": intent.to_dict(),
-        "result": result.to_dict(),
-        "verification": verification.to_dict() if verification else None,
-        "recovery": recovery.to_dict() if recovery else None,
-    }
+    return _execute_intent(intent, mode=_state.operating_mode, verify=True)
 
 
 @app.post("/agent/plan")
@@ -1834,6 +2340,7 @@ async def agent_status(x_api_key: Optional[str] = Header(None)):
     """Estado completo del agente."""
     _check_auth(x_api_key)
     return {
+        "operating_mode": {"mode": _state.operating_mode},
         "actions": _state.actions.stats if _state.actions else {},
         "safety": _state.safety.stats if _state.safety else {},
         "autonomy": _state.autonomy.stats if _state.autonomy else {},
@@ -1841,6 +2348,8 @@ async def agent_status(x_api_key: Optional[str] = Header(None)):
         "intent": _state.intent.stats if _state.intent else {},
         "planner": _state.planner.stats if _state.planner else {},
         "recovery": _state.recovery.stats if _state.recovery else {},
+        "perception_readiness": _state.perception.get_readiness() if _state.perception else {},
+        "bootstrap_warnings": list(_state.bootstrap_warnings),
     }
 
 
@@ -1852,6 +2361,7 @@ async def system_overview(x_api_key: Optional[str] = Header(None)):
     _check_auth(x_api_key)
     overview = {
         "version": "1.0.0",
+        "operating_mode": _state.operating_mode,
         "capture": {
             "running": _state.capture.is_running if _state.capture else False,
             "fps": _state.capture.current_fps if _state.capture else 0,
@@ -1890,6 +2400,11 @@ async def system_overview(x_api_key: Optional[str] = Header(None)):
             "is_pro": _state.license.is_pro if _state.license else False,
             "user": _state.license.user if _state.license else {},
         },
+        "perception": {
+            "readiness": _state.perception.get_readiness() if _state.perception else {},
+            "world": _state.perception.get_world_state() if _state.perception else {},
+        },
+        "bootstrap_warnings": list(_state.bootstrap_warnings),
     }
     return overview
 
@@ -1959,8 +2474,9 @@ _tokens = _TokenTracker()
 
 
 @app.get("/tokens/status")
-async def tokens_status():
+async def tokens_status(x_api_key: Optional[str] = Header(None)):
     """Current token usage and budget."""
+    _check_auth(x_api_key)
     return {
         "mode": _tokens.mode,
         "mode_cost": TOKEN_COSTS[_tokens.mode],
@@ -1975,8 +2491,12 @@ async def tokens_status():
 
 
 @app.post("/tokens/mode")
-async def tokens_set_mode(mode: str = Query(...)):
+async def tokens_set_mode(
+    mode: str = Query(...),
+    x_api_key: Optional[str] = Header(None),
+):
     """Set response mode: text_only, low_res, medium_res, full_res."""
+    _check_auth(x_api_key)
     if mode not in TOKEN_COSTS:
         raise HTTPException(400, f"Invalid mode. Choose: {list(TOKEN_COSTS.keys())}")
     _tokens.mode = mode
@@ -1984,15 +2504,20 @@ async def tokens_set_mode(mode: str = Query(...)):
 
 
 @app.post("/tokens/budget")
-async def tokens_set_budget(limit: int = Query(...)):
+async def tokens_set_budget(
+    limit: int = Query(...),
+    x_api_key: Optional[str] = Header(None),
+):
     """Set token budget. 0 = unlimited."""
+    _check_auth(x_api_key)
     _tokens.budget = max(0, limit)
     return {"budget": _tokens.budget, "used": _tokens.used, "remaining": _tokens.budget_remaining()}
 
 
 @app.post("/tokens/reset")
-async def tokens_reset():
+async def tokens_reset(x_api_key: Optional[str] = Header(None)):
     """Reset token counter."""
+    _check_auth(x_api_key)
     _tokens.used = 0
     _tokens.history.clear()
     return {"reset": True, "used": 0}

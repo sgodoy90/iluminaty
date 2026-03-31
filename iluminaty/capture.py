@@ -12,6 +12,7 @@ Características:
 """
 
 import io
+import logging
 import time
 import threading
 from typing import Optional, Callable
@@ -20,6 +21,8 @@ import mss
 from PIL import Image
 
 from .ring_buffer import RingBuffer
+
+logger = logging.getLogger(__name__)
 
 
 class CaptureConfig:
@@ -105,7 +108,7 @@ class ScreenCapture:
                 if local_std > 60:  # mucho contraste = texto/UI
                     quality = min(quality + 15, 95)
             except ImportError:
-                pass  # sin numpy, usar calidad fija
+                logger.debug("numpy not available; smart quality boost disabled")
 
         if fmt == "webp":
             img.save(buf, format="WEBP", quality=quality, method=4)
@@ -172,7 +175,7 @@ class ScreenCapture:
                     # Comprimir en formato optimo (RAM only)
                     frame_bytes, mime_type = self._compress_frame(img)
                     
-                    # Empujar al ring buffer
+                    # Empujar al ring buffer (IPA: tag with monitor_id)
                     was_stored = self.buffer.push(
                         frame_bytes=frame_bytes,
                         width=img.width,
@@ -180,6 +183,7 @@ class ScreenCapture:
                         region=str(grab_area),
                         mime_type=mime_type,
                         skip_if_unchanged=self.config.skip_unchanged,
+                        monitor_id=self.config.monitor,
                     )
                     
                     # Adaptar FPS

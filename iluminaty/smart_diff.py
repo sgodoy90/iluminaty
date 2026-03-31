@@ -279,6 +279,91 @@ class SmartDiff:
 
         return "\n".join(lines)
 
+    def compare_fast(self, gray_array) -> FrameDiff:
+        """
+        IPA Phase 1.2: Fast numpy-based comparison using pre-decoded grayscale array.
+        Accepts a numpy grayscale array (already decoded in perception pipeline).
+        Avoids double image decode — ~3-8ms vs ~15-25ms for compare().
+        """
+        np = _get_np()
+        h, w = gray_array.shape[:2]
+        cell_h = h // self.grid_rows
+        cell_w = w // self.grid_cols
+
+        # Split into grid cells (grayscale, not RGB)
+        current_cells = []
+        for row in range(self.grid_rows):
+            row_cells = []
+            for col in range(self.grid_cols):
+                y1 = row * cell_h
+                y2 = y1 + cell_h if row < self.grid_rows - 1 else h
+                x1 = col * cell_w
+                x2 = x1 + cell_w if col < self.grid_cols - 1 else w
+                row_cells.append(gray_array[y1:y2, x1:x2])
+            current_cells.append(row_cells)
+
+        # First frame — store and return "everything changed"
+        if self._prev_cells is None:
+            self._prev_cells = current_cells
+            return FrameDiff(
+                changed=True,
+                change_percentage=100.0,
+                changed_regions=[],
+                total_cells=self.grid_cols * self.grid_rows,
+                changed_cells=self.grid_cols * self.grid_rows,
+                heatmap=None,
+            )
+
+        # Compare cell by cell using Mean Absolute Difference
+        changed_regions = []
+        changed_count = 0
+        total = self.grid_cols * self.grid_rows
+
+        for row in range(self.grid_rows):
+            for col in range(self.grid_cols):
+                prev = self._prev_cells[row][col]
+                curr = current_cells[row][col]
+
+                # Fast MAD on grayscale (single channel, no RGB overhead)
+                if prev.shape == curr.shape:
+                    intensity = float(np.abs(
+                        curr.astype(np.int16) - prev.astype(np.int16)
+                    ).mean()) / 255.0
+                else:
+                    intensity = 1.0
+
+                if intensity >= self.threshold:
+                    changed_count += 1
+                    self._heatmap[row][col] = min(
+                        self._heatmap[row][col] + intensity, 1.0
+                    )
+                    changed_regions.append(DiffRegion(
+                        grid_x=col,
+                        grid_y=row,
+                        pixel_x=col * cell_w,
+                        pixel_y=row * cell_h,
+                        pixel_w=cell_w,
+                        pixel_h=cell_h,
+                        change_intensity=round(intensity, 3),
+                    ))
+                else:
+                    self._heatmap[row][col] *= self._heatmap_decay
+
+        self._prev_cells = current_cells
+        change_pct = (changed_count / total) * 100 if total > 0 else 0
+
+        return FrameDiff(
+            changed=changed_count > 0,
+            change_percentage=round(change_pct, 1),
+            changed_regions=changed_regions,
+            total_cells=total,
+            changed_cells=changed_count,
+            heatmap=[
+                [round(self._heatmap[r][c], 3) for c in range(self.grid_cols)]
+                for r in range(self.grid_rows)
+            ],
+        )
+
     def reset(self):
         """Reset del estado del diff."""
         self._prev_hashes = None

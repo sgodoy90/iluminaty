@@ -19,6 +19,7 @@ Para producción, se despliega en Cloudflare Workers / Fly.io / Railway.
 """
 
 import json
+import logging
 import time
 import base64
 import hashlib
@@ -26,6 +27,8 @@ import secrets
 import asyncio
 from typing import Optional, Callable
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -133,7 +136,7 @@ class RelayPublisher:
                         self._frames_sent += 1
 
                     except Exception as e:
-                        pass  # Frame capture failed, skip
+                        logger.debug("Relay frame publish skipped due to capture error: %s", e)
 
                     await asyncio.sleep(1.0 / self.config.max_fps)
 
@@ -260,8 +263,8 @@ class RelayServer:
                 async for _ in websocket:
                     pass
 
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Relay room handler ended with error for room '%s': %s", room_id, e)
         finally:
             room[f"{role}s"].discard(websocket)
             # Cleanup empty rooms
