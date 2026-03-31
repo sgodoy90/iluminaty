@@ -42,6 +42,8 @@ from typing import Optional
 
 import numpy as np
 from .world_state import WorldStateEngine
+from .temporal_store import TemporalVisualStore
+from .visual_engine import VisualEngine, VisualTask
 
 logger = logging.getLogger(__name__)
 
@@ -687,13 +689,26 @@ class PerceptionEngine:
     Generates semantic event stream consumed by AI (~200 tokens).
     """
 
-    def __init__(self, buffer=None, max_events: int = 200,
-                 monitor_mgr=None, smart_diff=None, context=None):
+    def __init__(
+        self,
+        buffer=None,
+        max_events: int = 200,
+        monitor_mgr=None,
+        smart_diff=None,
+        context=None,
+        visual_profile: str = "core_ram",
+        enable_disk_spool: bool = False,
+        deep_loop_hz: float = 1.0,
+        fast_loop_hz: float = 10.0,
+    ):
         self._buffer = buffer
         self._events: deque[PerceptionEvent] = deque(maxlen=max_events)
         self._lock = threading.Lock()
         self._running = False
         self._thread: Optional[threading.Thread] = None
+        self._deep_thread: Optional[threading.Thread] = None
+        self._fast_loop_interval = max(0.08, min(0.25, 1.0 / max(1.0, fast_loop_hz)))
+        self._deep_loop_interval = max(0.5, min(2.0, 1.0 / max(0.5, deep_loop_hz)))
 
         # External references (IPA Phase 1.3)
         self._monitor_mgr = monitor_mgr
@@ -722,9 +737,19 @@ class PerceptionEngine:
         self._predictor = CapturePredictor()
         self._monitor_states: dict[int, MonitorPerceptionState] = {}
         self._world = WorldStateEngine(horizon_seconds=90)
+        self._temporal = TemporalVisualStore(
+            horizon_seconds=90,
+            profile=visual_profile,
+            disk_enabled=enable_disk_spool,
+            disk_ttl_minutes=30,
+            sample_interval_ms=1200,
+        )
+        self._visual = VisualEngine(max_queue=24, max_history=900)
 
         # Semantic pacing
         self._last_world_update = 0.0
+        self._world_update_interval = 0.12
+        self._last_visual_delta_ms = int(time.time() * 1000)
 
         # OCR engine
         self._ocr = None
@@ -744,13 +769,19 @@ class PerceptionEngine:
         """Start the perception loop."""
         self._buffer = buffer
         self._running = True
-        self._thread = threading.Thread(target=self._loop, daemon=True, name="perception-ipa")
+        self._visual.start()
+        self._thread = threading.Thread(target=self._loop, daemon=True, name="perception-fast-loop")
+        self._deep_thread = threading.Thread(target=self._deep_loop, daemon=True, name="perception-deep-loop")
         self._thread.start()
+        self._deep_thread.start()
 
     def stop(self):
         self._running = False
         if self._thread:
             self._thread.join(timeout=3)
+        if self._deep_thread:
+            self._deep_thread.join(timeout=3)
+        self._visual.stop()
 
     def _add_event(self, event_type: str, description: str,
                    importance: float = 0.5, monitor: int = 0,
@@ -768,6 +799,17 @@ class PerceptionEngine:
         )
         with self._lock:
             self._events.append(evt)
+        try:
+            self._temporal.add_semantic_transition(
+                tick_id=self._world.tick_id,
+                kind=event_type,
+                summary=description,
+                confidence=importance,
+                monitor=monitor,
+                evidence_refs=[],
+            )
+        except Exception:
+            pass
 
         # IPA v2: fan-out to connected agents
         if self._agent_coordinator:
@@ -788,18 +830,19 @@ class PerceptionEngine:
                     logger.debug("Failed to push composite perception event: %s", e)
 
     def _loop(self):
-        """Main perception loop — IPA v2: process each monitor independently."""
+        """Fast loop (8-12Hz): low-latency semantic updates, never waits for VLM."""
         last_ts_per_monitor: dict[int, float] = {}
         while self._running:
+            loop_start = time.time()
             try:
                 if not self._buffer:
-                    time.sleep(1)
+                    time.sleep(0.3)
                     continue
 
                 # IPA v2: get latest frame per monitor (each compared to its own previous)
                 per_monitor = self._buffer.get_latest_per_monitor()
                 if not per_monitor:
-                    time.sleep(0.2)
+                    time.sleep(self._fast_loop_interval)
                     continue
 
                 analyzed_any = False
@@ -812,11 +855,75 @@ class PerceptionEngine:
                     analyzed_any = True
 
                 if not analyzed_any:
-                    time.sleep(0.2)
+                    time.sleep(self._fast_loop_interval)
 
             except Exception as e:
                 logger.warning("Perception loop iteration failed: %s", e)
-            time.sleep(0.4)
+            elapsed = time.time() - loop_start
+            rest = self._fast_loop_interval - elapsed
+            if rest > 0:
+                time.sleep(rest)
+
+    def _deep_loop(self):
+        """
+        Deep loop (0.5-2Hz): enqueues prioritized visual tasks for local VLM engine.
+        This path is asynchronous and never blocks the fast semantic loop.
+        """
+        last_enqueued_ts: dict[int, float] = {}
+        while self._running:
+            started = time.time()
+            try:
+                if not self._buffer:
+                    time.sleep(self._deep_loop_interval)
+                    continue
+                per_monitor = self._buffer.get_latest_per_monitor()
+                now_ms = int(time.time() * 1000)
+                for monitor_id, slot in per_monitor.items():
+                    prev = last_enqueued_ts.get(monitor_id, 0.0)
+                    if slot.timestamp <= prev:
+                        continue
+                    mon_state = self._get_monitor_state(monitor_id)
+
+                    # Prioritize high-change or unstable scenes.
+                    priority = min(1.0, max(0.1, float(getattr(slot, "change_score", 0.0)) + (1.0 - mon_state.scene.confidence)))
+                    if priority < 0.2 and (now_ms - int(slot.timestamp * 1000)) > 1200:
+                        continue
+
+                    predicted_tick = self._world.tick_id + 1
+                    frame_ref = self._temporal.add_frame_ref(
+                        slot,
+                        tick_id=predicted_tick,
+                        boundary_reason="deep_loop",
+                        force=True,
+                    )
+                    ref_id = frame_ref["ref_id"] if frame_ref else f"tmp_{int(slot.timestamp * 1000)}_{monitor_id}"
+                    motion_desc = (
+                        f"state={mon_state.scene.state.value} "
+                        f"conf={mon_state.scene.confidence:.2f} "
+                        f"change={getattr(slot, 'change_score', 0.0):.3f}"
+                    )
+                    task = VisualTask(
+                        ref_id=ref_id,
+                        tick_id=predicted_tick,
+                        timestamp_ms=int(slot.timestamp * 1000),
+                        monitor=monitor_id,
+                        frame_bytes=slot.frame_bytes,
+                        mime_type=getattr(slot, "mime_type", "image/webp"),
+                        app_name=self._last_window_info.get("app_name", self._last_window),
+                        window_title=self._last_window_info.get("window_title", self._last_title),
+                        ocr_text=mon_state.last_ocr_text,
+                        motion_summary=motion_desc,
+                        priority=priority,
+                    )
+                    self._visual.enqueue(task)
+                    last_enqueued_ts[monitor_id] = slot.timestamp
+            except Exception as e:
+                logger.debug("Deep loop iteration failed: %s", e)
+
+            elapsed = time.time() - started
+            rest = self._deep_loop_interval - elapsed
+            if rest > 0:
+                time.sleep(rest)
 
     # ─── GATE 0: Window Change (free, most reliable signal) ───
 
@@ -1026,7 +1133,14 @@ class PerceptionEngine:
             gray = _bytes_to_gray(slot.frame_bytes)
             if gray is not None:
                 mon_state.last_gray = gray
-            self._update_world_state(mon_state, monitor_id, motion, window_info)
+            self._update_world_state(
+                mon_state,
+                monitor_id,
+                motion,
+                window_info,
+                slot=slot,
+                boundary_reason="window_change" if window_changed else "",
+            )
             return
 
         mon_state.last_change_time = now
@@ -1046,7 +1160,14 @@ class PerceptionEngine:
                 gray = _bytes_to_gray(slot.frame_bytes)
                 if gray is not None:
                     mon_state.last_gray = gray
-                self._update_world_state(mon_state, monitor_id, motion, window_info)
+                self._update_world_state(
+                    mon_state,
+                    monitor_id,
+                    motion,
+                    window_info,
+                    slot=slot,
+                    boundary_reason="window_change" if window_changed else "",
+                )
                 return
 
         # ── Gate 2: Perceptual hash ──
@@ -1064,7 +1185,14 @@ class PerceptionEngine:
             gray = _bytes_to_gray(slot.frame_bytes)
             if gray is not None:
                 mon_state.last_gray = gray
-            self._update_world_state(mon_state, monitor_id, motion, window_info)
+            self._update_world_state(
+                mon_state,
+                monitor_id,
+                motion,
+                window_info,
+                slot=slot,
+                boundary_reason="window_change" if window_changed else "",
+            )
             return
 
         # ── Gate 3: Optical Flow + SmartDiff + AttentionMap ──
@@ -1199,7 +1327,19 @@ class PerceptionEngine:
                 logger.debug("OCR diff step failed on monitor %s: %s", monitor_id, e)
 
         mon_state.last_hash = slot.phash
-        self._update_world_state(mon_state, monitor_id, motion, window_info)
+        boundary_reason = ""
+        if new_state != prev_scene_state:
+            boundary_reason = "scene_transition"
+        elif change > 0.4:
+            boundary_reason = "high_change"
+        self._update_world_state(
+            mon_state,
+            monitor_id,
+            motion,
+            window_info,
+            slot=slot,
+            boundary_reason=boundary_reason,
+        )
 
     def _get_primary_monitor_state(self) -> Optional[MonitorPerceptionState]:
         if not self._monitor_states:
@@ -1227,9 +1367,11 @@ class PerceptionEngine:
         monitor_id: int,
         motion: dict,
         window_info: Optional[dict] = None,
+        slot=None,
+        boundary_reason: str = "",
     ) -> None:
         now = time.time()
-        if (now - self._last_world_update) < 0.25:
+        if (now - self._last_world_update) < self._world_update_interval:
             return
 
         workflow = "unknown"
@@ -1246,8 +1388,38 @@ class PerceptionEngine:
             {"row": r, "col": c, "intensity": round(i, 3)}
             for r, c, i in mon_state.attention.get_hot_zones()
         ]
+        recent_events = self._recent_event_dicts(seconds=25)
+        visual_facts = self._visual.get_latest_facts(monitor_id=monitor_id)
+        evidence = []
+        for e in recent_events[-8:]:
+            evidence.append(
+                {
+                    "id": f"evt_{int(e.get('timestamp', 0) * 1000)}_{e.get('type', 'event')}",
+                    "type": "event",
+                    "summary": e.get("type", "event"),
+                    "confidence": e.get("importance", 0.3),
+                    "timestamp_ms": int(e.get("timestamp", now) * 1000),
+                    "monitor": e.get("monitor", monitor_id),
+                }
+            )
 
-        self._world.update(
+        # Reserve tick for frame ref so trace and world stay aligned.
+        predicted_tick = self._world.tick_id + 1
+        frame_refs = []
+        if slot is not None:
+            try:
+                ref = self._temporal.add_frame_ref(
+                    slot,
+                    tick_id=predicted_tick,
+                    boundary_reason=boundary_reason,
+                    force=bool(boundary_reason),
+                )
+                if ref:
+                    frame_refs.append(ref)
+            except Exception as e:
+                logger.debug("Temporal frame_ref failed: %s", e)
+
+        snapshot = self._world.update(
             scene_state=mon_state.scene.state.value,
             scene_confidence=mon_state.scene.confidence,
             window_title=title,
@@ -1255,9 +1427,23 @@ class PerceptionEngine:
             workflow=workflow,
             monitor_id=monitor_id,
             attention_hot_zones=hot,
-            recent_events=self._recent_event_dicts(seconds=25),
+            recent_events=recent_events,
             dominant_direction=motion.get("dominant_direction", "none"),
+            visual_facts=visual_facts,
+            evidence=evidence,
+            frame_refs=frame_refs,
         )
+        try:
+            self._temporal.add_semantic_transition(
+                tick_id=snapshot.get("tick_id", predicted_tick),
+                kind="world_update",
+                summary=f"{snapshot.get('task_phase')} | {snapshot.get('active_surface', 'unknown')}",
+                confidence=max(0.0, 1.0 - float(snapshot.get("uncertainty", 1.0))),
+                monitor=monitor_id,
+                evidence_refs=[f.get("ref_id", "") for f in frame_refs if f.get("ref_id")],
+            )
+        except Exception as e:
+            logger.debug("Temporal semantic transition failed: %s", e)
         self._last_world_update = now
 
     # ─── Public API ───
@@ -1357,6 +1543,8 @@ class PerceptionEngine:
                 for mid, ms in self._monitor_states.items()
             },
             "world": self.get_world_state(),
+            "visual": self._visual.stats(),
+            "temporal": self._temporal.stats(),
             "event_count": len(self._events),
             "running": self._running,
         }
@@ -1365,16 +1553,80 @@ class PerceptionEngine:
         return self._world.get_world()
 
     def get_world_trace(self, seconds: float = 90) -> list[dict]:
-        return self._world.get_trace(seconds=seconds)
+        world_trace = self._world.get_trace(seconds=seconds)
+        temporal = self._temporal.get_trace(seconds=seconds)
+        trace = list(world_trace)
+        for s in temporal.get("semantic", []):
+            trace.append(
+                {
+                    "timestamp_ms": s.get("timestamp_ms"),
+                    "tick_id": s.get("tick_id"),
+                    "summary": s.get("summary"),
+                    "boundary_reason": f"semantic:{s.get('kind', 'event')}",
+                    "task_phase": "semantic",
+                    "active_surface": "temporal",
+                    "readiness": None,
+                    "uncertainty": round(1.0 - float(s.get("confidence", 0.0)), 3),
+                    "evidence_refs": s.get("evidence_refs", []),
+                    "frame_refs": [],
+                }
+            )
+        trace.sort(key=lambda x: int(x.get("timestamp_ms", 0)))
+        return trace
 
     def get_readiness(self) -> dict:
         return self._world.get_readiness()
+
+    def get_world_trace_bundle(self, seconds: float = 90) -> dict:
+        return {
+            "trace": self.get_world_trace(seconds=seconds),
+            "temporal": self._temporal.get_trace(seconds=seconds),
+        }
 
     def set_risk_mode(self, mode: str) -> None:
         self._world.set_risk_mode(mode)
 
     def record_action_feedback(self, action: str, success: bool, message: str = "") -> None:
         self._world.note_action(action=action, success=success, message=message)
+        try:
+            self._temporal.add_semantic_transition(
+                tick_id=self._world.tick_id,
+                kind="action_feedback",
+                summary=f"{action}: {'ok' if success else 'failed'} {message[:160]}",
+                confidence=1.0 if success else 0.3,
+                monitor=0,
+                evidence_refs=[],
+            )
+        except Exception:
+            pass
+
+    def check_context_freshness(self, context_tick_id: Optional[int], max_staleness_ms: int) -> dict:
+        return self._world.check_context_freshness(context_tick_id, max_staleness_ms)
+
+    def get_visual_facts_delta(self, since_ms: int, monitor_id: Optional[int] = None) -> list[dict]:
+        return self._visual.get_facts_delta(since_ms=since_ms, monitor_id=monitor_id)
+
+    def query_visual(
+        self,
+        question: str,
+        at_ms: Optional[int] = None,
+        window_seconds: float = 30,
+        monitor_id: Optional[int] = None,
+    ) -> dict:
+        result = self._visual.query(
+            question,
+            at_ms=at_ms,
+            window_seconds=window_seconds,
+            monitor_id=monitor_id,
+        )
+        frame_refs = self._temporal.query_frame_refs(
+            at_ms=at_ms,
+            window_seconds=window_seconds,
+            monitor_id=monitor_id,
+            limit=8,
+        )
+        result["frame_refs"] = frame_refs
+        return result
 
     def get_attention_heatmap(self) -> list[list[float]]:
         """Raw attention grid for dashboard visualization."""

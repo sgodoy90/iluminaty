@@ -1,8 +1,8 @@
 """
-ILUMINATY - IPA v2 Semantic World State
-=======================================
+ILUMINATY - IPA v2.1 Semantic World State
+==========================================
 RAM-only semantic state for "eyes + hands" control loops.
-No screenshots are persisted. Only compact semantic traces.
+No screenshots are persisted here. Only compact semantic traces.
 """
 
 from __future__ import annotations
@@ -33,6 +33,7 @@ def _zone_label(row: int, col: int) -> str:
 @dataclass
 class WorldSnapshot:
     timestamp_ms: int
+    tick_id: int
     task_phase: str
     active_surface: str
     entities: list[str] = field(default_factory=list)
@@ -42,17 +43,23 @@ class WorldSnapshot:
     readiness: bool = False
     readiness_reasons: list[str] = field(default_factory=list)
     risk_mode: str = "safe"
+    visual_facts: list[dict] = field(default_factory=list)
+    evidence: list[dict] = field(default_factory=list)
+    staleness_ms: int = 0
 
 
 @dataclass
 class WorldTraceEntry:
     timestamp_ms: int
+    tick_id: int
     summary: str
     boundary_reason: str
     task_phase: str
     active_surface: str
     readiness: bool
     uncertainty: float
+    evidence_refs: list[str] = field(default_factory=list)
+    frame_refs: list[dict] = field(default_factory=list)
 
 
 class WorldStateEngine:
@@ -65,15 +72,20 @@ class WorldStateEngine:
         self._trace: deque[WorldTraceEntry] = deque(maxlen=max_trace_entries)
         self._lock = threading.Lock()
         self._risk_mode = "safe"
+        self._tick_id = 0
         now_ms = int(time.time() * 1000)
         self._current = WorldSnapshot(
             timestamp_ms=now_ms,
+            tick_id=self._tick_id,
             task_phase="unknown",
             active_surface="unknown",
             uncertainty=1.0,
             readiness=False,
             readiness_reasons=["insufficient_context"],
             risk_mode=self._risk_mode,
+            visual_facts=[],
+            evidence=[],
+            staleness_ms=0,
         )
         self._last_signature: tuple[str, str, bool, str] = (
             self._current.task_phase,
@@ -85,6 +97,11 @@ class WorldStateEngine:
     @property
     def horizon_seconds(self) -> int:
         return self._horizon_seconds
+
+    @property
+    def tick_id(self) -> int:
+        with self._lock:
+            return self._tick_id
 
     def set_risk_mode(self, mode: str) -> None:
         mode_norm = (mode or "safe").strip().lower()
@@ -138,7 +155,7 @@ class WorldStateEngine:
             if item not in seen:
                 seen.add(item)
                 unique.append(item)
-        return unique[:12]
+        return unique[:16]
 
     def _build_entities(
         self,
@@ -153,7 +170,7 @@ class WorldStateEngine:
         if workflow and workflow != "unknown":
             entities.append(f"workflow:{workflow}")
         entities.append(f"monitor:{monitor_id}")
-        for event in recent_events[-5:]:
+        for event in recent_events[-8:]:
             event_type = event.get("type", "")
             if event_type:
                 entities.append(f"event:{event_type}")
@@ -164,7 +181,28 @@ class WorldStateEngine:
             if item not in seen:
                 seen.add(item)
                 dedup.append(item)
-        return dedup[:16]
+        return dedup[:24]
+
+    def _normalize_visual_fact(self, fact: dict) -> dict:
+        return {
+            "kind": str(fact.get("kind", "observation"))[:80],
+            "text": str(fact.get("text", ""))[:240],
+            "confidence": round(float(_clamp01(float(fact.get("confidence", 0.0)))), 3),
+            "monitor": int(fact.get("monitor", 0)),
+            "timestamp_ms": int(fact.get("timestamp_ms", int(time.time() * 1000))),
+            "source": str(fact.get("source", "unknown"))[:60],
+            "evidence_ref": str(fact.get("evidence_ref", ""))[:160],
+        }
+
+    def _normalize_evidence(self, ev: dict) -> dict:
+        return {
+            "id": str(ev.get("id", ""))[:160],
+            "type": str(ev.get("type", "event"))[:60],
+            "summary": str(ev.get("summary", ""))[:240],
+            "confidence": round(float(_clamp01(float(ev.get("confidence", 0.0)))), 3),
+            "timestamp_ms": int(ev.get("timestamp_ms", int(time.time() * 1000))),
+            "monitor": int(ev.get("monitor", 0)),
+        }
 
     def update(
         self,
@@ -178,6 +216,9 @@ class WorldStateEngine:
         attention_hot_zones: list[dict],
         recent_events: list[dict],
         dominant_direction: str = "none",
+        visual_facts: Optional[list[dict]] = None,
+        evidence: Optional[list[dict]] = None,
+        frame_refs: Optional[list[dict]] = None,
     ) -> dict:
         now_ms = int(time.time() * 1000)
         task_phase = self._task_phase_from_scene(scene_state, dominant_direction)
@@ -205,30 +246,48 @@ class WorldStateEngine:
         if app == "unknown":
             readiness_reasons.append("unknown_surface")
 
-        readiness = len(readiness_reasons) == 0
-        if readiness:
+        ready = len(readiness_reasons) == 0
+        if ready:
             readiness_reasons = ["ready_for_action"]
 
-        snapshot = WorldSnapshot(
-            timestamp_ms=now_ms,
-            task_phase=task_phase,
-            active_surface=active_surface,
-            entities=self._build_entities(app, workflow, monitor_id, recent_events),
-            affordances=self._infer_affordances(app, workflow, task_phase),
-            attention_targets=attention_targets,
-            uncertainty=round(uncertainty, 3),
-            readiness=readiness,
-            readiness_reasons=readiness_reasons,
-            risk_mode=self._risk_mode,
-        )
+        clean_facts = [self._normalize_visual_fact(f) for f in (visual_facts or [])][:12]
+        clean_evidence = [self._normalize_evidence(e) for e in (evidence or [])][:20]
 
         with self._lock:
-            self._current = snapshot
-            self._append_trace_if_boundary(snapshot, recent_events)
-            self._trim_trace_locked()
-            return asdict(self._current)
+            self._tick_id += 1
+            snapshot = WorldSnapshot(
+                timestamp_ms=now_ms,
+                tick_id=self._tick_id,
+                task_phase=task_phase,
+                active_surface=active_surface,
+                entities=self._build_entities(app, workflow, monitor_id, recent_events),
+                affordances=self._infer_affordances(app, workflow, task_phase),
+                attention_targets=attention_targets,
+                uncertainty=round(uncertainty, 3),
+                readiness=ready,
+                readiness_reasons=readiness_reasons,
+                risk_mode=self._risk_mode,
+                visual_facts=clean_facts,
+                evidence=clean_evidence,
+                staleness_ms=0,
+            )
 
-    def _append_trace_if_boundary(self, snapshot: WorldSnapshot, recent_events: list[dict]) -> None:
+            self._current = snapshot
+            self._append_trace_if_boundary(snapshot, recent_events, frame_refs or [])
+            self._trim_trace_locked()
+            return self._serialize_current_locked()
+
+    def _serialize_current_locked(self) -> dict:
+        data = asdict(self._current)
+        data["staleness_ms"] = max(0, int(time.time() * 1000) - self._current.timestamp_ms)
+        return data
+
+    def _append_trace_if_boundary(
+        self,
+        snapshot: WorldSnapshot,
+        recent_events: list[dict],
+        frame_refs: list[dict],
+    ) -> None:
         top_event = recent_events[-1].get("type", "") if recent_events else ""
         signature = (
             snapshot.task_phase,
@@ -245,15 +304,19 @@ class WorldStateEngine:
             f"{'ready' if snapshot.readiness else 'not-ready'} | u={snapshot.uncertainty:.2f}"
         )
         reason = "state_transition" if self._trace else "bootstrap"
+        refs = [f.get("ref_id", "") for f in frame_refs if f.get("ref_id")]
         self._trace.append(
             WorldTraceEntry(
                 timestamp_ms=snapshot.timestamp_ms,
+                tick_id=snapshot.tick_id,
                 summary=summary,
                 boundary_reason=reason,
                 task_phase=snapshot.task_phase,
                 active_surface=snapshot.active_surface,
                 readiness=snapshot.readiness,
                 uncertainty=snapshot.uncertainty,
+                evidence_refs=refs[:10],
+                frame_refs=frame_refs[:6],
             )
         )
 
@@ -268,6 +331,7 @@ class WorldStateEngine:
             self._trace.append(
                 WorldTraceEntry(
                     timestamp_ms=now_ms,
+                    tick_id=self._tick_id,
                     summary=f"action:{action} -> {'success' if success else 'failed'}",
                     boundary_reason="action_feedback",
                     task_phase=self._current.task_phase,
@@ -281,6 +345,7 @@ class WorldStateEngine:
                 self._trace.append(
                     WorldTraceEntry(
                         timestamp_ms=now_ms,
+                        tick_id=self._tick_id,
                         summary=message[:180],
                         boundary_reason="action_message",
                         task_phase=self._current.task_phase,
@@ -293,7 +358,7 @@ class WorldStateEngine:
 
     def get_world(self) -> dict:
         with self._lock:
-            return asdict(self._current)
+            return self._serialize_current_locked()
 
     def get_trace(self, seconds: float = 90) -> list[dict]:
         cutoff_ms = int(time.time() * 1000) - int(max(seconds, 1) * 1000)
@@ -304,10 +369,42 @@ class WorldStateEngine:
         with self._lock:
             return {
                 "timestamp_ms": self._current.timestamp_ms,
+                "tick_id": self._current.tick_id,
                 "readiness": self._current.readiness,
                 "uncertainty": self._current.uncertainty,
                 "reasons": list(self._current.readiness_reasons),
                 "task_phase": self._current.task_phase,
                 "active_surface": self._current.active_surface,
                 "risk_mode": self._current.risk_mode,
+                "staleness_ms": max(0, int(time.time() * 1000) - self._current.timestamp_ms),
+            }
+
+    def check_context_freshness(
+        self,
+        context_tick_id: Optional[int],
+        max_staleness_ms: int,
+    ) -> dict:
+        now_ms = int(time.time() * 1000)
+        with self._lock:
+            latest_tick = self._current.tick_id
+            staleness = max(0, now_ms - self._current.timestamp_ms)
+            if staleness > max(0, int(max_staleness_ms)):
+                return {
+                    "allowed": False,
+                    "reason": "context_stale",
+                    "latest_tick_id": latest_tick,
+                    "staleness_ms": staleness,
+                }
+            if context_tick_id is not None and int(context_tick_id) != latest_tick:
+                return {
+                    "allowed": False,
+                    "reason": "context_tick_mismatch",
+                    "latest_tick_id": latest_tick,
+                    "staleness_ms": staleness,
+                }
+            return {
+                "allowed": True,
+                "reason": "fresh",
+                "latest_tick_id": latest_tick,
+                "staleness_ms": staleness,
             }

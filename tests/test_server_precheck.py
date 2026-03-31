@@ -18,10 +18,19 @@ class _PerceptionStub:
             "task_phase": "loading" if not self._ready else "interaction",
             "active_surface": "editor",
             "risk_mode": "safe",
+            "tick_id": 7,
+            "staleness_ms": 20,
         }
 
     def record_action_feedback(self, action: str, success: bool, message: str = ""):
         return None
+
+    def check_context_freshness(self, context_tick_id, max_staleness_ms):
+        if context_tick_id is not None and int(context_tick_id) != 7:
+            return {"allowed": False, "reason": "context_tick_mismatch", "latest_tick_id": 7, "staleness_ms": 20}
+        if int(max_staleness_ms) < 20:
+            return {"allowed": False, "reason": "context_stale", "latest_tick_id": 7, "staleness_ms": 20}
+        return {"allowed": True, "reason": "fresh", "latest_tick_id": 7, "staleness_ms": 20}
 
 
 class _SafetyStub:
@@ -106,3 +115,22 @@ def test_token_endpoints_require_auth_when_api_key_enabled():
 
     assert unauth.status_code == 401
     assert auth.status_code == 200
+
+
+def test_execute_blocks_when_context_stale_in_safe_mode():
+    _setup_state(perception_ready=True)
+    client = TestClient(server.app)
+    response = client.post(
+        "/action/execute",
+        json={
+            "instruction": "click save",
+            "mode": "SAFE",
+            "context_tick_id": 7,
+            "max_staleness_ms": 5,
+        },
+    )
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload["result"]["success"] is False
+    assert payload["precheck"]["context_check"]["reason"] == "context_stale"

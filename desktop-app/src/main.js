@@ -494,13 +494,21 @@ function initNav() {
 }
 
 // ─── API Client ───
+function getApiKey() {
+  const session = getSession();
+  return session?.api_key || "";
+}
+
 async function apiGet(endpoint) {
   try {
+    const apiKey = getApiKey();
     if (isTauri) {
-      const result = await invoke("api_get", { endpoint });
+      const result = await invoke("api_get", { endpoint, apiKey });
       return JSON.parse(result);
     } else {
-      const resp = await fetch(API + endpoint);
+      const headers = {};
+      if (apiKey) headers["x-api-key"] = apiKey;
+      const resp = await fetch(API + endpoint, { headers });
       return await resp.json();
     }
   } catch {
@@ -510,16 +518,20 @@ async function apiGet(endpoint) {
 
 async function apiPost(endpoint, body = {}) {
   try {
+    const apiKey = getApiKey();
     if (isTauri) {
       const result = await invoke("api_post", {
         endpoint,
         body: JSON.stringify(body),
+        apiKey,
       });
       return JSON.parse(result);
     } else {
+      const headers = { "Content-Type": "application/json" };
+      if (apiKey) headers["x-api-key"] = apiKey;
       const resp = await fetch(API + endpoint, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify(body),
       });
       return await resp.json();
@@ -607,50 +619,52 @@ function stopPolling() {
 async function pollData() {
   if (!serverOnline) return;
 
-  // Stats
-  const stats = await apiGet("/stats");
+  // Buffer/Capture Stats
+  const stats = await apiGet("/buffer/stats");
   if (stats) {
-    if (stats.captures !== undefined) {
-      $("#perc-changes").textContent = stats.captures;
+    if (stats.total_frames_captured !== undefined) {
+      $("#perc-changes").textContent = stats.total_frames_captured;
     }
-    if (stats.uptime !== undefined) {
-      const mins = Math.floor(stats.uptime / 60);
-      const secs = Math.floor(stats.uptime % 60);
-      $("#stat-uptime").textContent = `${mins}m ${secs}s`;
+    if (stats.buffer_seconds !== undefined) {
+      $("#stat-uptime").textContent = `${Math.round(stats.buffer_seconds)}s buffer`;
+    }
+    if (stats.current_fps !== undefined && $("#vision-fps")) {
+      $("#vision-fps").textContent = Number(stats.current_fps).toFixed(1) + " FPS";
     }
   }
 
-  // Perception
-  const perc = await apiGet("/vision/stats");
+  // Perception state
+  const perc = await apiGet("/perception/state");
   if (perc) {
-    $("#perc-ocr").textContent = perc.ocr_enabled ? "Yes" : "No";
-    $("#perc-interval").textContent = (perc.interval_ms || "--") + "ms";
-    $("#perc-buffer").textContent = (perc.buffer_size || "--") + " frames";
-    $("#perc-status").textContent = perc.capturing ? "Capturing" : "Idle";
-    if (perc.fps) {
-      $("#vision-fps").textContent = perc.fps.toFixed(1) + " FPS";
-    }
+    const world = perc.world || {};
+    $("#perc-ocr").textContent = world.visual_facts && world.visual_facts.length > 0 ? "Yes" : "No";
+    $("#perc-interval").textContent = (world.staleness_ms ?? "--") + "ms";
+    $("#perc-buffer").textContent = (perc.event_count || 0) + " events";
+    $("#perc-status").textContent = perc.scene_state || "unknown";
   }
 
   // Recent actions from audit
-  const audit = await apiGet("/audit/recent?limit=5");
-  if (audit && Array.isArray(audit)) {
+  const audit = await apiGet("/audit/recent?count=5");
+  const entries = audit?.entries || [];
+  if (audit && Array.isArray(entries)) {
     const container = $("#recent-actions");
     container.innerHTML = "";
-    if (audit.length === 0) {
+    if (entries.length === 0) {
       container.innerHTML =
         '<div class="log-entry"><span class="log-detail" style="color:var(--text-muted)">No actions yet</span></div>';
     } else {
-      audit.forEach((a) => {
+      entries.forEach((a) => {
         const entry = document.createElement("div");
         entry.className = "log-entry";
-        const time = a.timestamp
-          ? new Date(a.timestamp * 1000).toLocaleTimeString()
+        const ts = a.timestamp || a.ts || a.created_at || 0;
+        const success = a.status ? a.status === "success" : !!a.success;
+        const time = ts
+          ? new Date(ts * 1000).toLocaleTimeString()
           : "--:--";
         entry.innerHTML = `
           <span class="log-time">${escapeHtml(time)}</span>
           <span class="log-action">${escapeHtml(a.action || "?")}</span>
-          <span class="log-status ${a.success ? "ok" : "fail"}">${a.success ? "OK" : "FAIL"}</span>
+          <span class="log-status ${success ? "ok" : "fail"}">${success ? "OK" : "FAIL"}</span>
         `;
         container.appendChild(entry);
       });
@@ -677,12 +691,12 @@ async function pollVision() {
 
   try {
     const data = await apiGet("/vision/snapshot");
-    if (data && data.image) {
+    if (data && data.image_base64) {
       const img = $("#vision-img");
       const placeholder = $("#vision-placeholder");
       const overlay = $("#vision-overlay");
 
-      img.src = "data:image/jpeg;base64," + data.image;
+      img.src = "data:image/webp;base64," + data.image_base64;
       img.style.display = "block";
       placeholder.style.display = "none";
       overlay.style.display = "flex";
@@ -707,12 +721,15 @@ async function executeAgent() {
   result.textContent = "Executing...";
   result.style.color = "var(--yellow)";
 
-  const data = await apiPost("/agent/do", { instruction });
+  const data = await apiPost("/action/execute", { instruction, verify: true });
 
   if (data) {
-    result.style.color = data.success ? "var(--green)" : "var(--red)";
-    result.textContent = data.message || JSON.stringify(data);
-    addLog(data.action || "agent", instruction, data.success ? "ok" : "fail");
+    const actionResult = data.result || {};
+    const ok = !!actionResult.success;
+    result.style.color = ok ? "var(--green)" : "var(--red)";
+    const mode = data.precheck?.mode || "SAFE";
+    result.textContent = `[${mode}] ${actionResult.message || JSON.stringify(data)}`;
+    addLog(actionResult.action || "agent", instruction, ok ? "ok" : "fail");
   } else {
     result.style.color = "var(--red)";
     result.textContent = "Failed — server may be offline";
@@ -814,7 +831,48 @@ function initActionButtons() {
         body[paramInfo.param] = input;
       }
 
-      const data = await apiPost(`/action/${action}`, body);
+      let data = null;
+      try {
+        // Explicit mapping for backend-compatible actions.
+        if (action === "click" || action === "double_click" || action === "right_click") {
+          const [x, y] = String(body.coordinates || "0,0").split(",").map((v) => parseInt(v.trim(), 10) || 0);
+          if (action === "double_click") {
+            data = await apiPost(`/action/double_click?x=${x}&y=${y}`);
+          } else {
+            const button = action === "right_click" ? "right" : "left";
+            data = await apiPost(`/action/click?x=${x}&y=${y}&button=${button}`);
+          }
+        } else if (action === "scroll") {
+          const amount = parseInt(body.amount, 10) || 0;
+          data = await apiPost(`/action/scroll?amount=${amount}`);
+        } else if (action === "typewrite") {
+          data = await apiPost(`/action/type?text=${encodeURIComponent(body.text || "")}`);
+        } else if (action === "press_key" || action === "hotkey") {
+          const keys = encodeURIComponent(body.keys || body.key || "");
+          data = await apiPost(`/action/hotkey?keys=${keys}`);
+        } else if (action === "set_clipboard") {
+          data = await apiPost(`/clipboard/write?text=${encodeURIComponent(body.text || "")}`);
+        } else if (action === "click_element") {
+          data = await apiPost(`/ui/click?name=${encodeURIComponent(body.selector || "")}`);
+        } else if (action === "find_element") {
+          data = await apiGet(`/ui/find?name=${encodeURIComponent(body.query || "")}`);
+          if (data?.element) data.success = true;
+        } else if (action === "browser_navigate") {
+          data = await apiPost(`/browser/navigate?url=${encodeURIComponent(body.url || "")}`);
+        } else if (action === "terminal_run") {
+          data = await apiPost(`/terminal/exec?cmd=${encodeURIComponent(body.command || "")}&timeout=30`);
+        } else {
+          // Generic fallback through intent pipeline
+          const instruction = `${action}${Object.keys(body).length ? " " + JSON.stringify(body) : ""}`;
+          data = await apiPost("/action/execute", { instruction, verify: true });
+          if (data?.result) {
+            data.success = !!data.result.success;
+            data.message = data.result.message || "";
+          }
+        }
+      } catch {
+        data = null;
+      }
       if (data) {
         addLog(action, data.message || "Done", data.success ? "ok" : "warn");
       } else {
@@ -866,9 +924,11 @@ function init() {
       audit_trail: $("#set-audit").checked,
       mcp_enabled: $("#set-mcp").checked,
     };
-    const result = await apiPost("/settings", settings);
+    const interval = Math.max(100, settings.capture_interval || 1000);
+    const fps = +(1000 / interval).toFixed(2);
+    const result = await apiPost(`/config?fps=${fps}`);
     if (result) {
-      addLog("settings", "Settings saved (apply on next server restart)", "ok");
+      addLog("settings", "Capture settings applied", "ok");
     } else {
       addLog("settings", "Failed to save settings", "fail");
     }

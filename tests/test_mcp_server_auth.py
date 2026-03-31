@@ -35,3 +35,11 @@ def test_mcp_forwards_api_key_header(monkeypatch):
 
     module._api_post("/tokens/reset")
     assert captured["headers"].get("X-api-key") == "abc123"
+
+
+def test_mcp_registers_v21_tools():
+    tool_names = {t["name"] for t in mcp.TOOLS}
+    for name in {"vision_query", "window_minimize", "window_maximize", "window_close"}:
+        assert name in tool_names
+        assert name in mcp.ALL_MCP_TOOLS
+        assert name in mcp.HANDLERS

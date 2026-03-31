@@ -74,12 +74,20 @@ fn server_status(state: State<ServerProcess>) -> Result<ServerStatus, String> {
 }
 
 #[tauri::command]
-async fn api_get(endpoint: String) -> Result<String, String> {
+async fn api_get(endpoint: String, api_key: Option<String>) -> Result<String, String> {
     if !endpoint.starts_with('/') || endpoint.contains("://") || endpoint.contains('@') {
         return Err("Invalid endpoint".into());
     }
     let url = format!("http://127.0.0.1:8420{}", endpoint);
-    let resp = reqwest::get(&url)
+    let client = reqwest::Client::new();
+    let mut req = client.get(&url);
+    if let Some(key) = api_key {
+        if !key.is_empty() {
+            req = req.header("x-api-key", key);
+        }
+    }
+    let resp = req
+        .send()
         .await
         .map_err(|e| format!("Request failed: {}", e))?;
     resp.text()
@@ -88,17 +96,22 @@ async fn api_get(endpoint: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-async fn api_post(endpoint: String, body: String) -> Result<String, String> {
+async fn api_post(endpoint: String, body: String, api_key: Option<String>) -> Result<String, String> {
     if !endpoint.starts_with('/') || endpoint.contains("://") || endpoint.contains('@') {
         return Err("Invalid endpoint".into());
     }
     let url = format!("http://127.0.0.1:8420{}", endpoint);
     let client = reqwest::Client::new();
-    let resp = client
+    let mut req = client
         .post(&url)
         .header("Content-Type", "application/json")
-        .body(body)
-        .send()
+        .body(body);
+    if let Some(key) = api_key {
+        if !key.is_empty() {
+            req = req.header("x-api-key", key);
+        }
+    }
+    let resp = req.send()
         .await
         .map_err(|e| format!("Request failed: {}", e))?;
     resp.text()
@@ -154,7 +167,16 @@ fn spawn_server() -> Result<Child, String> {
     let root = project_root();
 
     let mut cmd = Command::new(&python);
-    cmd.args(["-m", "iluminaty.main", "start", "--actions", "--autonomy", "confirm", "--monitor", "0"])
+    cmd.args([
+            "-m", "iluminaty.main", "start",
+            "--actions",
+            "--autonomy", "confirm",
+            "--monitor", "0",
+            "--fps", "5",
+            "--fast-loop-hz", "10",
+            "--deep-loop-hz", "1.0",
+            "--vision-profile", "core_ram",
+        ])
         .current_dir(&root)
         .env("ILUMINATY_KEY", "ILUM-dev-godo-master-key-2026")
         .stdout(Stdio::null())

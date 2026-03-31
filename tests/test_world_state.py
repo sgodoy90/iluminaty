@@ -43,3 +43,24 @@ def test_world_state_trace_and_action_feedback():
     assert len(trace) >= 2
     assert any(item["boundary_reason"] == "action_feedback" for item in trace)
     assert any("button not ready" in item["summary"] for item in trace)
+
+
+def test_world_state_context_freshness_gate():
+    engine = WorldStateEngine(horizon_seconds=90)
+    snapshot = engine.update(
+        scene_state="interaction",
+        scene_confidence=0.9,
+        window_title="Editor",
+        app_name="Code",
+        workflow="coding",
+        monitor_id=1,
+        attention_hot_zones=[],
+        recent_events=[{"type": "ui_activity"}],
+        dominant_direction="none",
+    )
+    tick = snapshot["tick_id"]
+    fresh = engine.check_context_freshness(context_tick_id=tick, max_staleness_ms=10_000)
+    assert fresh["allowed"] is True
+    mismatch = engine.check_context_freshness(context_tick_id=tick + 99, max_staleness_ms=10_000)
+    assert mismatch["allowed"] is False
+    assert mismatch["reason"] == "context_tick_mismatch"

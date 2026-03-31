@@ -190,7 +190,13 @@ def _intent_from_payload(payload: dict) -> Intent:
     )
 
 
-def _build_precheck(intent: Intent, mode: str, include_readiness: bool = True) -> dict:
+def _build_precheck(
+    intent: Intent,
+    mode: str,
+    include_readiness: bool = True,
+    context_tick_id: Optional[int] = None,
+    max_staleness_ms: int = 1500,
+) -> dict:
     mode_norm = _normalize_operating_mode(mode)
     readiness = {
         "readiness": False,
@@ -225,10 +231,41 @@ def _build_precheck(intent: Intent, mode: str, include_readiness: bool = True) -
             reason_txt = ", ".join(str(r) for r in reasons[:3])
             readiness_check = {"allowed": False, "reason": reason_txt}
 
+    context_applies = include_readiness and safety_applies and mode_norm != "RAW"
+    context_check = {"allowed": True, "reason": "skipped", "latest_tick_id": readiness.get("tick_id"), "staleness_ms": readiness.get("staleness_ms", 0)}
+    if context_applies and _state.perception:
+        try:
+            if hasattr(_state.perception, "check_context_freshness"):
+                context_check = _state.perception.check_context_freshness(
+                    context_tick_id=context_tick_id,
+                    max_staleness_ms=max_staleness_ms,
+                )
+            else:
+                staleness = int(readiness.get("staleness_ms", 0))
+                latest_tick = readiness.get("tick_id")
+                if staleness > int(max_staleness_ms):
+                    context_check = {
+                        "allowed": False,
+                        "reason": "context_stale",
+                        "latest_tick_id": latest_tick,
+                        "staleness_ms": staleness,
+                    }
+                else:
+                    context_check = {
+                        "allowed": True,
+                        "reason": "fresh",
+                        "latest_tick_id": latest_tick,
+                        "staleness_ms": staleness,
+                    }
+        except Exception as e:
+            logger.debug("Failed context freshness check during precheck: %s", e)
+            context_check = {"allowed": True, "reason": "context_check_unavailable", "latest_tick_id": readiness.get("tick_id"), "staleness_ms": readiness.get("staleness_ms", 0)}
+
     blocked = (
         not kill_check["allowed"]
         or not safety_check["allowed"]
         or not readiness_check["allowed"]
+        or not context_check["allowed"]
     )
     return {
         "mode": mode_norm,
@@ -239,20 +276,37 @@ def _build_precheck(intent: Intent, mode: str, include_readiness: bool = True) -
         "safety_check": safety_check,
         "readiness_applies": readiness_applies,
         "readiness_check": readiness_check,
+        "context_applies": context_applies,
+        "context_tick_id": context_tick_id,
+        "max_staleness_ms": int(max_staleness_ms),
+        "context_check": context_check,
         "blocked": blocked,
     }
 
 
-def _execute_intent(intent: Intent, mode: str, verify: bool = True) -> dict:
+def _execute_intent(
+    intent: Intent,
+    mode: str,
+    verify: bool = True,
+    context_tick_id: Optional[int] = None,
+    max_staleness_ms: int = 1500,
+) -> dict:
     if not _state.resolver:
         raise HTTPException(status_code=503, detail="Resolver not initialized")
 
-    precheck = _build_precheck(intent, mode, include_readiness=True)
+    precheck = _build_precheck(
+        intent,
+        mode,
+        include_readiness=True,
+        context_tick_id=context_tick_id,
+        max_staleness_ms=max_staleness_ms,
+    )
     if precheck["blocked"]:
         blocked_reason = (
             precheck["kill_check"]["reason"] if not precheck["kill_check"]["allowed"] else
             precheck["safety_check"]["reason"] if not precheck["safety_check"]["allowed"] else
-            precheck.get("readiness_check", {}).get("reason", "insufficient_context")
+            precheck.get("readiness_check", {}).get("reason") if not precheck.get("readiness_check", {}).get("allowed", True) else
+            precheck.get("context_check", {}).get("reason", "stale_context")
         )
         if _state.audit:
             _state.audit.log(
@@ -616,6 +670,7 @@ async def perception_stream(
     try:
         last_world_ts = 0
         last_event_ts = 0.0
+        last_visual_ts = int(time.time() * 1000)
         while True:
             if not _state.perception:
                 await ws.send_json({
@@ -632,6 +687,7 @@ async def perception_stream(
                 payload = {
                     "type": "perception_world",
                     "status": "active",
+                    "tick_id": world.get("tick_id"),
                     "world": world,
                     "readiness": _state.perception.get_readiness(),
                 }
@@ -652,6 +708,11 @@ async def perception_stream(
                     if events:
                         last_event_ts = events[-1]["timestamp"]
                     payload["events"] = events
+                visual_delta = _state.perception.get_visual_facts_delta(last_visual_ts)
+                if visual_delta:
+                    payload["visual_facts_delta"] = visual_delta
+                    latest = max(int(v.get("timestamp_ms", last_visual_ts)) for v in visual_delta)
+                    last_visual_ts = max(last_visual_ts, latest)
                 await ws.send_json(payload)
                 last_world_ts = world_ts
 
@@ -671,6 +732,10 @@ def init_server(
     browser_debug_port: int = 9222,
     file_sandbox_paths: Optional[list[str]] = None,
     iluminaty_key: Optional[str] = None,
+    visual_profile: str = "core_ram",
+    vision_plus_disk: bool = False,
+    deep_loop_hz: float = 1.0,
+    fast_loop_hz: float = 10.0,
 ):
     """Inyecta las dependencias al modulo del server (thread-safe)."""
     with _state.lock:
@@ -710,6 +775,10 @@ def init_server(
                 monitor_mgr=_state.monitor_mgr,
                 smart_diff=_state.diff,
                 context=_state.context,
+                visual_profile=visual_profile,
+                enable_disk_spool=vision_plus_disk,
+                deep_loop_hz=deep_loop_hz,
+                fast_loop_hz=fast_loop_hz,
             )
             _state.perception.start(buffer)
             _state.perception.set_risk_mode(_state.operating_mode.lower())
@@ -1128,8 +1197,15 @@ async def perception_trace(
     _check_auth(x_api_key)
     if not _state.perception:
         raise HTTPException(503, "Perception engine not initialized")
-    trace = _state.perception.get_world_trace(seconds=seconds)
-    return {"trace": trace, "count": len(trace), "seconds": seconds}
+    bundle = _state.perception.get_world_trace_bundle(seconds=seconds)
+    trace = bundle.get("trace", [])
+    temporal = bundle.get("temporal", {})
+    return {
+        "trace": trace,
+        "temporal": temporal,
+        "count": len(trace),
+        "seconds": seconds,
+    }
 
 
 @app.get("/perception/readiness")
@@ -1139,6 +1215,32 @@ async def perception_readiness(x_api_key: Optional[str] = Header(None)):
     if not _state.perception:
         raise HTTPException(503, "Perception engine not initialized")
     return _state.perception.get_readiness()
+
+
+@app.post("/perception/query")
+async def perception_query(
+    request_body: dict,
+    x_api_key: Optional[str] = Header(None),
+):
+    """
+    Query temporal visual context.
+    Body: {question, at_ms?, window_seconds?, monitor_id?}
+    """
+    _check_auth(x_api_key)
+    if not _state.perception:
+        raise HTTPException(503, "Perception engine not initialized")
+    question = (request_body.get("question") or "").strip()
+    if not question:
+        raise HTTPException(400, "question is required")
+    at_ms = request_body.get("at_ms")
+    window_seconds = float(request_body.get("window_seconds", 30))
+    monitor_id = request_body.get("monitor_id")
+    return _state.perception.query_visual(
+        question=question,
+        at_ms=at_ms,
+        window_seconds=window_seconds,
+        monitor_id=monitor_id,
+    )
 
 
 # ─── Multi-Agent Workbench (IPA v2) ───
@@ -1887,7 +1989,15 @@ async def action_precheck(
     _check_auth(x_api_key)
     intent = _intent_from_payload(request_body)
     mode = request_body.get("mode") or _state.operating_mode
-    return _build_precheck(intent, mode, include_readiness=True)
+    context_tick_id = request_body.get("context_tick_id")
+    max_staleness_ms = int(request_body.get("max_staleness_ms", 1500))
+    return _build_precheck(
+        intent,
+        mode,
+        include_readiness=True,
+        context_tick_id=context_tick_id,
+        max_staleness_ms=max_staleness_ms,
+    )
 
 
 @app.post("/action/execute")
@@ -1903,7 +2013,15 @@ async def action_execute(
     intent = _intent_from_payload(request_body)
     mode = request_body.get("mode") or _state.operating_mode
     verify = bool(request_body.get("verify", True))
-    return _execute_intent(intent, mode=mode, verify=verify)
+    context_tick_id = request_body.get("context_tick_id")
+    max_staleness_ms = int(request_body.get("max_staleness_ms", 1500))
+    return _execute_intent(
+        intent,
+        mode=mode,
+        verify=verify,
+        context_tick_id=context_tick_id,
+        max_staleness_ms=max_staleness_ms,
+    )
 
 
 @app.post("/action/raw")

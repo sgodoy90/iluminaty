@@ -62,7 +62,7 @@ class AgentSession:
 
 OBSERVER_TOOLS = frozenset({
     "see_screen", "see_changes", "read_screen_text", "perception",
-    "perception_world", "perception_trace",
+    "perception_world", "perception_trace", "vision_query",
     "screen_status", "get_context", "get_audio_level", "token_status",
     "set_token_mode", "set_token_budget",
 })
@@ -77,7 +77,8 @@ EXECUTOR_TOOLS = frozenset({
     "set_operating_mode",
     "click_element", "type_text", "run_command",
     "keyboard", "scroll", "click_screen", "browser_navigate",
-    "focus_window", "read_file", "write_file", "get_clipboard",
+    "focus_window", "window_minimize", "window_maximize", "window_close",
+    "read_file", "write_file", "get_clipboard",
 }) | OBSERVER_TOOLS
 
 VERIFIER_TOOLS = OBSERVER_TOOLS | frozenset({

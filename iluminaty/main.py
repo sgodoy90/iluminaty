@@ -38,7 +38,7 @@ def main():
     )
     parser.add_argument("--port", type=int, default=8420, help="API port (default: 8420)")
     parser.add_argument("--host", default="127.0.0.1", help="API host (default: 127.0.0.1)")
-    parser.add_argument("--fps", type=float, default=1.0, help="Target FPS (default: 1.0)")
+    parser.add_argument("--fps", type=float, default=5.0, help="Target FPS (default: 5.0)")
     parser.add_argument("--buffer-seconds", type=int, default=30, help="Ring buffer duration in seconds (default: 30)")
     parser.add_argument("--quality", type=int, default=80, help="Image quality 10-95 (default: 80)")
     parser.add_argument("--format", type=str, default="webp", choices=["jpeg", "webp", "png"], help="Image format (default: webp)")
@@ -59,6 +59,20 @@ def main():
                         help="Chrome DevTools debug port (default: 9222)")
     parser.add_argument("--file-sandbox", type=str, nargs="*", default=None,
                         help="Allowed file system paths for sandbox (default: current dir)")
+    parser.add_argument(
+        "--vision-profile",
+        type=str,
+        default="core_ram",
+        choices=["core_ram", "vision_plus"],
+        help="Temporal vision profile (default: core_ram)",
+    )
+    parser.add_argument(
+        "--vision-plus-disk",
+        action="store_true",
+        help="Enable encrypted rotating disk spool (vision_plus profile only)",
+    )
+    parser.add_argument("--deep-loop-hz", type=float, default=1.0, help="Deep visual loop frequency (0.5-2.0)")
+    parser.add_argument("--fast-loop-hz", type=float, default=10.0, help="Fast semantic loop frequency (8-12 typical)")
 
     args = parser.parse_args()
     
@@ -117,6 +131,10 @@ def main():
         autonomy_level=args.autonomy,
         browser_debug_port=args.browser_debug_port,
         file_sandbox_paths=args.file_sandbox,
+        visual_profile=args.vision_profile,
+        vision_plus_disk=args.vision_plus_disk,
+        deep_loop_hz=args.deep_loop_hz,
+        fast_loop_hz=args.fast_loop_hz,
     )
     
     # ─── Info de arranque ───
@@ -135,6 +153,8 @@ def main():
     print(f"  Disk:      ZERO (RAM-only ring buffer)")
     print(f"  Actions:   {'ENABLED' if args.actions else 'disabled'} (autonomy: {args.autonomy})")
     print(f"  Browser:   debug port {args.browser_debug_port}")
+    print(f"  Perception: fast_loop={args.fast_loop_hz:.1f}Hz | deep_loop={args.deep_loop_hz:.1f}Hz")
+    print(f"  Vision profile: {args.vision_profile}" + (" + disk spool" if args.vision_plus_disk else ""))
     print()
     print(f"  Core Endpoints:")
     print(f"    GET  /frame/latest        - last frame")

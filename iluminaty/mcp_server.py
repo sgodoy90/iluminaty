@@ -41,6 +41,8 @@ FREE_MCP_TOOLS = {
     "screen_status", "get_context", "do_action", "raw_action",
     "action_precheck", "verify_action",
     "perception_world", "perception_trace", "set_operating_mode",
+    "vision_query",
+    "window_minimize", "window_maximize", "window_close",
     "get_audio_level",
     "token_status", "set_token_mode", "set_token_budget",
 }
@@ -52,8 +54,10 @@ ALL_MCP_TOOLS = {
     "screen_status", "get_context", "get_audio_level",
     "do_action", "raw_action", "action_precheck", "verify_action",
     "set_operating_mode",
+    "vision_query",
     "click_element", "type_text", "run_command",
     "list_windows", "find_ui_element", "read_file", "write_file",
+    "window_minimize", "window_maximize", "window_close",
     "get_clipboard", "agent_status",
     # Human-like navigation
     "watch_screen", "focus_window", "browser_navigate", "browser_tabs",
@@ -296,6 +300,14 @@ TOOLS = [
                     "type": "string",
                     "description": "Natural language instruction (e.g. 'save the file', 'click Submit')",
                 },
+                "context_tick_id": {
+                    "type": "integer",
+                    "description": "Optional world tick id to enforce freshness in SAFE/HYBRID",
+                },
+                "max_staleness_ms": {
+                    "type": "integer",
+                    "description": "Optional max context age in ms (default 1500)",
+                },
             },
             "required": ["instruction"],
         },
@@ -330,6 +342,8 @@ TOOLS = [
                 "params": {"type": "object", "description": "Direct action params"},
                 "category": {"type": "string", "description": "safe|normal|destructive", "default": "normal"},
                 "mode": {"type": "string", "enum": ["SAFE", "RAW", "HYBRID"], "description": "Optional override mode"},
+                "context_tick_id": {"type": "integer", "description": "Optional expected world tick id"},
+                "max_staleness_ms": {"type": "integer", "description": "Optional max context age in ms"},
             },
         },
     },
@@ -363,6 +377,23 @@ TOOLS = [
                 },
             },
             "required": ["mode"],
+        },
+    },
+    {
+        "name": "vision_query",
+        "description": (
+            "Ask a temporal visual question over IPA memory. "
+            "Supports point-in-time (`at_ms`) or windowed (`window_seconds`) reasoning."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "question": {"type": "string", "description": "Natural language visual question"},
+                "at_ms": {"type": "integer", "description": "Optional target timestamp in ms"},
+                "window_seconds": {"type": "number", "description": "Lookback window in seconds", "default": 30},
+                "monitor_id": {"type": "integer", "description": "Optional monitor id"},
+            },
+            "required": ["question"],
         },
     },
     {
@@ -418,6 +449,39 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {},
+        },
+    },
+    {
+        "name": "window_minimize",
+        "description": "Minimize a window by title.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Window title (partial match accepted by backend)"},
+            },
+            "required": ["title"],
+        },
+    },
+    {
+        "name": "window_maximize",
+        "description": "Maximize a window by title.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Window title (partial match accepted by backend)"},
+            },
+            "required": ["title"],
+        },
+    },
+    {
+        "name": "window_close",
+        "description": "Close a window by title.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Window title (partial match accepted by backend)"},
+            },
+            "required": ["title"],
         },
     },
     {
@@ -716,10 +780,12 @@ def handle_perception_world(args: dict) -> list:
         world = _api_get("/perception/world")
         lines = [
             "## IPA WorldState",
+            f"- Tick: {world.get('tick_id', 0)}",
             f"- Phase: {world.get('task_phase', 'unknown')}",
             f"- Surface: {world.get('active_surface', 'unknown')}",
             f"- Readiness: {world.get('readiness', False)}",
             f"- Uncertainty: {world.get('uncertainty', 1.0)}",
+            f"- Staleness: {world.get('staleness_ms', 0)}ms",
             f"- Risk mode: {world.get('risk_mode', 'safe')}",
         ]
         entities = world.get("entities", [])
@@ -728,6 +794,9 @@ def handle_perception_world(args: dict) -> list:
         affordances = world.get("affordances", [])
         if affordances:
             lines.append(f"- Affordances: {', '.join(affordances[:8])}")
+        visual_facts = world.get("visual_facts", [])
+        if visual_facts:
+            lines.append(f"- Visual facts: {len(visual_facts)}")
         return [{"type": "text", "text": "\n".join(lines)}]
     except Exception as e:
         return [{"type": "text", "text": f"WorldState not available: {e}"}]
@@ -738,9 +807,11 @@ def handle_perception_trace(args: dict) -> list:
     try:
         data = _api_get(f"/perception/trace?seconds={seconds}")
         trace = data.get("trace", [])
+        temporal = data.get("temporal", {})
+        frame_refs = temporal.get("frame_refs", [])
         if not trace:
             return [{"type": "text", "text": "No semantic trace entries in the requested window."}]
-        lines = [f"## IPA Trace ({len(trace)} entries / {seconds}s)"]
+        lines = [f"## IPA Trace ({len(trace)} entries / {seconds}s, frame_refs={len(frame_refs)})"]
         for item in trace[-20:]:
             ts = item.get("timestamp_ms", 0)
             summary = item.get("summary", "")
@@ -749,6 +820,33 @@ def handle_perception_trace(args: dict) -> list:
         return [{"type": "text", "text": "\n".join(lines)}]
     except Exception as e:
         return [{"type": "text", "text": f"Trace not available: {e}"}]
+
+
+def handle_vision_query(args: dict) -> list:
+    question = (args.get("question") or "").strip()
+    if not question:
+        return [{"type": "text", "text": "Error: question is required"}]
+    payload = {"question": question}
+    for key in ("at_ms", "window_seconds", "monitor_id"):
+        if key in args and args[key] is not None:
+            payload[key] = args[key]
+    try:
+        data = _api_post("/perception/query", body=payload)
+    except Exception as e:
+        return [{"type": "text", "text": f"Vision query failed: {e}"}]
+    refs = data.get("evidence_refs", [])
+    frames = data.get("frame_refs", [])
+    lines = [
+        "## Vision Query",
+        f"Q: {question}",
+        f"A: {data.get('answer', '')}",
+        f"Confidence: {data.get('confidence', 0)}",
+    ]
+    if refs:
+        lines.append(f"Evidence refs: {', '.join(refs[:6])}")
+    if frames:
+        lines.append(f"Frame refs: {len(frames)}")
+    return [{"type": "text", "text": "\n".join(lines)}]
 
 
 def handle_watch_screen(args: dict) -> list:
@@ -943,7 +1041,11 @@ def handle_do_action(args: dict) -> list:
     instruction = args.get("instruction", "")
     if not instruction:
         return [{"type": "text", "text": "Error: instruction is required"}]
-    data = _api_post("/action/execute", body={"instruction": instruction, "verify": True})
+    payload = {"instruction": instruction, "verify": True}
+    for key in ("context_tick_id", "max_staleness_ms"):
+        if key in args and args[key] is not None:
+            payload[key] = args[key]
+    data = _api_post("/action/execute", body=payload)
     result = data.get("result", {})
     precheck = data.get("precheck", {})
     verification = data.get("verification") or {}
@@ -984,7 +1086,7 @@ def handle_raw_action(args: dict) -> list:
 
 def handle_action_precheck(args: dict) -> list:
     payload = {}
-    for key in ("instruction", "action", "params", "category", "mode"):
+    for key in ("instruction", "action", "params", "category", "mode", "context_tick_id", "max_staleness_ms"):
         if key in args and args[key] is not None:
             payload[key] = args[key]
     if not payload:
@@ -1065,6 +1167,30 @@ def handle_list_windows(args: dict) -> list:
     for w in windows[:30]:
         lines.append(f"- **{w.get('title', '?')[:60]}** (pid:{w.get('pid')}, {w.get('width')}x{w.get('height')})")
     return [{"type": "text", "text": "\n".join(lines)}]
+
+
+def handle_window_minimize(args: dict) -> list:
+    title = (args.get("title") or "").strip()
+    if not title:
+        return [{"type": "text", "text": "Error: title is required"}]
+    data = _api_post(f"/windows/minimize?title={urllib.parse.quote(title)}")
+    return [{"type": "text", "text": f"Minimize '{title}': {'SUCCESS' if data.get('success') else 'FAILED'}"}]
+
+
+def handle_window_maximize(args: dict) -> list:
+    title = (args.get("title") or "").strip()
+    if not title:
+        return [{"type": "text", "text": "Error: title is required"}]
+    data = _api_post(f"/windows/maximize?title={urllib.parse.quote(title)}")
+    return [{"type": "text", "text": f"Maximize '{title}': {'SUCCESS' if data.get('success') else 'FAILED'}"}]
+
+
+def handle_window_close(args: dict) -> list:
+    title = (args.get("title") or "").strip()
+    if not title:
+        return [{"type": "text", "text": "Error: title is required"}]
+    data = _api_post(f"/windows/close?title={urllib.parse.quote(title)}")
+    return [{"type": "text", "text": f"Close '{title}': {'SUCCESS' if data.get('success') else 'FAILED'}"}]
 
 
 def handle_find_ui_element(args: dict) -> list:
@@ -1265,6 +1391,7 @@ HANDLERS = {
     "perception": handle_perception,
     "perception_world": handle_perception_world,
     "perception_trace": handle_perception_trace,
+    "vision_query": handle_vision_query,
     "watch_screen": handle_watch_screen,
     "see_changes": handle_see_changes,
     "annotate_screen": handle_annotate,
@@ -1282,6 +1409,9 @@ HANDLERS = {
     "type_text": handle_type_text,
     "run_command": handle_run_command,
     "list_windows": handle_list_windows,
+    "window_minimize": handle_window_minimize,
+    "window_maximize": handle_window_maximize,
+    "window_close": handle_window_close,
     "find_ui_element": handle_find_ui_element,
     "read_file": handle_read_file,
     "write_file": handle_write_file,
