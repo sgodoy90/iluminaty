@@ -2,7 +2,8 @@
 ILUMINATY Brain Chat Terminal
 ==============================
 Terminal interactivo para hablar con el modelo local de IluminatyBrain.
-El modelo ve el WorldState de tu pantalla en cada mensaje.
+El modelo corre 100% local en tu GPU — sin Ollama, sin APIs externas.
+Se descarga de HuggingFace la primera vez y queda cacheado.
 
 Modos:
   --mode chat      Conversacion libre (el modelo responde en texto)
@@ -10,11 +11,23 @@ Modos:
   --mode train     El modelo responde y TU calificas cada respuesta
 
 Uso:
+  # Default: Qwen2.5-3B en BF16 (requiere ~3GB VRAM)
   python -m iluminaty.brain_chat
+
+  # Modelo mas chico en INT4 (requiere ~1.5GB VRAM)
+  python -m iluminaty.brain_chat --4bit
+
+  # Modelo mas grande
+  python -m iluminaty.brain_chat --model Qwen/Qwen2.5-7B-Instruct --4bit
+
+  # Desde GGUF local (sin descargar nada)
+  python -m iluminaty.brain_chat --gguf C:/models/qwen2.5-7b.gguf
+
+  # Modo agente
   python -m iluminaty.brain_chat --mode agent --autonomy confirm
-  python -m iluminaty.brain_chat --mode train
-  python -m iluminaty.brain_chat --model qwen2.5:7b
-  python -m iluminaty.brain_chat --hf --model Qwen/Qwen3-4B --4bit
+
+  # Reanudar sesion anterior
+  python -m iluminaty.brain_chat --session mi_sesion
 """
 
 from __future__ import annotations
@@ -777,15 +790,17 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Ejemplos:
-  python -m iluminaty.brain_chat                        # Chat con modelo Ollama
-  python -m iluminaty.brain_chat --mode agent           # Modo agente
-  python -m iluminaty.brain_chat --hf --4bit            # HuggingFace INT4
-  python -m iluminaty.brain_chat --session mi_sesion    # Reanudar sesion
+  python -m iluminaty.brain_chat                                  # Qwen2.5-3B local (BF16)
+  python -m iluminaty.brain_chat --4bit                           # Qwen2.5-3B INT4 (menos VRAM)
+  python -m iluminaty.brain_chat --model Qwen/Qwen2.5-7B-Instruct --4bit
+  python -m iluminaty.brain_chat --gguf C:/models/mi_modelo.gguf  # GGUF local
+  python -m iluminaty.brain_chat --mode agent --autonomy confirm  # Modo agente
+  python -m iluminaty.brain_chat --session mi_sesion              # Reanudar sesion
         """,
     )
     parser.add_argument(
-        "--model", default="qwen2.5:7b",
-        help="Ollama model name o HuggingFace ID (default: qwen2.5:7b)",
+        "--model", default="Qwen/Qwen2.5-3B-Instruct",
+        help="HuggingFace model ID (default: Qwen/Qwen2.5-3B-Instruct)",
     )
     parser.add_argument(
         "--mode", default="chat",
@@ -802,16 +817,16 @@ Ejemplos:
         help=f"ILUMINATY API URL (default: {ILUMINATY_URL})",
     )
     parser.add_argument(
-        "--hf", action="store_true",
-        help="Cargar desde HuggingFace en lugar de Ollama GGUF",
+        "--4bit", action="store_true", dest="load_4bit",
+        help="Cargar en INT4 (ahorra VRAM, recomendado para GPUs < 8GB)",
     )
     parser.add_argument(
-        "--4bit", action="store_true", dest="load_4bit",
-        help="Cargar en INT4 (solo con --hf, ahorra VRAM)",
+        "--gguf", default=None, metavar="PATH",
+        help="Cargar directamente desde un archivo GGUF local",
     )
     parser.add_argument(
         "--checkpoint", default=None,
-        help="Ruta a checkpoint fine-tuneado",
+        help="Ruta a checkpoint fine-tuneado (LoRA)",
     )
     parser.add_argument(
         "--session", default=None,
@@ -830,20 +845,36 @@ Ejemplos:
             "  Para activarlo: python main.py start --actions"
         ))
 
-    # Load model
-    print(f"\n  Cargando modelo {_c(C.BOLD, args.model)}...")
+    # Load model — sin Ollama, directo a GPU
     from iluminaty.brain_engine import BrainEngine
     t0 = time.time()
-    try:
-        if args.checkpoint:
+
+    if args.gguf:
+        label = pathlib.Path(args.gguf).name
+        print(f"\n  Cargando GGUF: {_c(C.BOLD, label)}...")
+        try:
+            brain = BrainEngine.from_gguf(args.gguf)
+        except Exception as e:
+            print(_c(C.RED, f"\n  Error cargando GGUF: {e}"))
+            sys.exit(1)
+    elif args.checkpoint:
+        print(f"\n  Cargando checkpoint: {_c(C.BOLD, args.checkpoint)}...")
+        try:
             brain = BrainEngine.from_checkpoint(args.checkpoint)
-        elif args.hf:
-            brain = BrainEngine.from_huggingface(args.model, load_in_4bit=args.load_4bit)
+        except Exception as e:
+            print(_c(C.RED, f"\n  Error cargando checkpoint: {e}"))
+            sys.exit(1)
+    else:
+        print(f"\n  Cargando {_c(C.BOLD, args.model)} desde HuggingFace...")
+        if args.load_4bit:
+            print(_c(C.GRAY, "  (INT4 — ahorra VRAM, primera vez descarga el modelo)"))
         else:
-            brain = BrainEngine.from_ollama_blob(args.model)
-    except Exception as e:
-        print(_c(C.RED, f"\n  Error cargando modelo: {e}"))
-        sys.exit(1)
+            print(_c(C.GRAY, "  (BF16 — primera vez descarga el modelo, queda cacheado)"))
+        try:
+            brain = BrainEngine.from_huggingface(args.model, load_in_4bit=args.load_4bit)
+        except Exception as e:
+            print(_c(C.RED, f"\n  Error cargando modelo: {e}"))
+            sys.exit(1)
 
     load_time = time.time() - t0
     print(_c(C.GREEN, f"  Modelo listo en {load_time:.1f}s"))
