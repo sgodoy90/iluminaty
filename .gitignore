@@ -36,3 +36,38 @@ auth.json
 *.key
 *.pem
 *.spec
+
+# Virtual environments
+.venv*/
+venv/
+env/
+
+# Temporary test/debug files
+tmp_*.json
+tmp_*.log
+tmp_*.png
+tmp_*.txt
+*.out.log
+*.err.log
+vlm_server.log
+mcp_debug.log
+stress_full.*
+
+# Local analysis docs (generated, not source)
+ANALISIS-*.md
+ANALISIS-*.txt
+GUIA-RAPIDA.md
+INDICE-ANALISIS.md
+PLAN-ACCION-*.md
+PLAN-MAESTRO-*.md
+RESUMEN-EJECUTIVO.md
+STRESS-REPORT-IPA-v2.1-latest.md
+STRESS-REPORT-IPA-v2.1-quick.md
+BENCHMARK-RESOURCES-VLM.*
+ESTRATEGIA-MONETIZACION-ILUMINATY-v2.md
+DOMAIN-PACKS.md
+
+# Local tooling config
+.mcp.json
+.claude/launch.json
+.claude/settings.local.json
