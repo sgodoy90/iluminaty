@@ -92,6 +92,34 @@ SYSTEM_PROMPT = (
     "run_command, browser_navigate, focus_window, wait, done, ask."
 )
 
+# Few-shot examples to steer the model toward JSON output
+_FEW_SHOT = """
+Example:
+GOAL: save the file
+surface=vscode phase=editing ready=True
+Next action?
+{"action": "hotkey", "keys": "ctrl+s"}
+
+Example:
+GOAL: open browser
+surface=desktop phase=idle ready=True
+Next action?
+{"action": "browser_navigate", "url": "https://google.com"}
+
+Example:
+GOAL: type hello in terminal
+surface=terminal phase=interaction ready=True
+Next action?
+{"action": "type_text", "text": "hello"}
+
+Example:
+GOAL: scroll down
+surface=chrome phase=navigation ready=True
+Next action?
+{"action": "scroll", "amount": 3, "direction": "down"}
+
+Now answer:"""
+
 
 def _world_to_prompt(world: dict, goal: str, history: list[dict]) -> str:
     """Compact WorldState → prompt string (~150 tokens)."""
@@ -159,18 +187,42 @@ class BrainEngine:
     @classmethod
     def from_ollama_blob(cls, model_name: str = "qwen3:4b") -> "BrainEngine":
         """
-        Load directly from existing Ollama GGUF blob.
-        Zero download — uses what's already on disk.
+        Load model weights from existing Ollama GGUF blob — zero download.
+        Tries llama-cpp with CUDA first. If CUDA unavailable, falls back to
+        downloading the HuggingFace BF16/INT4 version via transformers.
         """
         blob_path = _find_ollama_gguf(model_name)
-        if not blob_path:
-            raise FileNotFoundError(
-                f"Ollama blob for '{model_name}' not found in {_OLLAMA_MODELS_DIR}. "
-                f"Run: ollama pull {model_name}"
-            )
-        logger.info("Loading GGUF from Ollama blob: %s (%.1fGB)",
-                    blob_path.name[:20], blob_path.stat().st_size / 1024**3)
-        return cls._load_llamacpp(str(blob_path), model_name)
+
+        # Try llama-cpp with GPU first
+        if blob_path:
+            try:
+                engine = cls._load_llamacpp(str(blob_path), model_name)
+                # Quick check: did it actually load on GPU?
+                test = engine._model("test", max_tokens=1, echo=False)
+                return engine
+            except Exception as e:
+                logger.warning("llama-cpp load failed (%s) — falling back to transformers", e)
+
+        # Fallback: map Ollama name to HuggingFace ID and load via transformers
+        _OLLAMA_TO_HF = {
+            "qwen2.5:7b":   "Qwen/Qwen2.5-7B-Instruct",
+            "qwen2.5:3b":   "Qwen/Qwen2.5-3B-Instruct",
+            "qwen3:4b":     "Qwen/Qwen3-4B",
+            "qwen3-vl:4b":  "Qwen/Qwen2.5-VL-7B-Instruct",
+            "deepseek-r1:8b": "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
+        }
+        base = model_name.split(":")[0] + ":" + model_name.split(":")[-1]
+        hf_id = _OLLAMA_TO_HF.get(model_name) or _OLLAMA_TO_HF.get(base)
+        if hf_id:
+            logger.info("Falling back to HuggingFace: %s", hf_id)
+            print(f"[IluminatyBrain] Usando transformers+GPU para {hf_id} (llama-cpp sin CUDA)")
+            return cls.from_huggingface(hf_id, load_in_4bit=True)
+
+        raise RuntimeError(
+            f"No se pudo cargar '{model_name}'.\n"
+            f"Instala llama-cpp con CUDA o usa --hf con el ID de HuggingFace.\n"
+            f"Alternativa: python -m iluminaty.brain_chat --hf --model Qwen/Qwen2.5-7B-Instruct"
+        )
 
     @classmethod
     def from_gguf(cls, path: str) -> "BrainEngine":
@@ -302,11 +354,14 @@ class BrainEngine:
         return action
 
     def _infer_llamacpp(self, prompt: str) -> str:
+        # Combine few-shot examples with the actual prompt for better JSON adherence
+        full = SYSTEM_PROMPT + "\n" + _FEW_SHOT + "\n" + prompt.split("GOAL:")[-1].strip() if "GOAL:" in prompt else SYSTEM_PROMPT + "\n" + _FEW_SHOT + "\n" + prompt
+        # Strip the full system from prompt since we embed it above
         result = self._model(
-            prompt,
-            max_tokens=128,
+            full,
+            max_tokens=64,
             temperature=0.05,
-            stop=["\n\n", "```"],
+            stop=["\n\n", "Example:", "GOAL:"],
             echo=False,
         )
         return result["choices"][0]["text"].strip()
