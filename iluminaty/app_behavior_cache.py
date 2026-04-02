@@ -30,12 +30,22 @@ class AppBehaviorCache:
             self._db_path = Path(db_path)
         else:
             self._db_path = Path.home() / ".iluminaty" / "app_behavior_cache.sqlite3"
-        self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
-        self._conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
-        self._conn.execute("PRAGMA journal_mode=WAL;")
-        self._conn.execute("PRAGMA synchronous=NORMAL;")
-        self._init_schema()
+        self._conn: Optional[sqlite3.Connection] = None
+        self._available = False
+        try:
+            self._db_path.parent.mkdir(parents=True, exist_ok=True)
+            self._conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
+            self._conn.execute("PRAGMA journal_mode=WAL;")
+            self._conn.execute("PRAGMA synchronous=NORMAL;")
+            self._init_schema()
+            self._available = True
+        except Exception as exc:
+            import logging as _log
+            _log.getLogger(__name__).warning(
+                "AppBehaviorCache unavailable (DB open failed: %s) — cache disabled, "
+                "ILUMINATY will continue without persistent behavior memory.", exc
+            )
 
     def _init_schema(self) -> None:
         with self._lock:
@@ -102,6 +112,8 @@ class AppBehaviorCache:
         recovery_strategy: str = "",
         duration_ms: float = 0.0,
     ) -> None:
+        if not self._available or self._conn is None:
+            return
         row = (
             int(time.time() * 1000),
             _norm(app_name),
@@ -116,16 +128,20 @@ class AppBehaviorCache:
             float(duration_ms or 0.0),
         )
         with self._lock:
-            self._conn.execute(
-                """
-                INSERT INTO outcomes(
-                    ts_ms, app_name, window_title, action, params_sig, success,
-                    reason, method_used, recovery_used, recovery_strategy, duration_ms
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
-                """,
-                row,
-            )
-            self._conn.commit()
+            try:
+                self._conn.execute(
+                    """
+                    INSERT INTO outcomes(
+                        ts_ms, app_name, window_title, action, params_sig, success,
+                        reason, method_used, recovery_used, recovery_strategy, duration_ms
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    row,
+                )
+                self._conn.commit()
+            except Exception as exc:
+                import logging as _log
+                _log.getLogger(__name__).debug("AppBehaviorCache record_outcome failed: %s", exc)
 
     def suggest(
         self,
@@ -135,6 +151,11 @@ class AppBehaviorCache:
         window_title: str,
         lookback: int = 60,
     ) -> dict:
+        if not self._available or self._conn is None:
+            return {"found": False, "reason": "cache_unavailable", "sample_size": 0,
+                    "recommended_retries": 1, "recommended_pre_delay_ms": 0,
+                    "focus_before_action": False, "preferred_method": None,
+                    "action": _norm(action), "app_name": _norm(app_name), "window_title": _norm(window_title)}
         action_norm = _norm(action)
         app_norm = _norm(app_name)
         title_norm = _norm(window_title)
@@ -208,6 +229,8 @@ class AppBehaviorCache:
         }
 
     def recent(self, limit: int = 20) -> list[dict]:
+        if not self._available or self._conn is None:
+            return []
         with self._lock:
             rows = self._conn.execute(
                 """
@@ -237,6 +260,9 @@ class AppBehaviorCache:
         return result
 
     def stats(self) -> dict:
+        if not self._available or self._conn is None:
+            return {"db_path": str(self._db_path), "entries": 0, "success_rate": 0.0,
+                    "recovery_rate": 0.0, "distinct_apps": 0, "available": False}
         with self._lock:
             row = self._conn.execute(
                 """

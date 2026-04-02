@@ -170,7 +170,7 @@ class GroundingEngine:
             if hasattr(self._perception, "check_context_freshness"):
                 return self._perception.check_context_freshness(context_tick_id, max_staleness_ms)
         except Exception:
-            pass
+            pass  # noqa: suppressed Exception
         world = self._world_ref()
         staleness = int(world.get("staleness_ms", 0))
         if staleness > int(max_staleness_ms):

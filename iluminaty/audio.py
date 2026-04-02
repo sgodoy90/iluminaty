@@ -236,7 +236,7 @@ class AudioCapture:
             self._stream.start()
             self._running = True
         except Exception as e:
-            print(f"[iluminaty] audio capture error: {e}")
+            logger.error("[iluminaty] audio capture error: %s", e)
             self._running = False
 
     def stop(self):

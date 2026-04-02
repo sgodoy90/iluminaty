@@ -1,3 +1,5 @@
+import logging
+logger = logging.getLogger(__name__)
 """
 ILUMINATY - AI Provider Adapters
 ==================================
@@ -159,7 +161,7 @@ class GeminiLiveAdapter(BaseAdapter):
                 config=config,
             )
         except Exception as e:
-            print(f"[iluminaty] Gemini Live session error: {e}")
+            logger.error("[iluminaty] Gemini Live session error: %s", e)
 
     async def send_frame_live(self, frame_bytes: bytes, mime_type: str = "image/webp"):
         """Envia un frame al stream de Gemini Live."""
@@ -172,7 +174,7 @@ class GeminiLiveAdapter(BaseAdapter):
                 end_of_turn=False,
             )
         except Exception as e:
-            print(f"[iluminaty] Gemini Live send error: {e}")
+            logger.warning("[iluminaty] Gemini Live send error: %s", e)
 
     async def send_audio_live(self, pcm_data: bytes, sample_rate: int = 16000):
         """Envia audio PCM al stream de Gemini Live."""
@@ -185,7 +187,7 @@ class GeminiLiveAdapter(BaseAdapter):
                 end_of_turn=False,
             )
         except Exception as e:
-            print(f"[iluminaty] Gemini Live audio error: {e}")
+            logger.warning("[iluminaty] Gemini Live audio error: %s", e)
 
     def on_response(self, callback: Callable):
         """Registra callback para respuestas de Gemini Live."""

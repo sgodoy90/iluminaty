@@ -205,7 +205,10 @@ def main():
     print(f"  Disk:      ZERO (RAM-only ring buffer)")
     print(f"  Actions:   {'ENABLED' if args.actions else 'disabled'} (autonomy: {args.autonomy})")
     print(f"  Browser:   debug port {args.browser_debug_port}")
-    print(f"  Perception: fast_loop={args.fast_loop_hz:.1f}Hz | deep_loop={args.deep_loop_hz:.1f}Hz")
+    # Warn if fast-loop-hz exceeds the hard cap (max(0.08s interval) = 12.5 Hz)
+    _actual_fast_hz = 1.0 / max(0.08, min(0.25, 1.0 / max(1.0, args.fast_loop_hz)))
+    _hz_note = f" (capped to {_actual_fast_hz:.1f}Hz — use <=12 to avoid silent cap)" if args.fast_loop_hz > 12.5 else ""
+    print(f"  Perception: fast_loop={args.fast_loop_hz:.1f}Hz{_hz_note} | deep_loop={args.deep_loop_hz:.1f}Hz")
     print(f"  Vision profile: {args.vision_profile}" + (" + disk spool" if args.vision_plus_disk else ""))
     print()
     print(f"  Core Endpoints:")

@@ -104,7 +104,7 @@ class PluginManager:
         try:
             plugin.setup()
         except Exception as e:
-            print(f"[iluminaty] plugin '{plugin.name}' setup error: {e}")
+            logger.warning("[iluminaty] plugin '{plugin.name}' setup error: {e}")
 
     def unregister(self, name: str):
         """Descarga un plugin."""
@@ -159,7 +159,7 @@ class PluginManager:
                 if handler and callable(handler):
                     handler(**kwargs)
             except Exception as e:
-                print(f"[iluminaty] plugin '{name}' error on {event_type}: {e}")
+                logger.warning("[iluminaty] plugin '{name}' error on {event_type}: {e}")
 
     def get_info(self) -> list[dict]:
         """Info de todos los plugins cargados."""

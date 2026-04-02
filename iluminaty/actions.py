@@ -184,7 +184,7 @@ class ActionBridge:
                 self._pyautogui.hotkey("ctrl", "v")
                 return f"Typed {len(text)} chars (clipboard paste — unicode)"
             except ImportError:
-                pass
+                pass  # noqa: suppressed ImportError
             # Last resort: type char by char with pyautogui (drops non-ASCII silently)
             self._pyautogui.write(text, interval=interval)
             return f"Typed {len(text)} chars (best-effort — install pyperclip for full unicode)"

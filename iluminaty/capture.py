@@ -280,7 +280,7 @@ class ScreenCapture:
                         
                 except Exception as e:
                     # No crashear el loop por un frame fallido
-                    print(f"[iluminaty] capture error: {e}")
+                    logger.error("[iluminaty] capture error: %s", e)
                 
                 # Dormir hasta el proximo frame
                 elapsed = time.time() - loop_start

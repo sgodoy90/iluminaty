@@ -1544,7 +1544,7 @@ def _build_precheck(
     return payload
 
 
-def _execute_intent(
+async def _execute_intent(
     intent: Intent,
     mode: str,
     verify: bool = True,
@@ -1726,7 +1726,7 @@ def _execute_intent(
     recovery_strategy = ""
     try:
         if behavior_pre_delay_ms > 0:
-            time.sleep(float(behavior_pre_delay_ms) / 1000.0)
+            await asyncio.sleep(float(behavior_pre_delay_ms) / 1000.0)  # non-blocking
         result = _state.resolver.resolve(intent.action, intent.params)
         while result and (not result.success) and behavior_retries > 0:
             behavior_retries -= 1
@@ -1887,8 +1887,24 @@ def _execute_intent(
 # ─── Lifespan ───
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Ya se inicializa desde main.py
+    # Background task: reap stale agent sessions every 60s
+    async def _reap_agents_loop():
+        while True:
+            await asyncio.sleep(60)
+            try:
+                if _state.agent_coordinator:
+                    reaped = _state.agent_coordinator.reap_stale_sessions()
+                    if reaped:
+                        import logging as _log
+                        _log.getLogger(__name__).info(
+                            "Reaped %d stale agent session(s): %s", len(reaped), reaped
+                        )
+            except Exception:
+                pass
+
+    reap_task = asyncio.create_task(_reap_agents_loop())
     yield
+    reap_task.cancel()
     # Cleanup
     if _state.cursor_tracker:
         try:
@@ -3188,7 +3204,7 @@ async def grounding_click(
         raw_input=query,
         category=(category or "normal"),
     )
-    execution = _execute_intent(
+    execution = await _execute_intent(
         intent,
         mode=mode,
         verify=verify,
@@ -3252,7 +3268,7 @@ async def grounding_type(
             "message": "grounding_target_missing_coordinates",
         }
 
-    click_exec = _execute_intent(
+    click_exec = await _execute_intent(
         Intent(
             action="click",
             params={"x": int(center[0]), "y": int(center[1]), "button": "left"},
@@ -3274,7 +3290,7 @@ async def grounding_type(
             "message": click_exec.get("result", {}).get("message", "click_failed"),
         }
 
-    type_exec = _execute_intent(
+    type_exec = await _execute_intent(
         Intent(
             action="type_text",
             params={"text": str(text)},
@@ -3816,7 +3832,7 @@ async def os_dialog_resolve(
         raw_input=f"dialog_resolve:{chosen_target.get('label') or 'coords'}",
         category=str(request_body.get("category") or "normal"),
     )
-    execution = _execute_intent(
+    execution = await _execute_intent(
         intent,
         mode=mode,
         verify=verify,
@@ -4331,7 +4347,7 @@ async def action_click(
         raise HTTPException(503, "Actions not initialized")
     if _state.windows and (focus_handle is not None or (focus_title and focus_title.strip())):
         _state.windows.focus_window(title=focus_title, handle=focus_handle)
-        time.sleep(0.08)
+        await asyncio.sleep(0.08)  # non-blocking: yield event loop during focus settle
     rx, ry = _translate_click_coords(int(x), int(y), monitor_id, bool(relative_to_monitor))
     result = _state.actions.click(rx, ry, button)
     payload = result.to_dict()
@@ -4358,7 +4374,7 @@ async def action_double_click(
         raise HTTPException(503, "Actions not initialized")
     if _state.windows and (focus_handle is not None or (focus_title and focus_title.strip())):
         _state.windows.focus_window(title=focus_title, handle=focus_handle)
-        time.sleep(0.08)
+        await asyncio.sleep(0.08)  # non-blocking: yield event loop during focus settle
     rx, ry = _translate_click_coords(int(x), int(y), monitor_id, bool(relative_to_monitor))
     result = _state.actions.double_click(rx, ry).to_dict()
     result["requested_x"] = int(x)
@@ -4383,7 +4399,7 @@ async def action_type(
         raise HTTPException(503, "Actions not initialized")
     if _state.windows and (focus_handle is not None or (focus_title and focus_title.strip())):
         _state.windows.focus_window(title=focus_title, handle=focus_handle)
-        time.sleep(0.08)
+        await asyncio.sleep(0.08)  # non-blocking: yield event loop during focus settle
     return _state.actions.type_text(text, interval).to_dict()
 
 
@@ -4399,7 +4415,7 @@ async def action_hotkey(
         raise HTTPException(503, "Actions not initialized")
     if _state.windows and (focus_handle is not None or (focus_title and focus_title.strip())):
         _state.windows.focus_window(title=focus_title, handle=focus_handle)
-        time.sleep(0.08)
+        await asyncio.sleep(0.08)  # non-blocking: yield event loop during focus settle
     key_list = [k.strip() for k in keys.split("+")]
     return _state.actions.hotkey(*key_list).to_dict()
 
@@ -4419,7 +4435,7 @@ async def action_scroll(
         raise HTTPException(503, "Actions not initialized")
     if _state.windows and (focus_handle is not None or (focus_title and focus_title.strip())):
         _state.windows.focus_window(title=focus_title, handle=focus_handle)
-        time.sleep(0.08)
+        await asyncio.sleep(0.08)  # non-blocking: yield event loop during focus settle
     rx = None if x is None else int(x)
     ry = None if y is None else int(y)
     if rx is not None and ry is not None:
@@ -4450,7 +4466,7 @@ async def action_drag(
         raise HTTPException(503, "Actions not initialized")
     if _state.windows and (focus_handle is not None or (focus_title and focus_title.strip())):
         _state.windows.focus_window(title=focus_title, handle=focus_handle)
-        time.sleep(0.08)
+        await asyncio.sleep(0.08)  # non-blocking: yield event loop during focus settle
     sx, sy = _translate_click_coords(int(start_x), int(start_y), monitor_id, bool(relative_to_monitor))
     ex, ey = _translate_click_coords(int(end_x), int(end_y), monitor_id, bool(relative_to_monitor))
     result = _state.actions.drag_drop(sx, sy, ex, ey, duration).to_dict()
@@ -4544,7 +4560,7 @@ async def action_intent(
     if max_staleness_ms is not None:
         max_staleness_ms = int(max_staleness_ms)
     grounding_request = _grounding_request_from_payload(request_body, intent)
-    return _execute_intent(
+    return await _execute_intent(
         intent,
         mode=mode,
         verify=verify,
@@ -4572,7 +4588,7 @@ async def action_execute(
     max_staleness_ms = request_body.get("max_staleness_ms")
     if max_staleness_ms is not None:
         max_staleness_ms = int(max_staleness_ms)
-    return _execute_intent(
+    return await _execute_intent(
         intent,
         mode=mode,
         verify=verify,
@@ -4594,7 +4610,7 @@ async def action_raw(
     _check_auth(x_api_key)
     intent = _intent_from_payload(request_body)
     verify = bool(request_body.get("verify", False))
-    return _execute_intent(intent, mode="RAW", verify=verify)
+    return await _execute_intent(intent, mode="RAW", verify=verify)
 
 
 @app.post("/action/verify")
@@ -5081,7 +5097,7 @@ async def agent_do(
     if not _state.intent or not _state.resolver:
         raise HTTPException(503, "Brain not initialized")
     intent = _state.intent.classify_or_default(instruction)
-    return _execute_intent(intent, mode=_state.operating_mode, verify=True)
+    return await _execute_intent(intent, mode=_state.operating_mode, verify=True)
 
 
 @app.post("/agent/plan")

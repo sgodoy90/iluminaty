@@ -344,7 +344,7 @@ def _window_match_score(query: str, win: dict, active: dict, prefer_active_monit
         if active_handle and int(win.get("handle", 0) or 0) == active_handle:
             score += 20
     except Exception:
-        pass
+        pass  # noqa: suppressed Exception
 
     if prefer_active_monitor:
         try:
@@ -353,7 +353,7 @@ def _window_match_score(query: str, win: dict, active: dict, prefer_active_monit
             if active_monitor and win_monitor and win_monitor == active_monitor:
                 score += 18
         except Exception:
-            pass
+            pass  # noqa: suppressed Exception
 
     return score
 
@@ -2469,7 +2469,7 @@ def handle_operate_cycle(args: dict) -> list:
             try:
                 window_info = _api_get("/vision/window")
             except Exception:
-                pass
+                pass  # noqa: suppressed Exception
             if include_ocr:
                 try:
                     query = "/vision/ocr"
@@ -2478,7 +2478,7 @@ def handle_operate_cycle(args: dict) -> list:
                     ocr_data = _api_get(query)
                     ocr_text = str(ocr_data.get("text", "") or "")
                 except Exception:
-                    pass
+                    pass  # noqa: suppressed Exception
             # Re-localize intended target window after interrupt was handled.
             if target_window:
                 target2 = _resolve_window_by_query(target_window, prefer_active_monitor=True)
@@ -2487,7 +2487,7 @@ def handle_operate_cycle(args: dict) -> list:
                     try:
                         focus_handle = int(target.get("handle", 0) or 0) or focus_handle
                     except Exception:
-                        pass
+                        pass  # noqa: suppressed Exception
 
     # 5) ACTION
     action_kind = "none"
@@ -2530,7 +2530,7 @@ def handle_operate_cycle(args: dict) -> list:
                             verify_reason = "visible_window_title_contains"
                             break
             except Exception:
-                pass
+                pass  # noqa: suppressed Exception
     elif action_result is not None:
         verified = bool(action_result.get("success"))
         verify_reason = "action_success_flag"

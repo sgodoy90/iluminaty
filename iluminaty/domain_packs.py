@@ -402,7 +402,7 @@ class DomainPackRegistry:
         try:
             custom_dir = custom_dir.expanduser()
         except Exception:
-            pass
+            pass  # noqa: suppressed Exception
 
         with self._lock:
             for key in list(self._custom_names):

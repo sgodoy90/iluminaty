@@ -179,6 +179,7 @@ class WorkersSystem:
         self._arbiter_denied: int = 0
         self._last_action_outcome: dict = {}
         self._subgoals: dict[str, WorkerSubgoal] = {}
+        self._max_subgoals = 200  # cap: evict oldest completed/expired on overflow
         self._schedule_snapshot: dict = {
             "timestamp_ms": int(time.time() * 1000),
             "active_monitor_id": 0,
@@ -521,6 +522,16 @@ class WorkersSystem:
             metadata=dict(metadata or {}),
         )
         with self._lock:
+            # Evict oldest completed or expired subgoals if cap is reached
+            if len(self._subgoals) >= self._max_subgoals:
+                now_for_evict = int(time.time() * 1000)
+                evict_candidates = sorted(
+                    (sg for sg in self._subgoals.values()
+                     if sg.completed or (sg.deadline_ms is not None and now_for_evict > sg.deadline_ms)),
+                    key=lambda sg: sg.updated_ms,
+                )
+                for evict in evict_candidates[:max(1, len(evict_candidates) // 2)]:
+                    self._subgoals.pop(evict.subgoal_id, None)
             self._subgoals[subgoal_id] = item
             self._recompute_schedule_locked(reason="set_subgoal")
         self._note_worker("scheduler", latency_ms=(time.perf_counter() - started) * 1000.0, ok=True)
