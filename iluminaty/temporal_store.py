@@ -233,12 +233,15 @@ class TemporalVisualStore:
         data = self.get_frame_bytes(ref_id)
         if data is None:
             return None
+        # Fetch mime outside the lock, then encode — base64 is CPU-bound and
+        # should not hold the lock while running.
         with self._lock:
             mime = self._frame_payload_meta.get(ref_id, ("image/webp", 0))[0]
+        encoded = base64.b64encode(data).decode("ascii")  # outside lock
         return {
             "ref_id": ref_id,
             "mime_type": mime,
-            "image_base64": base64.b64encode(data).decode("ascii"),
+            "image_base64": encoded,
         }
 
     def query_frame_refs(

@@ -836,6 +836,15 @@ class PerceptionEngine:
             except Exception as e:
                 logger.warning("OCR engine unavailable in perception startup: %s", e)
 
+        # Trigger-based capture bursts (Phase 1).
+        self._capture_controller = None
+        self._burst_enabled = os.environ.get("ILUMINATY_TRIGGER_BURST_ENABLED", "1") != "0"
+        self._burst_duration_ms = _env_int("ILUMINATY_TRIGGER_BURST_MS", 240, 50, 3000)
+        self._burst_fps = _env_float("ILUMINATY_TRIGGER_BURST_FPS", 10.0, 1.0, 30.0)
+        self._burst_min_gap_ms = _env_int("ILUMINATY_TRIGGER_BURST_MIN_GAP_MS", 160, 50, 5000)
+        self._burst_change_threshold = _env_float("ILUMINATY_TRIGGER_BURST_CHANGE_THRESHOLD", 0.18, 0.01, 1.0)
+        self._burst_last_ms: dict[int, int] = {}
+
     def _get_monitor_state(self, monitor_id: int) -> MonitorPerceptionState:
         """Get or create per-monitor state."""
         if monitor_id not in self._monitor_states:
@@ -877,6 +886,78 @@ class PerceptionEngine:
         except Exception:
             return int(self._last_active_monitor_id or 0)
         return int(self._last_active_monitor_id or 0)
+
+    def set_capture_controller(self, capture_controller) -> None:
+        """
+        Attach capture controller used for trigger-based FPS bursts.
+        Supports both ScreenCapture and MultiMonitorCapture.
+        """
+        self._capture_controller = capture_controller
+
+    def _maybe_trigger_capture_burst(
+        self,
+        *,
+        monitor_id: int,
+        reason: str,
+        change_score: Optional[float] = None,
+        motion: Optional[dict] = None,
+    ) -> None:
+        if not self._burst_enabled:
+            return
+        if self._capture_controller is None:
+            return
+        trigger = getattr(self._capture_controller, "trigger_burst", None)
+        if not callable(trigger):
+            return
+
+        should_trigger = False
+        reason_norm = str(reason or "motion").strip().lower() or "motion"
+        if reason_norm in {"window_change", "scene_transition"}:
+            should_trigger = True
+        if change_score is not None:
+            try:
+                should_trigger = should_trigger or float(change_score) >= float(self._burst_change_threshold)
+            except Exception:
+                pass
+        if motion:
+            try:
+                total_motion = float(motion.get("total_motion", 0.0) or 0.0)
+                active_zones = int(motion.get("active_zones", 0) or 0)
+                if total_motion >= 0.22 and active_zones >= 2:
+                    should_trigger = True
+            except Exception:
+                pass
+
+        if not should_trigger:
+            return
+
+        mid = int(monitor_id or 0)
+        now_ms = int(time.time() * 1000)
+        last_ms = int(self._burst_last_ms.get(mid, 0) or 0)
+        if (now_ms - last_ms) < int(self._burst_min_gap_ms):
+            return
+
+        try:
+            result = trigger(
+                monitor_id=mid,
+                duration_ms=int(self._burst_duration_ms),
+                fps=float(self._burst_fps),
+                reason=reason_norm,
+            )
+        except TypeError:
+            # ScreenCapture.trigger_burst does not accept monitor_id.
+            result = trigger(
+                duration_ms=int(self._burst_duration_ms),
+                fps=float(self._burst_fps),
+                reason=reason_norm,
+            )
+        except Exception as e:
+            logger.debug("Capture burst trigger failed on monitor %s: %s", mid, e)
+            return
+
+        if isinstance(result, dict) and not bool(result.get("triggered", True)):
+            return
+        self._burst_last_ms[mid] = now_ms
 
     def start(self, buffer):
         """Start the perception loop."""
@@ -1272,6 +1353,11 @@ class PerceptionEngine:
             mon_state.loading_detected = True
             mon_state.video_reported = False
             mon_state.motion_reported = False
+            self._maybe_trigger_capture_burst(
+                monitor_id=int(monitor_id),
+                reason="window_change",
+                change_score=change,
+            )
 
         # ── Gate 1: Change score thresholds ──
         mon_state.change_history.append(change)
@@ -1367,6 +1453,12 @@ class PerceptionEngine:
         gray = _bytes_to_gray(slot.frame_bytes)
         if gray is not None:
             motion = self._analyze_motion(mon_state, gray)
+            self._maybe_trigger_capture_burst(
+                monitor_id=int(monitor_id),
+                reason="motion",
+                change_score=change,
+                motion=motion,
+            )
 
             # SmartDiff fast comparison (IPA Phase 1.2)
             diff = None

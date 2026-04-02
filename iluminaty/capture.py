@@ -75,6 +75,11 @@ class ScreenCapture:
         self._on_frame: Optional[Callable] = None  # callback opcional
         self._smart_quality_counter = 0
         self._smart_quality_value = self.config.quality
+        self._burst_lock = threading.Lock()
+        self._burst_until = 0.0
+        self._burst_fps = 0.0
+        self._burst_count = 0
+        self._last_burst_reason = ""
         # Cache env-var webp method at init time (not per-frame)
         _env_method = os.environ.get("ILUMINATY_WEBP_METHOD", "").strip()
         if _env_method:
@@ -91,7 +96,62 @@ class ScreenCapture:
 
     @property
     def current_fps(self) -> float:
-        return self._current_fps
+        return self._effective_fps()
+
+    def _effective_fps(self) -> float:
+        """
+        Effective FPS used by the capture loop.
+        During short motion triggers we temporarily lift FPS without
+        permanently changing adaptive baseline.
+        """
+        with self._burst_lock:
+            if time.time() < self._burst_until:
+                return max(float(self._current_fps), float(self._burst_fps))
+        return float(self._current_fps)
+
+    def trigger_burst(
+        self,
+        *,
+        duration_ms: int = 220,
+        fps: Optional[float] = None,
+        reason: str = "motion",
+    ) -> dict:
+        """
+        Trigger a temporary FPS burst (trigger-based capture).
+        This is used by perception when it detects sudden UI motion.
+        """
+        try:
+            dur_ms = int(duration_ms)
+        except Exception:
+            dur_ms = 220
+        dur_ms = max(50, min(3000, dur_ms))
+
+        if fps is None:
+            target_fps = max(float(self.config.max_fps), float(self._current_fps))
+        else:
+            try:
+                target_fps = float(fps)
+            except Exception:
+                target_fps = max(float(self.config.max_fps), float(self._current_fps))
+        target_fps = max(float(self.config.min_fps), min(max(target_fps, 1.0), 30.0))
+
+        now = time.time()
+        until = now + (dur_ms / 1000.0)
+        with self._burst_lock:
+            self._burst_until = max(float(self._burst_until), float(until))
+            self._burst_fps = max(float(self._burst_fps), float(target_fps))
+            self._burst_count += 1
+            self._last_burst_reason = str(reason or "motion")
+            eff = max(float(self._current_fps), float(self._burst_fps))
+
+        return {
+            "triggered": True,
+            "duration_ms": int(dur_ms),
+            "target_fps": round(float(target_fps), 2),
+            "effective_fps": round(float(eff), 2),
+            "reason": str(reason or "motion"),
+            "count": int(self._burst_count),
+        }
 
     def _resize_frame(self, img: Image.Image) -> Image.Image:
         """Redimensiona si excede max_width, manteniendo aspect ratio."""
@@ -214,15 +274,9 @@ class ScreenCapture:
                     
                     # Callback si hay uno registrado
                     if was_stored and self._on_frame:
-                        slot = None
-                        if hasattr(self.buffer, "get_latest_for_monitor"):
-                            try:
-                                slot = self.buffer.get_latest_for_monitor(int(self.config.monitor))
-                            except Exception:
-                                slot = None
-                        if slot is None:
-                            slot = self.buffer.get_latest()
-                        self._on_frame(slot)
+                        slot = self._latest_slot_for_callback()
+                        if slot is not None:
+                            self._on_frame(slot)
                         
                 except Exception as e:
                     # No crashear el loop por un frame fallido
@@ -230,7 +284,8 @@ class ScreenCapture:
                 
                 # Dormir hasta el proximo frame
                 elapsed = time.time() - loop_start
-                sleep_time = max(0, (1.0 / self._current_fps) - elapsed)
+                effective_fps = max(0.1, float(self._effective_fps()))
+                sleep_time = max(0, (1.0 / effective_fps) - elapsed)
                 
                 # BUG-007 fix: use time.sleep instead of creating Event per iteration
                 if sleep_time > 0 and self._running:
@@ -255,3 +310,23 @@ class ScreenCapture:
     def on_frame(self, callback: Callable):
         """Registra callback que se llama cuando hay un frame nuevo."""
         self._on_frame = callback
+
+    def _latest_slot_for_callback(self):
+        """
+        Pick callback slot without cross-monitor contamination.
+        For pinned monitor captures (>0), never fall back to global latest.
+        """
+        requested_monitor = int(getattr(self.config, "monitor", 0) or 0)
+        if hasattr(self.buffer, "get_latest_for_monitor"):
+            try:
+                slot = self.buffer.get_latest_for_monitor(requested_monitor)
+            except Exception:
+                slot = None
+            if slot is not None:
+                return slot
+            if requested_monitor > 0:
+                # Strict pinned monitor mode.
+                return None
+        if hasattr(self.buffer, "get_latest"):
+            return self.buffer.get_latest()
+        return None

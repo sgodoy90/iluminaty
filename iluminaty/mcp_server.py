@@ -45,6 +45,7 @@ ILUMINATY_KEY = os.environ.get("ILUMINATY_KEY", "")
 FREE_MCP_TOOLS = {
     "see_screen", "see_changes", "read_screen_text", "perception",
     "screen_status", "get_context", "do_action", "raw_action",
+    "action_intent",
     "action_precheck", "verify_action",
     "operate_cycle",
     "perception_world", "perception_trace", "set_operating_mode",
@@ -58,6 +59,8 @@ FREE_MCP_TOOLS = {
     "workers_schedule", "workers_set_subgoal", "workers_clear_subgoal", "workers_route",
     "behavior_stats", "behavior_recent", "behavior_suggest",
     "runtime_profile",
+    "host_telemetry",
+    "os_notifications", "os_tray", "os_dialog_status", "os_dialog_resolve",
     "audio_interrupt_status", "audio_interrupt_ack",
     "get_audio_level",
     "token_status", "set_token_mode", "set_token_budget",
@@ -68,7 +71,7 @@ ALL_MCP_TOOLS = {
     "see_screen", "see_changes", "annotate_screen", "read_screen_text", "perception",
     "perception_world", "perception_trace",
     "screen_status", "get_context", "get_audio_level",
-    "do_action", "raw_action", "action_precheck", "verify_action",
+    "do_action", "raw_action", "action_intent", "action_precheck", "verify_action",
     "operate_cycle",
     "set_operating_mode", "domain_pack_list", "domain_pack_override",
     "vision_query",
@@ -82,6 +85,8 @@ ALL_MCP_TOOLS = {
     "workers_schedule", "workers_set_subgoal", "workers_clear_subgoal", "workers_route",
     "behavior_stats", "behavior_recent", "behavior_suggest",
     "runtime_profile",
+    "host_telemetry",
+    "os_notifications", "os_tray", "os_dialog_status", "os_dialog_resolve",
     "audio_interrupt_status", "audio_interrupt_ack",
     "get_clipboard", "agent_status",
     # Human-like navigation
@@ -839,6 +844,28 @@ TOOLS = [
                     "type": "integer",
                     "description": "Optional monitor id for grounding",
                 },
+            },
+            "required": ["instruction"],
+        },
+    },
+    {
+        "name": "action_intent",
+        "description": (
+            "Execute a high-level natural language intent via ILUMINATY's intent classifier "
+            "and closed-loop action pipeline."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "instruction": {"type": "string", "description": "Natural language instruction"},
+                "mode": {"type": "string", "enum": ["SAFE", "RAW", "HYBRID"], "description": "Optional operating mode override"},
+                "verify": {"type": "boolean", "description": "Run verifier/recovery after action", "default": True},
+                "context_tick_id": {"type": "integer", "description": "Optional expected world tick id"},
+                "max_staleness_ms": {"type": "integer", "description": "Optional max context age in ms"},
+                "use_grounding": {"type": "boolean", "description": "Enable grounding support for target selection", "default": False},
+                "target_query": {"type": "string", "description": "Optional grounding query"},
+                "target_role": {"type": "string", "description": "Optional grounding role hint"},
+                "monitor_id": {"type": "integer", "description": "Optional monitor id for grounding"},
             },
             "required": ["instruction"],
         },
@@ -1636,6 +1663,51 @@ TOOLS = [
         },
     },
     {
+        "name": "host_telemetry",
+        "description": "Get host telemetry snapshot (CPU/RAM/temps/GPU when available).",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "os_notifications",
+        "description": "Read merged OS notifications feed (watchdog + audio interrupts).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "Max items to return", "default": 20},
+            },
+        },
+    },
+    {
+        "name": "os_tray",
+        "description": "Inspect OS tray/taskbar surface status (Windows-first).",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "os_dialog_status",
+        "description": "Detect likely blocking native dialog and available affordances.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "monitor_id": {"type": "integer", "description": "Optional monitor id for dialog probe"},
+            },
+        },
+    },
+    {
+        "name": "os_dialog_resolve",
+        "description": "Attempt to resolve a blocking dialog by label or coordinates.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "label": {"type": "string", "description": "Preferred dialog button label (e.g. OK, Cancel)"},
+                "x": {"type": "integer", "description": "Optional absolute x coordinate"},
+                "y": {"type": "integer", "description": "Optional absolute y coordinate"},
+                "monitor_id": {"type": "integer", "description": "Optional monitor id"},
+                "mode": {"type": "string", "enum": ["SAFE", "RAW", "HYBRID"], "description": "Optional mode override"},
+                "verify": {"type": "boolean", "description": "Run post-action verification", "default": True},
+            },
+        },
+    },
+    {
         "name": "audio_interrupt_status",
         "description": "Get operational audio interrupt status and recent interrupt events.",
         "inputSchema": {"type": "object", "properties": {}},
@@ -2166,6 +2238,39 @@ def handle_do_action(args: dict) -> list:
         lines.append(
             f"Verification: {'OK' if verification.get('verified') else 'FAILED'} "
             f"({verification.get('method', 'n/a')})"
+        )
+    return [{"type": "text", "text": "\n".join(lines)}]
+
+
+def handle_action_intent(args: dict) -> list:
+    instruction = args.get("instruction", "")
+    if not instruction:
+        return [{"type": "text", "text": "Error: instruction is required"}]
+    payload = {"instruction": instruction}
+    for key in (
+        "mode",
+        "verify",
+        "context_tick_id",
+        "max_staleness_ms",
+        "use_grounding",
+        "target_query",
+        "target_role",
+        "monitor_id",
+    ):
+        if key in args and args[key] is not None:
+            payload[key] = args[key]
+    data = _api_post("/action/intent", body=payload)
+    result = data.get("result", {})
+    precheck = data.get("precheck", {})
+    lines = [
+        f"Intent mode: {precheck.get('mode', '?')} | blocked: {precheck.get('blocked', False)}",
+        f"Execution: {'SUCCESS' if result.get('success') else 'FAILED'} - {result.get('message', '')}",
+    ]
+    if precheck.get("grounding_applies"):
+        grd = precheck.get("grounding_check", {})
+        lines.append(
+            f"Grounding: {'OK' if grd.get('allowed') else 'BLOCKED'} "
+            f"reason={grd.get('reason', 'n/a')} conf={grd.get('confidence', 0)}"
         )
     return [{"type": "text", "text": "\n".join(lines)}]
 
@@ -3274,6 +3379,111 @@ def handle_runtime_profile(args: dict) -> list:
     return [{"type": "text", "text": f"Runtime profile: {data.get('profile')} | policy={data.get('policy')}"}]
 
 
+def handle_host_telemetry(args: dict) -> list:
+    _ = args
+    try:
+        data = _api_get("/system/telemetry")
+    except Exception as e:
+        return [{"type": "text", "text": f"Host telemetry unavailable: {e}"}]
+    if not bool(data.get("available", False)):
+        return [{"type": "text", "text": "Host telemetry: unavailable"}]
+    gpu = data.get("gpu") or {}
+    temps = data.get("temperatures") or {}
+    return [{
+        "type": "text",
+        "text": (
+            "## Host Telemetry\n"
+            f"- CPU: {data.get('cpu_percent')}%\n"
+            f"- Memory: {data.get('memory_percent')}%\n"
+            f"- Swap: {data.get('swap_percent')}%\n"
+            f"- Disk: {data.get('disk_percent')}%\n"
+            f"- Temp max: {temps.get('max_c')}\n"
+            f"- GPU util: {gpu.get('utilization_percent')}\n"
+            f"- Overloaded: {data.get('overloaded', False)} {data.get('overload_reasons', [])}"
+        ),
+    }]
+
+
+def handle_os_notifications(args: dict) -> list:
+    limit = int(args.get("limit", 20))
+    limit = max(1, min(200, limit))
+    try:
+        data = _api_get(f"/os/notifications?limit={limit}")
+    except Exception as e:
+        return [{"type": "text", "text": f"OS notifications unavailable: {e}"}]
+    lines = [
+        "## OS Notifications",
+        f"- Count: {data.get('count', 0)}",
+        f"- Sources: {', '.join(data.get('sources', [])) if data.get('sources') else 'none'}",
+    ]
+    for item in (data.get("items") or [])[:12]:
+        lines.append(
+            f"- [{item.get('source')}] {item.get('severity', 'info')} "
+            f"{item.get('timestamp_ms', 0)}: {str(item.get('message', ''))[:120]}"
+        )
+    return [{"type": "text", "text": "\n".join(lines)}]
+
+
+def handle_os_tray(args: dict) -> list:
+    _ = args
+    try:
+        data = _api_get("/os/tray")
+    except Exception as e:
+        return [{"type": "text", "text": f"OS tray unavailable: {e}"}]
+    lines = [
+        "## OS Tray",
+        f"- Available: {data.get('available', False)}",
+        f"- Supported: {data.get('supported', False)}",
+        f"- Detected: {data.get('detected', False)}",
+        f"- Platform: {data.get('platform', 'unknown')}",
+    ]
+    for win in (data.get("windows") or [])[:8]:
+        lines.append(
+            f"- {win.get('class_name')}: h={win.get('handle')} "
+            f"({win.get('x')},{win.get('y')}) {win.get('width')}x{win.get('height')}"
+        )
+    return [{"type": "text", "text": "\n".join(lines)}]
+
+
+def handle_os_dialog_status(args: dict) -> list:
+    monitor_id = args.get("monitor_id")
+    path = "/os/dialog/status"
+    if monitor_id is not None:
+        path += f"?monitor_id={int(monitor_id)}"
+    try:
+        data = _api_get(path)
+    except Exception as e:
+        return [{"type": "text", "text": f"OS dialog status unavailable: {e}"}]
+    return [{
+        "type": "text",
+        "text": (
+            f"OS dialog detected={data.get('detected', False)} conf={data.get('confidence', 0)} "
+            f"monitor={data.get('monitor_id')} affordances={data.get('affordances', [])} "
+            f"title={str(data.get('active_title', ''))[:80]}"
+        ),
+    }]
+
+
+def handle_os_dialog_resolve(args: dict) -> list:
+    body = {}
+    for key in ("label", "x", "y", "monitor_id", "mode", "verify", "context_tick_id", "max_staleness_ms"):
+        if key in args and args[key] is not None:
+            body[key] = args[key]
+    if not body:
+        return [{"type": "text", "text": "Error: provide label and/or x,y coordinates"}]
+    try:
+        data = _api_post("/os/dialog/resolve", body=body)
+    except Exception as e:
+        return [{"type": "text", "text": f"OS dialog resolve failed: {e}"}]
+    return [{
+        "type": "text",
+        "text": (
+            f"OS dialog resolve: {'SUCCESS' if data.get('resolved') else 'FAILED'} "
+            f"reason={data.get('reason', 'n/a')}"
+        ),
+    }]
+
+
 def handle_audio_interrupt_status(args: dict) -> list:
     _ = args
     try:
@@ -3313,6 +3523,7 @@ HANDLERS = {
     "get_audio_level": handle_audio_level,
     # v1.0: Computer Use
     "do_action": handle_do_action,
+    "action_intent": handle_action_intent,
     "raw_action": handle_raw_action,
     "action_precheck": handle_action_precheck,
     "verify_action": handle_verify_action,
@@ -3354,6 +3565,11 @@ HANDLERS = {
     "behavior_recent": handle_behavior_recent,
     "behavior_suggest": handle_behavior_suggest,
     "runtime_profile": handle_runtime_profile,
+    "host_telemetry": handle_host_telemetry,
+    "os_notifications": handle_os_notifications,
+    "os_tray": handle_os_tray,
+    "os_dialog_status": handle_os_dialog_status,
+    "os_dialog_resolve": handle_os_dialog_resolve,
     "audio_interrupt_status": handle_audio_interrupt_status,
     "audio_interrupt_ack": handle_audio_interrupt_ack,
     # Token management

@@ -185,7 +185,16 @@ class OCREngine:
         except Exception as e:
             return {"text": "", "blocks": [], "confidence": 0.0, "engine": "tesseract", "error": str(e), "ocr_available": True}
 
-    def extract_region(self, frame_bytes: bytes, x: int, y: int, w: int, h: int) -> dict:
+    def extract_region(
+        self,
+        frame_bytes: bytes,
+        x: int,
+        y: int,
+        w: int,
+        h: int,
+        *,
+        zoom_factor: float = 1.0,
+    ) -> dict:
         """OCR solo de una region especifica. BUG-010 fix: bypasses cache (region != full frame)."""
         img = Image.open(io.BytesIO(frame_bytes))
         # Bounds check
@@ -196,10 +205,18 @@ class OCREngine:
         if w <= 0 or h <= 0:
             return {"text": "", "blocks": [], "confidence": 0.0, "engine": self._engine_name}
         cropped = img.crop((x, y, x + w, y + h))
+        zf = float(zoom_factor or 1.0)
+        if zf > 1.05:
+            target_w = max(8, int(cropped.width * zf))
+            target_h = max(8, int(cropped.height * zf))
+            cropped = cropped.resize((target_w, target_h), Image.LANCZOS)
         buf = io.BytesIO()
         cropped.save(buf, format="JPEG", quality=85)
         # No frame_hash = no cache (region OCR is always fresh)
-        return self.extract_text(buf.getvalue(), frame_hash=None)
+        result = self.extract_text(buf.getvalue(), frame_hash=None)
+        if isinstance(result, dict):
+            result["region_zoom_factor"] = round(max(1.0, zf), 2)
+        return result
 
 
 # ─── Annotation System ───

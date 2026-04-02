@@ -55,7 +55,7 @@ BANNER = """
 """
 
 
-def main():
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="ILUMINATY - Real-time visual perception for AI"
     )
@@ -70,7 +70,12 @@ def main():
     parser.add_argument("--quality", type=int, default=80, help="Image quality 10-95 (default: 80)")
     parser.add_argument("--format", type=str, default="webp", choices=["jpeg", "webp", "png"], help="Image format (default: webp)")
     parser.add_argument("--max-width", type=int, default=1280, help="Max frame width (default: 1280)")
-    parser.add_argument("--monitor", type=int, default=1, help="Monitor number: 0=all, 1=primary (default: 1)")
+    parser.add_argument(
+        "--monitor",
+        type=int,
+        default=0,
+        help="Monitor mode: 0=auto multi-monitor, N=single monitor N (default: 0)",
+    )
     parser.add_argument("--api-key", type=str, default=None, help="API key for auth (optional)")
     parser.add_argument("--no-adaptive", action="store_true", help="Disable adaptive FPS")
     parser.add_argument("--no-smart-quality", action="store_true", help="Disable smart quality adjustment")
@@ -112,7 +117,11 @@ def main():
     )
     parser.add_argument("--deep-loop-hz", type=float, default=1.0, help="Deep visual loop frequency (0.5-2.0)")
     parser.add_argument("--fast-loop-hz", type=float, default=10.0, help="Fast semantic loop frequency (8-12 typical)")
+    return parser
 
+
+def main():
+    parser = build_parser()
     args = parser.parse_args()
     
     if args.command == "version":

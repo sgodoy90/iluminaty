@@ -64,26 +64,56 @@ ALL_ACTIONS = FREE_ACTIONS | PRO_ACTIONS
 FREE_MCP_TOOLS = {
     "see_screen", "see_changes", "read_screen_text", "perception",
     "screen_status", "get_context", "do_action", "raw_action",
+    "action_intent",
     "action_precheck", "verify_action",
     "operate_cycle",
     "perception_world", "perception_trace", "set_operating_mode",
+    "domain_pack_list", "domain_pack_override",
     "vision_query",
     "grounding_status", "grounding_resolve", "click_grounded", "type_grounded",
     "window_minimize", "window_maximize", "window_close",
     "move_window", "drag_screen", "spatial_state",
+    "workers_status", "workers_monitor",
+    "workers_claim_action", "workers_release_action",
+    "workers_schedule", "workers_set_subgoal", "workers_clear_subgoal", "workers_route",
+    "behavior_stats", "behavior_recent", "behavior_suggest",
+    "runtime_profile",
+    "host_telemetry",
+    "os_notifications", "os_tray", "os_dialog_status", "os_dialog_resolve",
+    "audio_interrupt_status", "audio_interrupt_ack",
     "get_audio_level",
     "token_status", "set_token_mode", "set_token_budget",
 }
 
-PRO_MCP_TOOLS = {
-    "agent_status", "annotate_screen", "browser_navigate", "browser_tabs",
-    "click_element", "click_screen", "find_ui_element", "focus_window",
-    "get_clipboard", "keyboard", "list_windows", "monitor_info",
-    "read_file", "run_command", "scroll", "see_monitor",
-    "type_text", "watch_screen", "write_file",
+ALL_MCP_TOOLS = {
+    "see_screen", "see_changes", "annotate_screen", "read_screen_text", "perception",
+    "perception_world", "perception_trace",
+    "screen_status", "get_context", "get_audio_level",
+    "do_action", "raw_action", "action_intent", "action_precheck", "verify_action",
+    "operate_cycle",
+    "set_operating_mode", "domain_pack_list", "domain_pack_override",
+    "vision_query",
+    "grounding_status", "grounding_resolve", "click_grounded", "type_grounded",
+    "click_element", "type_text", "run_command",
+    "list_windows", "find_ui_element", "read_file", "write_file",
+    "window_minimize", "window_maximize", "window_close",
+    "move_window", "drag_screen", "spatial_state",
+    "workers_status", "workers_monitor",
+    "workers_claim_action", "workers_release_action",
+    "workers_schedule", "workers_set_subgoal", "workers_clear_subgoal", "workers_route",
+    "behavior_stats", "behavior_recent", "behavior_suggest",
+    "runtime_profile",
+    "host_telemetry",
+    "os_notifications", "os_tray", "os_dialog_status", "os_dialog_resolve",
+    "audio_interrupt_status", "audio_interrupt_ack",
+    "get_clipboard", "agent_status",
+    "watch_screen", "focus_window", "browser_navigate", "browser_tabs",
+    "click_screen", "keyboard", "scroll",
+    "monitor_info", "see_monitor",
+    "token_status", "set_token_mode", "set_token_budget",
 }
 
-ALL_MCP_TOOLS = FREE_MCP_TOOLS | PRO_MCP_TOOLS
+PRO_MCP_TOOLS = ALL_MCP_TOOLS - FREE_MCP_TOOLS
 
 # Free tier endpoint paths (vision + basic actions)
 FREE_ENDPOINTS = {

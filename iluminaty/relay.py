@@ -66,7 +66,6 @@ class SimpleEncryption:
         AES-256-GCM encryption via Fernet (symmetric, authenticated).
         Each message gets a unique nonce. Safe against pattern analysis.
         """
-        import base64
         # Derive a 32-byte key from passphrase, then base64 for Fernet
         derived = hashlib.sha256(key.encode()).digest()
         fernet_key = base64.urlsafe_b64encode(derived)

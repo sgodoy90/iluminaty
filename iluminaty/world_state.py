@@ -13,6 +13,8 @@ from collections import deque
 from dataclasses import asdict, dataclass, field
 from typing import Optional
 
+from .domain_packs import DomainPackRegistry
+
 
 def _clamp01(value: float) -> float:
     return max(0.0, min(1.0, value))
@@ -46,6 +48,12 @@ class WorldSnapshot:
     visual_facts: list[dict] = field(default_factory=list)
     evidence: list[dict] = field(default_factory=list)
     staleness_ms: int = 0
+    domain_pack: str = "general"
+    domain_confidence: float = 0.0
+    domain_source: str = "builtin"
+    domain_signals: list[str] = field(default_factory=list)
+    domain_policy: dict = field(default_factory=dict)
+    domain_context: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -67,12 +75,19 @@ class WorldStateEngine:
     Maintains semantic world snapshots + compressed episodic trace in RAM.
     """
 
-    def __init__(self, horizon_seconds: int = 90, max_trace_entries: int = 600):
+    def __init__(
+        self,
+        horizon_seconds: int = 90,
+        max_trace_entries: int = 600,
+        domain_registry: Optional[DomainPackRegistry] = None,
+    ):
         self._horizon_seconds = horizon_seconds
         self._trace: deque[WorldTraceEntry] = deque(maxlen=max_trace_entries)
         self._lock = threading.Lock()
         self._risk_mode = "safe"
         self._tick_id = 0
+        self._domain_registry = domain_registry or DomainPackRegistry.from_environment()
+        self._domain_override: Optional[str] = None
         now_ms = int(time.time() * 1000)
         self._current = WorldSnapshot(
             timestamp_ms=now_ms,
@@ -86,12 +101,19 @@ class WorldStateEngine:
             visual_facts=[],
             evidence=[],
             staleness_ms=0,
+            domain_pack="general",
+            domain_confidence=0.0,
+            domain_source="builtin",
+            domain_signals=[],
+            domain_policy={"max_staleness_ms": {"safe": 1500, "hybrid": 1200, "raw": 4000}},
+            domain_context={"fallback": True},
         )
-        self._last_signature: tuple[str, str, bool, str] = (
+        self._last_signature: tuple[str, str, bool, str, str] = (
             self._current.task_phase,
             self._current.active_surface,
             self._current.readiness,
             "",
+            self._current.domain_pack,
         )
 
     @property
@@ -156,6 +178,17 @@ class WorldStateEngine:
                 seen.add(item)
                 unique.append(item)
         return unique[:16]
+
+    def _merge_affordances(self, base: list[str], extra: list[str]) -> list[str]:
+        merged: list[str] = []
+        seen = set()
+        for item in list(base) + list(extra):
+            token = str(item).strip()
+            if not token or token in seen:
+                continue
+            seen.add(token)
+            merged.append(token)
+        return merged[:20]
 
     def _build_entities(
         self,
@@ -238,6 +271,26 @@ class WorldStateEngine:
             uncertainty += 0.1
         uncertainty = _clamp01(uncertainty)
 
+        clean_facts = [self._normalize_visual_fact(f) for f in (visual_facts or [])][:12]
+        clean_evidence = [self._normalize_evidence(e) for e in (evidence or [])][:20]
+        entities = self._build_entities(app, workflow, monitor_id, recent_events)
+        domain = self._domain_registry.resolve(
+            app_name=app,
+            workflow=workflow,
+            window_title=title,
+            task_phase=task_phase,
+            entities=entities,
+            recent_events=recent_events,
+            visual_facts=clean_facts,
+            override=self._domain_override,
+        )
+
+        for hint in domain.attention_hints[:3]:
+            marker = f"hint:{hint}"
+            if marker not in attention_targets:
+                attention_targets.append(marker)
+        attention_targets = attention_targets[:6]
+
         readiness_reasons: list[str] = []
         if task_phase == "loading":
             readiness_reasons.append("scene_not_stable")
@@ -245,13 +298,16 @@ class WorldStateEngine:
             readiness_reasons.append("high_uncertainty")
         if app == "unknown":
             readiness_reasons.append("unknown_surface")
+        if domain.uncertainty_ceiling is not None and uncertainty > float(domain.uncertainty_ceiling):
+            readiness_reasons.append("domain_uncertainty_guard")
 
         ready = len(readiness_reasons) == 0
         if ready:
             readiness_reasons = ["ready_for_action"]
-
-        clean_facts = [self._normalize_visual_fact(f) for f in (visual_facts or [])][:12]
-        clean_evidence = [self._normalize_evidence(e) for e in (evidence or [])][:20]
+        affordances = self._merge_affordances(
+            self._infer_affordances(app, workflow, task_phase),
+            domain.affordances,
+        )
 
         with self._lock:
             self._tick_id += 1
@@ -260,8 +316,8 @@ class WorldStateEngine:
                 tick_id=self._tick_id,
                 task_phase=task_phase,
                 active_surface=active_surface,
-                entities=self._build_entities(app, workflow, monitor_id, recent_events),
-                affordances=self._infer_affordances(app, workflow, task_phase),
+                entities=entities,
+                affordances=affordances,
                 attention_targets=attention_targets,
                 uncertainty=round(uncertainty, 3),
                 readiness=ready,
@@ -270,6 +326,7 @@ class WorldStateEngine:
                 visual_facts=clean_facts,
                 evidence=clean_evidence,
                 staleness_ms=0,
+                **domain.to_world_fields(),
             )
 
             self._current = snapshot
@@ -294,13 +351,14 @@ class WorldStateEngine:
             snapshot.active_surface,
             snapshot.readiness,
             top_event,
+            snapshot.domain_pack,
         )
         if signature == self._last_signature and self._trace:
             return
         self._last_signature = signature
 
         summary = (
-            f"{snapshot.task_phase} | {snapshot.active_surface} | "
+            f"{snapshot.task_phase} | {snapshot.domain_pack} | {snapshot.active_surface} | "
             f"{'ready' if snapshot.readiness else 'not-ready'} | u={snapshot.uncertainty:.2f}"
         )
         reason = "state_transition" if self._trace else "bootstrap"
@@ -377,7 +435,53 @@ class WorldStateEngine:
                 "active_surface": self._current.active_surface,
                 "risk_mode": self._current.risk_mode,
                 "staleness_ms": max(0, int(time.time() * 1000) - self._current.timestamp_ms),
+                "domain_pack": self._current.domain_pack,
+                "domain_confidence": self._current.domain_confidence,
+                "domain_policy": dict(self._current.domain_policy),
             }
+
+    def list_domain_packs(self) -> dict:
+        with self._lock:
+            active = {
+                "domain_pack": self._current.domain_pack,
+                "domain_confidence": self._current.domain_confidence,
+                "domain_source": self._current.domain_source,
+            }
+            override = self._domain_override
+        return {
+            "packs": self._domain_registry.list_packs(),
+            "active": active,
+            "override": override,
+        }
+
+    def reload_domain_packs(self) -> dict:
+        result = self._domain_registry.reload_custom_packs()
+        with self._lock:
+            active = {
+                "domain_pack": self._current.domain_pack,
+                "domain_confidence": self._current.domain_confidence,
+                "domain_source": self._current.domain_source,
+            }
+            override = self._domain_override
+        return {
+            **result,
+            "active": active,
+            "override": override,
+        }
+
+    def set_domain_override(self, name: Optional[str]) -> dict:
+        candidate = (name or "").strip().lower()
+        if candidate in {"", "auto", "none"}:
+            with self._lock:
+                self._domain_override = None
+            return {"ok": True, "override": None, "reason": "auto"}
+        if not self._domain_registry.has_pack(candidate):
+            with self._lock:
+                current_override = self._domain_override
+            return {"ok": False, "override": current_override, "reason": "unknown_domain_pack"}
+        with self._lock:
+            self._domain_override = candidate
+        return {"ok": True, "override": candidate, "reason": "forced"}
 
     def check_context_freshness(
         self,

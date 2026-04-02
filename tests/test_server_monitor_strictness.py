@@ -1,34 +1,48 @@
+from fastapi.testclient import TestClient
+
 from iluminaty import server
-from iluminaty.ring_buffer import RingBuffer
 
 
-def test_latest_slot_for_monitor_does_not_fallback_to_global():
+def test_vision_snapshot_returns_monitor_specific_not_available_error(monkeypatch):
+    original_api_key = server._state.api_key
     original_buffer = server._state.buffer
+    original_vision = server._state.vision
     try:
-        buf = RingBuffer(max_seconds=5, target_fps=1.0)
-        buf.push(b"a", 10, 10, monitor_id=1, skip_if_unchanged=False)
-        buf.push(b"b", 10, 10, monitor_id=2, skip_if_unchanged=False)
-        server._state.buffer = buf
+        server._state.api_key = None
+        server._state.buffer = object()
+        server._state.vision = object()
+        monkeypatch.setattr(server, "_latest_slot_for_monitor", lambda monitor_id=None: (None, monitor_id))
+        client = TestClient(server.app)
 
-        slot, resolved_mid = server._latest_slot_for_monitor(3)
-        assert slot is None
-        assert resolved_mid == 3
+        response = client.get("/vision/snapshot", params={"monitor_id": 4})
+        payload = response.json()
+
+        assert response.status_code == 404
+        assert payload["detail"]["error"] == "monitor_frame_not_available"
+        assert int(payload["detail"]["monitor_id"]) == 4
     finally:
+        server._state.api_key = original_api_key
         server._state.buffer = original_buffer
+        server._state.vision = original_vision
 
 
-def test_latest_slot_for_monitor_returns_requested_monitor_when_available():
+def test_vision_snapshot_returns_generic_no_frames_error_when_monitor_not_requested(monkeypatch):
+    original_api_key = server._state.api_key
     original_buffer = server._state.buffer
+    original_vision = server._state.vision
     try:
-        buf = RingBuffer(max_seconds=5, target_fps=1.0)
-        buf.push(b"a", 10, 10, monitor_id=1, skip_if_unchanged=False)
-        buf.push(b"b", 10, 10, monitor_id=2, skip_if_unchanged=False)
-        server._state.buffer = buf
+        server._state.api_key = None
+        server._state.buffer = object()
+        server._state.vision = object()
+        monkeypatch.setattr(server, "_latest_slot_for_monitor", lambda monitor_id=None: (None, None))
+        client = TestClient(server.app)
 
-        slot, resolved_mid = server._latest_slot_for_monitor(2)
-        assert slot is not None
-        assert getattr(slot, "monitor_id", None) == 2
-        assert resolved_mid == 2
+        response = client.get("/vision/snapshot")
+        payload = response.json()
+
+        assert response.status_code == 404
+        assert payload["detail"]["error"] == "no_frames_in_buffer"
     finally:
+        server._state.api_key = original_api_key
         server._state.buffer = original_buffer
-
+        server._state.vision = original_vision

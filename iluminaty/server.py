@@ -66,6 +66,8 @@ from .audit import AuditLog
 from .licensing import LicenseManager, get_license, init_license
 from .grounding import GroundingEngine
 from .ui_semantics import UISemanticsEngine
+from .host_telemetry import HostTelemetry
+from .os_surface import OSSurfaceSignals
 from .cursor_tracker import CursorTracker
 from .action_watchers import ActionCompletionWatcher
 from .app_behavior_cache import AppBehaviorCache
@@ -123,6 +125,8 @@ class _ServerState:
         self.perception = None  # PerceptionEngine (lazy import)
         self.grounding: Optional[GroundingEngine] = None
         self.ui_semantics: Optional[UISemanticsEngine] = None
+        self.host_telemetry: Optional[HostTelemetry] = None
+        self.os_surface: Optional[OSSurfaceSignals] = None
         self.behavior_cache: Optional[AppBehaviorCache] = None
         self.audio_interrupt: Optional[AudioInterruptDetector] = None
         self.agent_coordinator = None  # IPA v2: Multi-Agent Workbench
@@ -726,6 +730,41 @@ def _runtime_profile_check(intent: Intent, mode: str) -> dict:
     }
 
 
+def _host_telemetry_check(intent: Intent, mode: str) -> dict:
+    mode_norm = _normalize_operating_mode(mode)
+    category = str(intent.category or "normal").strip().lower()
+    applies = mode_norm in {"SAFE", "HYBRID"} and category in {"normal", "destructive", "system"}
+    if not applies:
+        return {
+            "allowed": True,
+            "applies": False,
+            "reason": "skipped",
+        }
+    if not _state.host_telemetry:
+        return {
+            "allowed": True,
+            "applies": True,
+            "reason": "telemetry_unavailable",
+        }
+    try:
+        result = _state.host_telemetry.policy_check(action_category=category, mode=mode_norm)
+    except Exception as e:
+        logger.debug("Host telemetry check failed: %s", e)
+        return {
+            "allowed": True,
+            "applies": True,
+            "reason": "telemetry_error",
+        }
+    return {
+        "allowed": bool(result.get("allowed", True)),
+        "applies": True,
+        "reason": str(result.get("reason", "host_ok")),
+        "severity": str(result.get("severity", "normal")),
+        "signals": result.get("signals", []) or [],
+        "snapshot": result.get("snapshot", {}) or {},
+    }
+
+
 def _is_click_like_action(action: str) -> bool:
     return str(action or "").strip().lower() in {
         "click",
@@ -999,6 +1038,42 @@ def _active_window_snapshot() -> dict:
         }
     except Exception:
         return {"handle": None, "title": "", "monitor_id": None}
+
+
+def _os_dialog_status_snapshot(monitor_id: Optional[int] = None) -> dict:
+    if not _state.os_surface:
+        return {
+            "available": False,
+            "detected": False,
+            "reason": "os_surface_unavailable",
+            "monitor_id": int(monitor_id) if monitor_id is not None else None,
+        }
+    slot, resolved_mid = _latest_slot_for_monitor(monitor_id)
+    active = _active_window_snapshot()
+    title = str(active.get("title", "") or "")
+    try:
+        result = _state.os_surface.detect_dialog(
+            slot=slot,
+            vision=_state.vision,
+            active_title=title,
+        )
+    except Exception as e:
+        logger.debug("OS dialog status detection failed: %s", e)
+        result = {
+            "detected": False,
+            "confidence": 0.0,
+            "active_title": title[:180],
+            "title_hit": False,
+            "keyword_hits": [],
+            "affordances": [],
+            "ocr_preview": "",
+            "ocr_block_count": 0,
+            "reason": "detect_failed",
+        }
+    result["available"] = True
+    result["monitor_id"] = int(resolved_mid) if resolved_mid is not None else None
+    result["active_window"] = active
+    return result
 
 
 def _runtime_pre_action_snapshot(intent: Intent) -> dict:
@@ -1415,6 +1490,7 @@ def _build_precheck(
     target_check = _target_check(intent)
     behavior_hint = _behavior_hint(intent)
     profile_check = _runtime_profile_check(intent, mode_norm)
+    telemetry_check = _host_telemetry_check(intent, mode_norm)
     audio_interrupt_check = _audio_interrupt_check(intent, mode_norm)
     ui_semantics_check = _ui_semantics_check(
         intent,
@@ -1431,6 +1507,7 @@ def _build_precheck(
         or not context_check["allowed"]
         or not grounding_check["allowed"]
         or not profile_check["allowed"]
+        or not telemetry_check["allowed"]
         or not audio_interrupt_check["allowed"]
         or not orientation_check["allowed"]
         or not ui_semantics_check["allowed"]
@@ -1454,6 +1531,7 @@ def _build_precheck(
         "grounding_applies": grounding_applies,
         "grounding_check": grounding_check,
         "profile_check": profile_check,
+        "telemetry_check": telemetry_check,
         "audio_interrupt_check": audio_interrupt_check,
         "behavior_hint": behavior_hint,
         "orientation_check": orientation_check,
@@ -1503,6 +1581,7 @@ def _execute_intent(
             precheck.get("readiness_check", {}).get("reason") if not precheck.get("readiness_check", {}).get("allowed", True) else
             precheck.get("context_check", {}).get("reason") if not precheck.get("context_check", {}).get("allowed", True) else
             precheck.get("profile_check", {}).get("reason") if not precheck.get("profile_check", {}).get("allowed", True) else
+            precheck.get("telemetry_check", {}).get("reason") if not precheck.get("telemetry_check", {}).get("allowed", True) else
             precheck.get("audio_interrupt_check", {}).get("reason") if not precheck.get("audio_interrupt_check", {}).get("allowed", True) else
             precheck.get("orientation_check", {}).get("reason") if not precheck.get("orientation_check", {}).get("allowed", True) else
             precheck.get("ui_semantics_check", {}).get("reason") if not precheck.get("ui_semantics_check", {}).get("allowed", True) else
@@ -2263,6 +2342,8 @@ def init_server(
                 fast_loop_hz=fast_loop_hz,
             )
             _state.perception.start(buffer)
+            if hasattr(_state.perception, "set_capture_controller"):
+                _state.perception.set_capture_controller(_state.capture)
             _state.perception.set_risk_mode(_state.operating_mode.lower())
         except Exception as e:
             _state.perception = None
@@ -2280,6 +2361,19 @@ def init_server(
 
         _state.memory = TemporalMemory(enabled=False)
         _state.watchdog = Watchdog()
+        try:
+            _state.host_telemetry = HostTelemetry()
+        except Exception as e:
+            _state.host_telemetry = None
+            _state.bootstrap_warnings.append(f"host_telemetry_init_failed: {e}")
+        try:
+            _state.os_surface = OSSurfaceSignals(
+                watchdog=_state.watchdog,
+                audio_interrupt=_state.audio_interrupt,
+            )
+        except Exception as e:
+            _state.os_surface = None
+            _state.bootstrap_warnings.append(f"os_surface_init_failed: {e}")
         _state.router = AIRouter()
         _state.collab = CollaborativeManager()
 
@@ -2382,6 +2476,7 @@ def init_server(
             ui_tree=_state.ui_tree,
             vision=_state.vision,
             monitor_mgr=_state.monitor_mgr,
+            buffer=_state.buffer,
         )
 
 
@@ -3605,6 +3700,139 @@ async def runtime_action_watcher_status(x_api_key: Optional[str] = Header(None))
     return _state.action_watcher.stats()
 
 
+# ─── OS Surface ───
+
+@app.get("/os/notifications")
+async def os_notifications(
+    limit: int = Query(20, ge=1, le=200),
+    x_api_key: Optional[str] = Header(None),
+):
+    _check_auth(x_api_key)
+    if not _state.os_surface:
+        return {"available": False, "count": 0, "items": [], "sources": []}
+    payload = _state.os_surface.notifications(limit=limit)
+    payload["available"] = True
+    return payload
+
+
+@app.get("/os/tray")
+async def os_tray(x_api_key: Optional[str] = Header(None)):
+    _check_auth(x_api_key)
+    if not _state.os_surface:
+        return {"available": False, "supported": False, "detected": False, "windows": []}
+    payload = _state.os_surface.tray_state()
+    payload["available"] = True
+    return payload
+
+
+@app.get("/os/dialog/status")
+async def os_dialog_status(
+    monitor_id: Optional[int] = Query(None, description="Optional monitor id for dialog probe."),
+    x_api_key: Optional[str] = Header(None),
+):
+    _check_auth(x_api_key)
+    return _os_dialog_status_snapshot(monitor_id=monitor_id)
+
+
+@app.post("/os/dialog/resolve")
+async def os_dialog_resolve(
+    request_body: dict,
+    x_api_key: Optional[str] = Header(None),
+):
+    """
+    Attempt to resolve an active dialog by clicking a target label/coordinate.
+    Body: {label?, x?, y?, monitor_id?, mode?, verify?}
+    """
+    _check_auth(x_api_key)
+    if not _state.actions:
+        raise HTTPException(503, "Action bridge not initialized")
+
+    monitor_id = request_body.get("monitor_id")
+    status = _os_dialog_status_snapshot(monitor_id=monitor_id)
+    if not bool(status.get("detected", False)):
+        return {
+            "resolved": False,
+            "reason": "dialog_not_detected",
+            "dialog": status,
+            "execution": None,
+        }
+
+    label = str(request_body.get("label") or "").strip()
+    x = request_body.get("x")
+    y = request_body.get("y")
+    chosen_target = {"x": None, "y": None, "label": label or None}
+    mode = request_body.get("mode") or _state.operating_mode
+    verify = bool(request_body.get("verify", True))
+    context_tick_id = request_body.get("context_tick_id")
+    max_staleness_ms = request_body.get("max_staleness_ms")
+    if max_staleness_ms is not None:
+        max_staleness_ms = int(max_staleness_ms)
+
+    if x is None or y is None:
+        if not label:
+            affordances = status.get("affordances") or []
+            if affordances:
+                label = str(affordances[0]).strip()
+                chosen_target["label"] = label
+        if label and _state.grounding:
+            try:
+                resolved = _state.grounding.resolve(
+                    query=label,
+                    role="button",
+                    monitor_id=monitor_id,
+                    mode=mode,
+                    category=str(request_body.get("category") or "normal"),
+                    context_tick_id=context_tick_id,
+                    max_staleness_ms=max_staleness_ms,
+                    top_k=5,
+                )
+            except Exception:
+                resolved = {}
+            target = (resolved or {}).get("target") or {}
+            center = target.get("center_xy") or []
+            if isinstance(center, (list, tuple)) and len(center) == 2:
+                x = int(center[0])
+                y = int(center[1])
+
+    if x is None or y is None:
+        return {
+            "resolved": False,
+            "reason": "dialog_target_not_resolved",
+            "dialog": status,
+            "target": chosen_target,
+            "execution": None,
+        }
+
+    chosen_target["x"] = int(x)
+    chosen_target["y"] = int(y)
+    intent = Intent(
+        action="click",
+        params={
+            "x": int(x),
+            "y": int(y),
+            "button": str(request_body.get("button") or "left"),
+        },
+        confidence=1.0,
+        raw_input=f"dialog_resolve:{chosen_target.get('label') or 'coords'}",
+        category=str(request_body.get("category") or "normal"),
+    )
+    execution = _execute_intent(
+        intent,
+        mode=mode,
+        verify=verify,
+        context_tick_id=context_tick_id,
+        max_staleness_ms=max_staleness_ms,
+    )
+    success = bool((execution.get("result") or {}).get("success", False))
+    return {
+        "resolved": success,
+        "reason": "ok" if success else str((execution.get("result") or {}).get("message", "dialog_resolve_failed")),
+        "dialog": status,
+        "target": chosen_target,
+        "execution": execution,
+    }
+
+
 # ─── Plugins (F09) ───
 
 @app.get("/plugins")
@@ -4290,6 +4518,42 @@ async def action_precheck(
     )
 
 
+@app.post("/action/intent")
+async def action_intent(
+    request_body: dict,
+    x_api_key: Optional[str] = Header(None),
+):
+    """
+    High-level action primitive.
+    Accepts natural language instruction and executes it through the same
+    closed-loop path as /action/execute.
+    """
+    _check_auth(x_api_key)
+    if not _state.intent or not _state.resolver:
+        raise HTTPException(503, "Brain not initialized")
+
+    instruction = str(request_body.get("instruction") or "").strip()
+    if not instruction:
+        raise HTTPException(400, "instruction is required")
+
+    intent = _state.intent.classify_or_default(instruction)
+    mode = request_body.get("mode") or _state.operating_mode
+    verify = bool(request_body.get("verify", True))
+    context_tick_id = request_body.get("context_tick_id")
+    max_staleness_ms = request_body.get("max_staleness_ms")
+    if max_staleness_ms is not None:
+        max_staleness_ms = int(max_staleness_ms)
+    grounding_request = _grounding_request_from_payload(request_body, intent)
+    return _execute_intent(
+        intent,
+        mode=mode,
+        verify=verify,
+        context_tick_id=context_tick_id,
+        max_staleness_ms=max_staleness_ms,
+        grounding_request=grounding_request,
+    )
+
+
 @app.post("/action/execute")
 async def action_execute(
     request_body: dict,
@@ -4867,6 +5131,16 @@ async def agent_status(x_api_key: Optional[str] = Header(None)):
 
 # ─── System overview ───
 
+@app.get("/system/telemetry")
+async def system_telemetry(x_api_key: Optional[str] = Header(None)):
+    _check_auth(x_api_key)
+    if not _state.host_telemetry:
+        return {"available": False, "reason": "telemetry_unavailable"}
+    snapshot = _state.host_telemetry.snapshot()
+    snapshot["available"] = bool(snapshot.get("available", True))
+    return snapshot
+
+
 @app.get("/system/overview")
 async def system_overview(x_api_key: Optional[str] = Header(None)):
     """Complete system overview - all components status."""
@@ -4887,6 +5161,12 @@ async def system_overview(x_api_key: Optional[str] = Header(None)):
             "enabled": _state.audio_capture is not None and _state.audio_capture.is_running if _state.audio_capture else False,
             "stats": _state.audio_buffer.stats if _state.audio_buffer else {},
             "interrupt": _state.audio_interrupt.status() if _state.audio_interrupt else {"enabled": False},
+        },
+        "host_telemetry": _state.host_telemetry.snapshot() if _state.host_telemetry else {"available": False},
+        "os_surface": {
+            "available": _state.os_surface is not None,
+            "tray": _state.os_surface.tray_state() if _state.os_surface else {"supported": False, "detected": False},
+            "notifications": _state.os_surface.notifications(limit=5) if _state.os_surface else {"count": 0, "items": []},
         },
         "ocr": {
             "engine": _state.vision.ocr.engine if _state.vision else "none",

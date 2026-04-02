@@ -64,6 +64,7 @@ OBSERVER_TOOLS = frozenset({
     "see_screen", "see_changes", "read_screen_text", "perception",
     "perception_world", "perception_trace", "vision_query",
     "grounding_status",
+    "workers_status", "workers_monitor",
     "screen_status", "get_context", "get_audio_level", "token_status",
     "set_token_mode", "set_token_budget",
 })
@@ -76,6 +77,7 @@ PLANNER_TOOLS = OBSERVER_TOOLS | frozenset({
 EXECUTOR_TOOLS = frozenset({
     "do_action", "raw_action", "action_precheck", "verify_action",
     "set_operating_mode",
+    "workers_claim_action", "workers_release_action",
     "grounding_resolve", "click_grounded", "type_grounded",
     "click_element", "type_text", "run_command",
     "keyboard", "scroll", "click_screen", "browser_navigate",

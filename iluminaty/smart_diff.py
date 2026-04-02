@@ -16,6 +16,7 @@ Tecnicas:
 """
 
 import io
+import base64
 import hashlib
 from PIL import Image
 from typing import Optional
@@ -82,9 +83,11 @@ class SmartDiff:
         self._heatmap_decay = 0.9  # cuanto se desvanece el heatmap por frame
 
     def _frame_to_array(self, frame_bytes: bytes):
-        """Convierte frame bytes a numpy array."""
+        """Convierte frame bytes a numpy grayscale array (1 channel, not RGB).
+        Grayscale is sufficient for change detection and uses 3x less RAM than RGB.
+        """
         np = _get_np()
-        img = Image.open(io.BytesIO(frame_bytes)).convert("RGB")
+        img = Image.open(io.BytesIO(frame_bytes)).convert("L")  # grayscale
         return np.array(img)
 
     def _split_grid(self, arr) -> list[list]:
@@ -105,21 +108,29 @@ class SmartDiff:
         return grid
 
     def _cell_hash(self, cell) -> str:
-        """Hash rapido de una celda del grid."""
+        """Hash rápido de una celda del grid.
+        Uses stride-based 8x8 downsample directly on the numpy array — avoids
+        round-tripping through PIL (saves ~0.5ms per cell on large grids).
+        """
         np = _get_np()
-        # Downscale a 8x8 y hashear para velocidad
-        small = Image.fromarray(cell).resize((8, 8))
-        return hashlib.md5(np.array(small).tobytes()).hexdigest()
+        h, w = cell.shape[:2]
+        # Stride downsample to 8x8: pick every (h//8)th row and (w//8)th col
+        rs = max(1, h // 8)
+        cs = max(1, w // 8)
+        small = cell[::rs, ::cs][:8, :8]
+        return hashlib.md5(small.tobytes()).hexdigest()
 
     def _cell_diff_intensity(self, cell_a, cell_b) -> float:
         """
         Calcula intensidad de cambio entre dos celdas (0-1).
         Usa Mean Absolute Difference normalizado.
+        Works on single-channel (grayscale) arrays.
         """
         np = _get_np()
         if cell_a.shape != cell_b.shape:
             return 1.0
-        diff = np.abs(cell_a.astype(float) - cell_b.astype(float))
+        # int16 avoids uint8 overflow on subtraction
+        diff = np.abs(cell_a.astype(np.int16) - cell_b.astype(np.int16))
         return float(diff.mean() / 255.0)
 
     def compare(self, frame_bytes: bytes) -> FrameDiff:
@@ -226,7 +237,6 @@ class SmartDiff:
             crop = img.crop((x1, y1, x2, y2))
             buf = io.BytesIO()
             crop.save(buf, format="WEBP", quality=80)
-            import base64
             deltas.append({
                 "grid": f"({region.grid_x},{region.grid_y})",
                 "pixel": f"({region.pixel_x},{region.pixel_y})",

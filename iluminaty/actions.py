@@ -167,11 +167,27 @@ class ActionBridge:
     # ─── Keyboard Actions ───
 
     def type_text(self, text: str, interval: float = 0.02) -> ActionResult:
-        """Escribe texto via keyboard. Only supports ASCII characters."""
+        """Escribe texto via keyboard.
+        Supports full Unicode via clipboard paste fallback:
+        - ASCII-only text → pyautogui.write() (respects per-char interval)
+        - Text with non-ASCII chars → copy to clipboard + Ctrl+V (instant, lossless)
+        """
         def do():
-            # pyautogui.write() only supports ASCII; non-ASCII chars are silently dropped
+            is_ascii = all(ord(c) < 128 for c in text)
+            if is_ascii:
+                self._pyautogui.write(text, interval=interval)
+                return f"Typed {len(text)} chars (keyboard)"
+            # Unicode fallback: clipboard paste
+            try:
+                import pyperclip
+                pyperclip.copy(text)
+                self._pyautogui.hotkey("ctrl", "v")
+                return f"Typed {len(text)} chars (clipboard paste — unicode)"
+            except ImportError:
+                pass
+            # Last resort: type char by char with pyautogui (drops non-ASCII silently)
             self._pyautogui.write(text, interval=interval)
-            return f"Typed {len(text)} chars"
+            return f"Typed {len(text)} chars (best-effort — install pyperclip for full unicode)"
         return self._exec("type_text", do)
 
     def hotkey(self, *keys) -> ActionResult:

@@ -53,6 +53,21 @@ Estado:
 - Implementado en API y usado por MCP.
 - En `SAFE/HYBRID`, `precheck` ya integra validación de readiness contextual (bloquea cuando no hay contexto suficiente para actuar de forma segura).
 
+### 2.4 Workers Sys v1 (orquestación operativa)
+Componentes:
+- `Monitor Workers`: digest semántico por monitor (scene/phase/readiness/staleness).
+- `Spatial Worker`: topología de monitores + monitor activo.
+- `Fusion Worker`: resumen global unificado para decisión.
+- `Intent Worker`: timeline de intenciones emitidas por ejecución.
+- `Action Arbiter`: lease single-writer para evitar colisiones entre agentes.
+- `Verify Worker`: timeline de verificación y resultados.
+- `Memory Worker`: compresión de eventos de workers en RAM.
+
+Estado:
+- Implementado en `iluminaty/workers.py`.
+- Integrado en `PerceptionEngine` (actualización continua por tick).
+- Integrado en `/action/execute` con claim/release automático del arbiter.
+
 ## 3) Modos Operativos
 
 ### SAFE (default)
@@ -84,6 +99,12 @@ Control:
 - `GET /operating/mode`
 - `POST /operating/mode`
 
+Workers:
+- `GET /workers/status`
+- `GET /workers/monitor/{monitor_id}`
+- `POST /workers/action/claim`
+- `POST /workers/action/release`
+
 ## 5) Contratos MCP implementados
 
 Tools IPA v2:
@@ -94,6 +115,10 @@ Tools IPA v2:
 - `raw_action`
 - `verify_action`
 - `set_operating_mode`
+- `workers_status`
+- `workers_monitor`
+- `workers_claim_action`
+- `workers_release_action`
 
 Integración:
 - MCP enruta `do_action` hacia `/action/execute`.

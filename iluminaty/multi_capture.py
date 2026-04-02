@@ -51,13 +51,15 @@ class MultiMonitorCapture:
         self.config = base_config  # base config (used as template)
         self._captures: dict[int, ScreenCapture] = {}
         self._running = False
+        self._stop_event = threading.Event()  # for clean shutdown without sleep blocking
         self._activity_thread: Optional[threading.Thread] = None
         self._on_frame: Optional[Callable] = None
         self._active_monitor_id: int = 1
         try:
-            poll_s = float(os.environ.get("ILUMINATY_ACTIVITY_POLL_S", "0.25"))
+            poll_s = float(os.environ.get("ILUMINATY_ACTIVITY_POLL_S", "0.10"))
         except Exception:
-            poll_s = 0.25
+            poll_s = 0.10
+        # Default 100ms — catches monitor switch within one frame at 10Hz
         self._activity_poll_s = max(0.05, min(2.0, poll_s))
 
     @property
@@ -119,6 +121,7 @@ class MultiMonitorCapture:
 
         # Start all captures
         self._running = True
+        self._stop_event.clear()  # reset in case of restart
         for capture in self._captures.values():
             capture.start()
 
@@ -136,12 +139,13 @@ class MultiMonitorCapture:
             print(f"    Monitor {mid}: {cap.config.fps} fps")
 
     def stop(self):
-        """Stop all captures."""
+        """Stop all captures. stop_event ensures activity loop exits immediately."""
         self._running = False
+        self._stop_event.set()
         for capture in self._captures.values():
             capture.stop()
         if self._activity_thread:
-            self._activity_thread.join(timeout=3)
+            self._activity_thread.join(timeout=2)
         self._captures.clear()
 
     def on_frame(self, callback: Callable):
@@ -151,8 +155,10 @@ class MultiMonitorCapture:
             capture.on_frame(callback)
 
     def _activity_loop(self):
-        """Poll active window to detect which monitor is active."""
-        while self._running:
+        """Poll active window to detect which monitor is active.
+        Uses Event.wait() instead of time.sleep() so stop() unblocks instantly.
+        """
+        while self._running and not self._stop_event.is_set():
             try:
                 if _HAS_VISION:
                     win_info = get_active_window_info()
@@ -164,7 +170,8 @@ class MultiMonitorCapture:
                             self._update_fps_for_active(new_active)
             except Exception as e:
                 logger.debug("Multi-monitor activity probe failed: %s", e)
-            time.sleep(self._activity_poll_s)
+            # Event.wait blocks for poll interval but returns immediately on stop()
+            self._stop_event.wait(timeout=self._activity_poll_s)
 
     def _update_fps_for_active(self, active_id: int):
         """Active monitor gets max FPS, inactive get min FPS."""
@@ -176,6 +183,42 @@ class MultiMonitorCapture:
 
     def get_capture(self, monitor_id: int) -> Optional[ScreenCapture]:
         return self._captures.get(monitor_id)
+
+    def trigger_burst(
+        self,
+        *,
+        monitor_id: Optional[int] = None,
+        duration_ms: int = 220,
+        fps: Optional[float] = None,
+        reason: str = "motion",
+    ) -> dict:
+        """
+        Trigger short high-FPS capture on one monitor.
+        Used by IPA trigger-based capture.
+        """
+        target_id = int(monitor_id or self._active_monitor_id or 1)
+        cap = self._captures.get(target_id)
+        if not cap:
+            return {
+                "triggered": False,
+                "reason": "monitor_not_available",
+                "monitor_id": target_id,
+            }
+        if not hasattr(cap, "trigger_burst"):
+            return {
+                "triggered": False,
+                "reason": "burst_not_supported",
+                "monitor_id": target_id,
+            }
+        result = cap.trigger_burst(duration_ms=duration_ms, fps=fps, reason=reason)
+        if isinstance(result, dict):
+            result["monitor_id"] = target_id
+            return result
+        return {
+            "triggered": bool(result),
+            "monitor_id": target_id,
+            "reason": str(reason or "motion"),
+        }
 
     @property
     def active_monitor_id(self) -> int:
