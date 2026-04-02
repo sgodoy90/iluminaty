@@ -39,6 +39,7 @@ _model_name = "?"
 _backend = "?"
 _executor = ThreadPoolExecutor(max_workers=1)  # one inference at a time
 _streams: dict[str, asyncio.Queue] = {}        # stream_id -> token queue
+_iluminaty_proc = None  # subprocess handle for auto-launched ILUMINATY
 
 
 # ─── ILUMINATY API connection ─────────────────────────────────────────────────
@@ -1076,13 +1077,69 @@ async def serve_ui():
     return HTMLResponse(_HTML)
 
 
+# ─── ILUMINATY auto-launcher ──────────────────────────────────────────────────
+
+def _is_iluminaty_up() -> bool:
+    try:
+        import urllib.request
+        urllib.request.urlopen(f"{ILUMINATY_URL}/perception/world", timeout=2)
+        return True
+    except Exception:
+        return False
+
+
+def _launch_iluminaty() -> "subprocess.Popen":
+    """Start ILUMINATY IPA + VLM as a background subprocess."""
+    import subprocess
+    import os as _os
+
+    env = _os.environ.copy()
+    env.update({
+        "ILUMINATY_VLM_CAPTION":             "1",
+        "ILUMINATY_VLM_BACKEND":             "smol",
+        "ILUMINATY_VLM_MODEL":               "HuggingFaceTB/SmolVLM2-500M-Instruct",
+        "ILUMINATY_VLM_INT8":                "1",
+        "ILUMINATY_VLM_IMAGE_SIZE":          "384",
+        "ILUMINATY_VLM_MAX_TOKENS":          "64",
+        "ILUMINATY_VLM_MIN_INTERVAL_MS":     "900",
+        "ILUMINATY_VLM_KEEPALIVE_MS":        "7000",
+        "ILUMINATY_VLM_PRIORITY_THRESHOLD":  "0.55",
+        "ILUMINATY_VLM_SECONDARY_HEARTBEAT_S": "8",
+    })
+
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "iluminaty.main",
+         "--monitor", "0", "--fps", "2",
+         "--fast-loop-hz", "8", "--deep-loop-hz", "0.6"],
+        env=env,
+        cwd=str(pathlib.Path(__file__).parent.parent),
+    )
+    return proc
+
+
+def _wait_for_iluminaty(timeout_s: int = 180) -> bool:
+    """Poll until ILUMINATY responds or timeout."""
+    deadline = time.time() + timeout_s
+    dots = 0
+    while time.time() < deadline:
+        if _is_iluminaty_up():
+            print()
+            return True
+        time.sleep(3)
+        dots += 1
+        print(f"\r[IluminatyBrain] Esperando IPA{'.' * (dots % 4):<3}", end="", flush=True)
+    print()
+    return False
+
+
 # ─── Server entry point ────────────────────────────────────────────────────
 
 def main():
-    global _brain, _model_name, _backend
+    global _brain, _model_name, _backend, _iluminaty_proc
+    import atexit
 
     parser = argparse.ArgumentParser(
-        description="IluminatyBrain Web Server — chat UI en http://localhost:8421"
+        description="IluminatyBrain — Full stack: IPA + LLM + Web UI"
     )
     parser.add_argument(
         "--model", default="Qwen/Qwen2.5-3B-Instruct",
@@ -1090,49 +1147,83 @@ def main():
     )
     parser.add_argument(
         "--4bit", action="store_true", dest="load_4bit",
-        help="Cargar en INT4 (menos VRAM, recomendado para GPUs < 8GB)",
+        help="Cargar LLM en INT4 (menos VRAM, recomendado para GPUs < 8GB)",
     )
     parser.add_argument(
         "--gguf", default=None, metavar="PATH",
-        help="Cargar desde GGUF local",
+        help="Cargar LLM desde GGUF local",
     )
     parser.add_argument(
         "--checkpoint", default=None,
-        help="Cargar checkpoint fine-tuneado",
+        help="Cargar checkpoint fine-tuneado (LoRA)",
     )
     parser.add_argument(
         "--port", type=int, default=8421,
-        help="Puerto (default: 8421)",
+        help="Puerto del web server (default: 8421)",
     )
     parser.add_argument(
         "--no-browser", action="store_true",
         help="No abrir browser automaticamente",
     )
+    parser.add_argument(
+        "--no-ipa", action="store_true",
+        help="No lanzar ILUMINATY IPA automaticamente",
+    )
     args = parser.parse_args()
 
+    print()
+    print("  ==========================================")
+    print("   IluminatyBrain - Full Stack")
+    print("  ==========================================")
+    print()
+
+    # ── Step 1: Start ILUMINATY IPA (perception + actions) ────────────────
+    if not args.no_ipa:
+        if _is_iluminaty_up():
+            print("  [IPA] ILUMINATY ya está corriendo en puerto 8420")
+        else:
+            print("  [IPA] Iniciando ILUMINATY IPA (vision + acciones)...")
+            _iluminaty_proc = _launch_iluminaty()
+            atexit.register(lambda: _iluminaty_proc.terminate() if _iluminaty_proc else None)
+            print("  [IPA] Cargando SmolVLM2 + servidor de percepcion...")
+            ready = _wait_for_iluminaty(timeout_s=180)
+            if ready:
+                print("  [IPA] OK ILUMINATY listo en http://127.0.0.1:8420")
+            else:
+                print("  [IPA] WARN ILUMINATY tardo demasiado - continuando sin IPA")
+    else:
+        print("  [IPA] Modo --no-ipa: saltando ILUMINATY")
+
+    print()
+
+    # ── Step 2: Load the Brain LLM ─────────────────────────────────────────
     from iluminaty.brain_engine import BrainEngine
 
     if args.gguf:
         _model_name = pathlib.Path(args.gguf).name
-        print(f"[IluminatyBrain] Cargando GGUF: {args.gguf}")
+        print(f"  [LLM] Cargando GGUF: {args.gguf}")
         _brain = BrainEngine.from_gguf(args.gguf)
     elif args.checkpoint:
         _model_name = args.checkpoint
-        print(f"[IluminatyBrain] Cargando checkpoint: {args.checkpoint}")
+        print(f"  [LLM] Cargando checkpoint: {args.checkpoint}")
         _brain = BrainEngine.from_checkpoint(args.checkpoint)
     else:
         _model_name = args.model
-        print(f"[IluminatyBrain] Cargando {args.model} desde HuggingFace...")
+        print(f"  [LLM] Cargando {args.model}...")
         if args.load_4bit:
-            print("[IluminatyBrain] (INT4 — primera vez descarga el modelo, luego queda cacheado)")
+            print("  [LLM] (INT4 — primera vez descarga ~1.5GB, luego queda cacheado)")
         _brain = BrainEngine.from_huggingface(args.model, load_in_4bit=args.load_4bit)
 
     _backend = _brain._backend
-    print(f"[IluminatyBrain] Modelo listo — backend={_backend}")
-    print(f"[IluminatyBrain] Abriendo http://localhost:{args.port}")
+    print(f"  [LLM] OK Modelo listo - backend={_backend}")
+    print()
+
+    # ── Step 3: Start web server ───────────────────────────────────────────
+    print(f"  [WEB] Abriendo http://localhost:{args.port}")
 
     if not args.no_browser:
-        import threading, webbrowser
+        import threading
+        import webbrowser
         threading.Timer(1.5, lambda: webbrowser.open(f"http://localhost:{args.port}")).start()
 
     uvicorn.run(app, host="0.0.0.0", port=args.port, log_level="warning")
