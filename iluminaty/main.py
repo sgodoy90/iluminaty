@@ -117,6 +117,39 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--deep-loop-hz", type=float, default=1.0, help="Deep visual loop frequency (0.5-2.0)")
     parser.add_argument("--fast-loop-hz", type=float, default=10.0, help="Fast semantic loop frequency (8-12 typical)")
+
+    # ─── IluminatyBrain / LLM Loop ───
+    parser.add_argument(
+        "--llm",
+        type=str,
+        default="none",
+        choices=["none", "ollama", "claude", "openai", "kimi", "gemini"],
+        help="LLM provider for autonomous loop (default: none). Use 'ollama' for local.",
+    )
+    parser.add_argument(
+        "--llm-model",
+        type=str,
+        default=None,
+        help="Model name for --llm. Ollama: 'qwen3-vl:4b'. Claude: 'claude-sonnet-4-5'. Kimi: 'moonshot-v1-8k'.",
+    )
+    parser.add_argument(
+        "--llm-key",
+        type=str,
+        default=None,
+        help="API key for cloud LLMs (claude/openai/kimi). Not needed for ollama.",
+    )
+    parser.add_argument(
+        "--goal",
+        type=str,
+        default="Help the user with what you see on screen",
+        help="Natural language goal for the LLM loop (default: observe and suggest).",
+    )
+    parser.add_argument(
+        "--ollama-url",
+        type=str,
+        default="http://localhost:11434",
+        help="Ollama server URL (default: http://localhost:11434).",
+    )
     return parser
 
 
@@ -235,10 +268,43 @@ def main():
         audio_capture.start()
         print(f"  Audio capture started ({args.audio} mode).")
     print("  Capture started. ILUMINATY is watching.\n")
-    
+
+    # ─── IluminatyBrain LLM Loop (opcional) ───
+    _llm_loop = None
+    if args.llm != "none":
+        try:
+            from iluminaty.llm_loop import LLMLoop
+            _default_models = {
+                "ollama": "qwen3-vl:4b",
+                "claude": "claude-sonnet-4-5",
+                "openai": "gpt-4o-mini",
+                "kimi": "moonshot-v1-8k",
+                "gemini": "gemini-2.0-flash",
+            }
+            _model = args.llm_model or _default_models.get(args.llm, "")
+            _llm_loop = LLMLoop.from_config(
+                provider=args.llm,
+                model=_model,
+                goal=args.goal,
+                api_url=f"http://{args.host}:{args.port}",
+                api_key=args.api_key or "",
+                llm_key=args.llm_key or "",
+                ollama_url=args.ollama_url,
+                autonomy=args.autonomy,
+            )
+            import time as _time
+            _time.sleep(1.5)  # let server boot before first tick
+            _llm_loop.start()
+            print(f"  IluminatyBrain: {args.llm} / {_model} | goal: {args.goal}")
+            print(f"  Autonomy: {args.autonomy} | type 'stop' to halt brain\n")
+        except Exception as e:
+            print(f"  IluminatyBrain: failed to start ({e})")
+
     # ─── Cleanup en SIGINT ───
     def cleanup(sig, frame):
         print("\n  Shutting down... flushing buffers (RAM cleared)")
+        if _llm_loop:
+            _llm_loop.stop()
         capture.stop()
         if audio_capture:
             audio_capture.stop()

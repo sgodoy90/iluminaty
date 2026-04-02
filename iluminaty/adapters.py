@@ -441,12 +441,228 @@ class GenericAdapter(BaseAdapter):
             )
 
 
+# ─── Ollama Adapter ───────────────────────────────────────────────────────────
+
+class OllamaAdapter(BaseAdapter):
+    """
+    Local LLM via Ollama (http://localhost:11434).
+    Supports any model pulled with `ollama pull <model>`.
+    No API key needed — runs 100% local.
+
+    Compatible models on RTX 3070 (8GB):
+      qwen3-vl:4b     — multimodal, 3.3GB  ← recommended
+      qwen2.5:7b      — text only,  4.7GB
+      qwen3:4b        — text only,  2.5GB
+    """
+
+    def __init__(self, api_key: str = "", model: str = "qwen3-vl:4b",
+                 base_url: str = "http://localhost:11434"):
+        super().__init__(api_key="", model=model)
+        self._base_url = base_url.rstrip("/")
+        self._model = model
+
+    def connect(self) -> bool:
+        try:
+            import urllib.request
+            req = urllib.request.Request(f"{self._base_url}/api/tags")
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                import json
+                data = json.loads(resp.read())
+                available = [m["name"] for m in data.get("models", [])]
+                if self._model not in available:
+                    # try prefix match (e.g. "qwen3-vl" matches "qwen3-vl:4b")
+                    base = self._model.split(":")[0]
+                    match = next((m for m in available if m.startswith(base)), None)
+                    if match:
+                        self._model = match
+                self._connected = True
+                return True
+        except Exception as e:
+            logger.warning("Ollama connect failed: %s", e)
+            self._connected = False
+            return False
+
+    def ask(self, prompt: str, system: str = "") -> str:
+        """Simple text completion — returns response string."""
+        resp = self.send_frame(b"", prompt=prompt, system_prompt=system)
+        return resp.text if resp else ""
+
+    def send_frame(self, frame_bytes: bytes, prompt: str = "",
+                   mime_type: str = "image/webp",
+                   system_prompt: str = "") -> Optional[AIResponse]:
+        """
+        Send prompt (+ optional image) to Ollama.
+        Uses /api/generate with stream=True to handle qwen3 thinking mode correctly.
+        If frame_bytes is non-empty and model is multimodal, attaches the image.
+        """
+        import urllib.request
+        import json
+        import base64
+
+        start = time.time()
+
+        # Build full prompt string (qwen3 responds best to direct prompts)
+        if system_prompt and prompt:
+            full_prompt = f"{system_prompt}\n\n{prompt}"
+        elif system_prompt:
+            full_prompt = system_prompt
+        else:
+            full_prompt = prompt
+
+        payload: dict = {
+            "model": self._model,
+            "prompt": full_prompt,
+            "stream": True,
+            "options": {
+                "temperature": 0.05,
+                "num_predict": 256,
+            },
+        }
+
+        # Attach image if provided and non-empty
+        if frame_bytes:
+            img_b64 = base64.b64encode(frame_bytes).decode("ascii")
+            payload["images"] = [img_b64]
+
+        body = json.dumps(payload).encode()
+
+        try:
+            req = urllib.request.Request(
+                f"{self._base_url}/api/generate",
+                data=body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            tokens_collected = []
+            total_in = 0
+            total_out = 0
+            with urllib.request.urlopen(req, timeout=90) as resp:
+                for line in resp:
+                    if not line.strip():
+                        continue
+                    try:
+                        chunk = json.loads(line)
+                    except Exception:
+                        continue
+                    tok = chunk.get("response", "")
+                    if tok:
+                        tokens_collected.append(tok)
+                    if chunk.get("done"):
+                        total_in = chunk.get("prompt_eval_count", 0) or 0
+                        total_out = chunk.get("eval_count", 0) or 0
+                        break
+
+            text = "".join(tokens_collected)
+            return AIResponse(
+                text=text,
+                provider="ollama",
+                model=self._model,
+                latency_ms=round((time.time() - start) * 1000, 1),
+                tokens_used=total_in + total_out,
+            )
+        except Exception as e:
+            logger.error("Ollama send_frame failed: %s", e)
+            return None
+
+    def disconnect(self):
+        self._connected = False
+
+
+# ─── Kimi API Adapter (OpenAI-compatible) ────────────────────────────────────
+
+class KimiAdapter(BaseAdapter):
+    """
+    Moonshot AI Kimi K2 / K2.5 via API.
+    OpenAI-compatible endpoint — 10x cheaper than Claude.
+    Requires API key from platform.moonshot.ai
+
+    Models:
+      moonshot-v1-8k    — fast, cheap ($0.15/M tokens)
+      kimi-k2-instruct  — agentic, coding ($0.60/M tokens)
+    """
+
+    def __init__(self, api_key: str, model: str = "moonshot-v1-8k"):
+        super().__init__(api_key=api_key, model=model)
+        self._base_url = "https://api.moonshot.cn/v1"
+
+    def connect(self) -> bool:
+        self._connected = bool(self.api_key)
+        return self._connected
+
+    def ask(self, prompt: str, system: str = "") -> str:
+        resp = self.send_frame(b"", prompt=prompt, system_prompt=system)
+        return resp.text if resp else ""
+
+    def send_frame(self, frame_bytes: bytes, prompt: str = "",
+                   mime_type: str = "image/webp",
+                   system_prompt: str = "") -> Optional[AIResponse]:
+        import urllib.request
+        import json
+        import base64
+
+        start = time.time()
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+
+        if frame_bytes:
+            img_b64 = base64.b64encode(frame_bytes).decode("ascii")
+            messages.append({
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{img_b64}"}},
+                    {"type": "text", "text": prompt or "What do you see?"},
+                ],
+            })
+        else:
+            messages.append({"role": "user", "content": prompt})
+
+        body = json.dumps({
+            "model": self.model,
+            "messages": messages,
+            "temperature": 0.1,
+            "max_tokens": 256,
+        }).encode()
+
+        try:
+            req = urllib.request.Request(
+                f"{self._base_url}/chat/completions",
+                data=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {self.api_key}",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read())
+                text = data["choices"][0]["message"]["content"]
+                usage = data.get("usage", {})
+                return AIResponse(
+                    text=text,
+                    provider="kimi",
+                    model=self.model,
+                    latency_ms=round((time.time() - start) * 1000, 1),
+                    tokens_used=usage.get("total_tokens", 0),
+                )
+        except Exception as e:
+            logger.error("Kimi API send_frame failed: %s", e)
+            return None
+
+    def disconnect(self):
+        self._connected = False
+
+
 # ─── Adapter Factory ───
 
 ADAPTERS = {
     "gemini": GeminiLiveAdapter,
     "openai": OpenAIAdapter,
     "claude": ClaudeAdapter,
+    "ollama": OllamaAdapter,
+    "kimi": KimiAdapter,
+    "generic": GenericAdapter,
+}
     "generic": GenericAdapter,
 }
 
