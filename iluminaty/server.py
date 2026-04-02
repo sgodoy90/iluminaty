@@ -19,6 +19,7 @@ Headers de seguridad:
 
 import asyncio
 import base64
+import io
 import logging
 import time
 from contextlib import asynccontextmanager
@@ -313,6 +314,151 @@ def _monitor_layout_snapshot() -> list[dict]:
     except Exception as e:
         logger.debug("Monitor layout snapshot via mss failed: %s", e)
         return []
+
+
+def _monitor_geometry(monitor_id: Optional[int]) -> Optional[dict]:
+    if monitor_id is None:
+        return None
+    try:
+        target = int(monitor_id)
+    except Exception:
+        return None
+    if target <= 0:
+        return None
+    for mon in _monitor_layout_snapshot():
+        try:
+            if int(mon.get("id", 0)) == target:
+                return mon
+        except Exception:
+            continue
+    return None
+
+
+def _map_slot_region_to_monitor_native(
+    *,
+    slot_width: int,
+    slot_height: int,
+    monitor_width: int,
+    monitor_height: int,
+    region_x: int,
+    region_y: int,
+    region_w: int,
+    region_h: int,
+) -> tuple[int, int, int, int]:
+    """Map region coordinates from slot space (possibly downscaled) to native monitor space."""
+    sw = max(1, int(slot_width))
+    sh = max(1, int(slot_height))
+    mw = max(1, int(monitor_width))
+    mh = max(1, int(monitor_height))
+
+    rx = int(region_x)
+    ry = int(region_y)
+    rw = int(region_w)
+    rh = int(region_h)
+
+    scale_x = float(mw) / float(sw)
+    scale_y = float(mh) / float(sh)
+
+    nx = int(round(rx * scale_x))
+    ny = int(round(ry * scale_y))
+    nw = int(round(rw * scale_x))
+    nh = int(round(rh * scale_y))
+
+    nx = max(0, min(nx, mw - 1))
+    ny = max(0, min(ny, mh - 1))
+    nw = max(1, min(nw, mw - nx))
+    nh = max(1, min(nh, mh - ny))
+    return nx, ny, nw, nh
+
+
+def _native_capture_rect_bytes(left: int, top: int, width: int, height: int) -> Optional[bytes]:
+    w = max(1, int(width))
+    h = max(1, int(height))
+    l = int(left)
+    t = int(top)
+    try:
+        import mss
+        from PIL import Image
+
+        with mss.mss() as sct:
+            raw = sct.grab({"left": l, "top": t, "width": w, "height": h})
+        img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=92)
+        return buf.getvalue()
+    except Exception as e:
+        logger.debug("Native rect capture failed (%s,%s %sx%s): %s", l, t, w, h, e)
+        return None
+
+
+def _native_capture_monitor_bytes(monitor_id: Optional[int]) -> Optional[bytes]:
+    mon = _monitor_geometry(monitor_id)
+    if not mon:
+        return None
+    return _native_capture_rect_bytes(
+        left=int(mon.get("left", 0)),
+        top=int(mon.get("top", 0)),
+        width=int(mon.get("width", 1)),
+        height=int(mon.get("height", 1)),
+    )
+
+
+def _native_capture_active_window_bytes(preferred_monitor_id: Optional[int] = None) -> tuple[Optional[bytes], Optional[int]]:
+    from .vision import get_active_window_info
+
+    info = get_active_window_info() or {}
+    bounds = info.get("bounds") or {}
+    try:
+        left = int(bounds.get("left", 0))
+        top = int(bounds.get("top", 0))
+        width = int(bounds.get("width", 0))
+        height = int(bounds.get("height", 0))
+    except Exception:
+        return None, None
+    if width <= 0 or height <= 0:
+        return None, None
+
+    win_mid = _monitor_id_for_rect(left, top, width, height)
+    if preferred_monitor_id is not None and win_mid is not None and int(win_mid) != int(preferred_monitor_id):
+        return None, win_mid
+
+    payload = _native_capture_rect_bytes(left=left, top=top, width=width, height=height)
+    return payload, win_mid
+
+
+def _native_capture_region_from_slot(
+    *,
+    slot: FrameSlot,
+    monitor_id: Optional[int],
+    region_x: int,
+    region_y: int,
+    region_w: int,
+    region_h: int,
+) -> tuple[Optional[bytes], Optional[dict]]:
+    mon = _monitor_geometry(monitor_id)
+    if not mon:
+        return None, None
+
+    nx, ny, nw, nh = _map_slot_region_to_monitor_native(
+        slot_width=int(getattr(slot, "width", 0) or 0),
+        slot_height=int(getattr(slot, "height", 0) or 0),
+        monitor_width=int(mon.get("width", 0) or 0),
+        monitor_height=int(mon.get("height", 0) or 0),
+        region_x=int(region_x),
+        region_y=int(region_y),
+        region_w=int(region_w),
+        region_h=int(region_h),
+    )
+    gx = int(mon.get("left", 0)) + nx
+    gy = int(mon.get("top", 0)) + ny
+    payload = _native_capture_rect_bytes(left=gx, top=gy, width=nw, height=nh)
+    if not payload:
+        return None, None
+    return payload, {
+        "slot_region": {"x": int(region_x), "y": int(region_y), "w": int(region_w), "h": int(region_h)},
+        "native_monitor_region": {"x": nx, "y": ny, "w": nw, "h": nh},
+        "native_desktop_region": {"x": gx, "y": gy, "w": nw, "h": nh},
+    }
 
 
 def _intersection_area(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> int:
@@ -1300,6 +1446,8 @@ async def vision_ocr(
     region_w: Optional[int] = Query(None),
     region_h: Optional[int] = Query(None),
     monitor_id: Optional[int] = Query(None, description="Optional monitor id. Defaults to active monitor."),
+    native: bool = Query(False, description="Use native-resolution capture for OCR when possible."),
+    native_window: bool = Query(False, description="With native=true and no region, OCR active window at native resolution."),
     x_api_key: Optional[str] = Header(None),
 ):
     """
@@ -1312,18 +1460,72 @@ async def vision_ocr(
 
     slot, resolved_mid = _latest_slot_for_monitor(monitor_id)
     if not slot:
+        if monitor_id is not None:
+            raise HTTPException(404, f"No frames in buffer for monitor {int(monitor_id)}")
         raise HTTPException(404, "No frames in buffer")
 
-    if all(v is not None for v in [region_x, region_y, region_w, region_h]):
-        result = _state.vision.ocr.extract_region(slot.frame_bytes, region_x, region_y, region_w, region_h)
+    has_region = all(v is not None for v in [region_x, region_y, region_w, region_h])
+    native_used = False
+    source = "buffer_frame"
+    region_mapping = None
+    ocr_bytes = slot.frame_bytes
+
+    if native:
+        try:
+            if has_region:
+                payload, mapping = _native_capture_region_from_slot(
+                    slot=slot,
+                    monitor_id=resolved_mid,
+                    region_x=int(region_x or 0),
+                    region_y=int(region_y or 0),
+                    region_w=int(region_w or 0),
+                    region_h=int(region_h or 0),
+                )
+                if payload:
+                    ocr_bytes = payload
+                    native_used = True
+                    source = "native_region"
+                    region_mapping = mapping
+            elif native_window:
+                payload, win_mid = _native_capture_active_window_bytes(preferred_monitor_id=resolved_mid)
+                if payload:
+                    ocr_bytes = payload
+                    native_used = True
+                    source = "native_window"
+                    if win_mid is not None:
+                        resolved_mid = int(win_mid)
+            else:
+                payload = _native_capture_monitor_bytes(resolved_mid)
+                if payload:
+                    ocr_bytes = payload
+                    native_used = True
+                    source = "native_monitor"
+        except Exception as e:
+            logger.debug("Native OCR capture path failed: %s", e)
+
+    if has_region and not native_used:
+        # Legacy behavior: region over buffered frame.
+        result = _state.vision.ocr.extract_region(
+            slot.frame_bytes,
+            int(region_x or 0),
+            int(region_y or 0),
+            int(region_w or 0),
+            int(region_h or 0),
+        )
+        source = "buffer_region"
     else:
-        result = _state.vision.ocr.extract_text(slot.frame_bytes)
+        result = _state.vision.ocr.extract_text(ocr_bytes)
 
     if isinstance(result, dict):
         result.setdefault(
             "monitor_id",
             int(getattr(slot, "monitor_id", resolved_mid or 0) or (resolved_mid or 0)),
         )
+        result["native_requested"] = bool(native)
+        result["native_used"] = bool(native_used)
+        result["ocr_source"] = source
+        if region_mapping is not None:
+            result["region_mapping"] = region_mapping
     return result
 
 
