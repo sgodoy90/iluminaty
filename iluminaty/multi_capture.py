@@ -13,6 +13,7 @@ IPA v2: Auto-detects all connected monitors and captures each independently.
 import time
 import logging
 import threading
+import os
 from typing import Optional, Callable
 
 import mss
@@ -53,6 +54,11 @@ class MultiMonitorCapture:
         self._activity_thread: Optional[threading.Thread] = None
         self._on_frame: Optional[Callable] = None
         self._active_monitor_id: int = 1
+        try:
+            poll_s = float(os.environ.get("ILUMINATY_ACTIVITY_POLL_S", "0.25"))
+        except Exception:
+            poll_s = 0.25
+        self._activity_poll_s = max(0.05, min(2.0, poll_s))
 
     @property
     def is_running(self) -> bool:
@@ -81,6 +87,15 @@ class MultiMonitorCapture:
         if not monitors:
             # Fallback: single capture on monitor 1
             monitors = [type('M', (), {'id': 1})()]
+        else:
+            try:
+                active = self.monitor_mgr.get_active_monitor()
+                if active:
+                    self._active_monitor_id = int(active.id)
+                else:
+                    self._active_monitor_id = int(monitors[0].id)
+            except Exception:
+                self._active_monitor_id = int(monitors[0].id)
 
         for mon in monitors:
             config = CaptureConfig(
@@ -94,6 +109,8 @@ class MultiMonitorCapture:
                 min_fps=self.config.min_fps,
                 max_fps=self.config.max_fps,
                 smart_quality=self.config.smart_quality,
+                smart_quality_sample_every=self.config.smart_quality_sample_every,
+                webp_method=self.config.webp_method,
             )
             capture = ScreenCapture(buffer=self.buffer, config=config)
             if self._on_frame:
@@ -134,7 +151,7 @@ class MultiMonitorCapture:
             capture.on_frame(callback)
 
     def _activity_loop(self):
-        """Poll active window every 1s to detect which monitor is active."""
+        """Poll active window to detect which monitor is active."""
         while self._running:
             try:
                 if _HAS_VISION:
@@ -147,7 +164,7 @@ class MultiMonitorCapture:
                             self._update_fps_for_active(new_active)
             except Exception as e:
                 logger.debug("Multi-monitor activity probe failed: %s", e)
-            time.sleep(1.0)
+            time.sleep(self._activity_poll_s)
 
     def _update_fps_for_active(self, active_id: int):
         """Active monitor gets max FPS, inactive get min FPS."""

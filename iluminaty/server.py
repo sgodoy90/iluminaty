@@ -140,6 +140,7 @@ def _frame_to_json(slot: FrameSlot, include_base64: bool = False) -> dict:
         "format": slot.mime_type,
         "change_score": slot.change_score,
         "region": slot.region,
+        "monitor_id": int(getattr(slot, "monitor_id", 0)),
     }
     if include_base64:
         result["image_base64"] = base64.b64encode(slot.frame_bytes).decode("ascii")
@@ -150,6 +151,233 @@ def _frame_to_json(slot: FrameSlot, include_base64: bool = False) -> dict:
 def _check_auth(api_key: Optional[str]):
     if _state.api_key and api_key != _state.api_key:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
+
+
+def _resolve_active_monitor_id() -> Optional[int]:
+    """Best-effort active monitor id for multi-monitor setups."""
+    # Prefer capture scheduler active monitor when available.
+    if _state.capture is not None and hasattr(_state.capture, "active_monitor_id"):
+        try:
+            active_id = int(getattr(_state.capture, "active_monitor_id"))
+            if active_id > 0:
+                return active_id
+        except Exception:
+            pass
+
+    if not _state.monitor_mgr:
+        return None
+
+    # Detect from active window center.
+    try:
+        from .vision import get_active_window_info
+        win = get_active_window_info() or {}
+        bounds = win.get("bounds") or {}
+        if bounds:
+            active_id = int(_state.monitor_mgr.detect_active_from_window(bounds))
+            if active_id > 0:
+                return active_id
+    except Exception as e:
+        logger.debug("Active monitor detection from window failed: %s", e)
+
+    # Fallback to monitor manager active monitor.
+    try:
+        active = _state.monitor_mgr.get_active_monitor()
+        if active:
+            return int(active.id)
+    except Exception:
+        pass
+    return None
+
+
+def _monitor_offset(monitor_id: int) -> Optional[tuple[int, int]]:
+    mid = int(monitor_id)
+    if mid <= 0:
+        return None
+
+    if _state.monitor_mgr:
+        try:
+            _state.monitor_mgr.refresh()
+            mon = _state.monitor_mgr.get_monitor(mid)
+            if mon:
+                return int(mon.left), int(mon.top)
+        except Exception as e:
+            logger.debug("MonitorManager offset lookup failed for monitor %s: %s", mid, e)
+
+    # Fallback if monitor manager is unavailable or stale.
+    try:
+        import mss
+        with mss.mss() as sct:
+            if 0 <= mid < len(sct.monitors):
+                mon = sct.monitors[mid]
+                return int(mon["left"]), int(mon["top"])
+    except Exception as e:
+        logger.debug("mss offset lookup failed for monitor %s: %s", mid, e)
+    return None
+
+
+def _translate_click_coords(
+    x: int,
+    y: int,
+    monitor_id: Optional[int],
+    relative_to_monitor: bool,
+) -> tuple[int, int]:
+    if not relative_to_monitor or monitor_id is None:
+        return int(x), int(y)
+    offset = _monitor_offset(int(monitor_id))
+    if not offset:
+        return int(x), int(y)
+    ox, oy = offset
+    return int(ox + x), int(oy + y)
+
+
+def _latest_slot_for_monitor(
+    monitor_id: Optional[int] = None,
+) -> tuple[Optional[FrameSlot], Optional[int]]:
+    if not _state.buffer:
+        return None, None
+
+    resolved_mid: Optional[int] = None
+    if monitor_id is not None:
+        try:
+            resolved_mid = int(monitor_id)
+        except Exception:
+            resolved_mid = None
+
+    if resolved_mid is None:
+        resolved_mid = _resolve_active_monitor_id()
+
+    if resolved_mid is not None and hasattr(_state.buffer, "get_latest_for_monitor"):
+        slot = _state.buffer.get_latest_for_monitor(int(resolved_mid))
+        if slot:
+            return slot, int(getattr(slot, "monitor_id", resolved_mid) or resolved_mid)
+
+    slot = _state.buffer.get_latest()
+    if slot:
+        return slot, int(getattr(slot, "monitor_id", resolved_mid or 0) or (resolved_mid or 0))
+    return None, resolved_mid
+
+
+def _monitor_layout_snapshot() -> list[dict]:
+    if _state.monitor_mgr:
+        try:
+            _state.monitor_mgr.refresh()
+            return [
+                {
+                    "id": int(m.id),
+                    "left": int(m.left),
+                    "top": int(m.top),
+                    "width": int(m.width),
+                    "height": int(m.height),
+                    "right": int(m.left + m.width),
+                    "bottom": int(m.top + m.height),
+                    "is_primary": bool(m.is_primary),
+                    "is_active": bool(m.is_active),
+                }
+                for m in _state.monitor_mgr.monitors
+            ]
+        except Exception as e:
+            logger.debug("Monitor layout snapshot via MonitorManager failed: %s", e)
+
+    # Fallback to mss if monitor manager is unavailable.
+    try:
+        import mss
+        with mss.mss() as sct:
+            layout = []
+            for i, mon in enumerate(sct.monitors):
+                if i == 0:
+                    continue
+                left = int(mon["left"])
+                top = int(mon["top"])
+                width = int(mon["width"])
+                height = int(mon["height"])
+                layout.append(
+                    {
+                        "id": i,
+                        "left": left,
+                        "top": top,
+                        "width": width,
+                        "height": height,
+                        "right": left + width,
+                        "bottom": top + height,
+                        "is_primary": i == 1,
+                        "is_active": False,
+                    }
+                )
+            return layout
+    except Exception as e:
+        logger.debug("Monitor layout snapshot via mss failed: %s", e)
+        return []
+
+
+def _intersection_area(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> int:
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    ix1 = max(ax1, bx1)
+    iy1 = max(ay1, by1)
+    ix2 = min(ax2, bx2)
+    iy2 = min(ay2, by2)
+    if ix2 <= ix1 or iy2 <= iy1:
+        return 0
+    return int((ix2 - ix1) * (iy2 - iy1))
+
+
+def _monitor_id_for_rect(left: int, top: int, width: int, height: int) -> Optional[int]:
+    layout = _monitor_layout_snapshot()
+    if not layout:
+        return None
+
+    w = max(1, int(width))
+    h = max(1, int(height))
+    rect = (int(left), int(top), int(left) + w, int(top) + h)
+    cx = int(left) + (w // 2)
+    cy = int(top) + (h // 2)
+
+    # Fast path: window center in monitor bounds.
+    for mon in layout:
+        if mon["left"] <= cx < mon["right"] and mon["top"] <= cy < mon["bottom"]:
+            return int(mon["id"])
+
+    # Fallback: max intersection area.
+    best_id = None
+    best_area = 0
+    for mon in layout:
+        area = _intersection_area(
+            rect,
+            (mon["left"], mon["top"], mon["right"], mon["bottom"]),
+        )
+        if area > best_area:
+            best_area = area
+            best_id = int(mon["id"])
+    if best_id is not None:
+        return best_id
+
+    # Last fallback: nearest monitor by center distance.
+    best_dist = None
+    for mon in layout:
+        mcx = int(mon["left"]) + int(mon["width"]) // 2
+        mcy = int(mon["top"]) + int(mon["height"]) // 2
+        dist = abs(mcx - cx) + abs(mcy - cy)
+        if best_dist is None or dist < best_dist:
+            best_dist = dist
+            best_id = int(mon["id"])
+    return best_id
+
+
+def _is_system_noise_window(payload: dict) -> bool:
+    title = str(payload.get("title", "")).strip().lower()
+    if not title:
+        return True
+    noisy_titles = (
+        "program manager",
+        "nvidia geforce overlay",
+        "experiencia de entrada de windows",
+        "windows input experience",
+        "msctfime ui",
+    )
+    for marker in noisy_titles:
+        if marker in title:
+            return True
+    return False
 
 
 def _normalize_operating_mode(mode: Optional[str]) -> str:
@@ -624,6 +852,7 @@ async def buffer_stats(x_api_key: Optional[str] = Header(None)):
 @app.get("/frame/latest")
 async def frame_latest(
     base64_encode: bool = Query(False, alias="base64"),
+    monitor_id: Optional[int] = Query(None, description="Optional monitor id. Defaults to latest global frame."),
     x_api_key: Optional[str] = Header(None),
 ):
     """Último frame. Sin base64 devuelve JPEG raw. Con base64 devuelve JSON."""
@@ -631,7 +860,10 @@ async def frame_latest(
     if not _state.buffer:
         raise HTTPException(503, "Buffer not initialized")
     
-    slot = _state.buffer.get_latest()
+    if monitor_id is not None and hasattr(_state.buffer, "get_latest_for_monitor"):
+        slot = _state.buffer.get_latest_for_monitor(int(monitor_id))
+    else:
+        slot = _state.buffer.get_latest()
     if not slot:
         raise HTTPException(404, "No frames in buffer")
     
@@ -647,6 +879,7 @@ async def frame_latest(
                 "X-Frame-Width": str(slot.width),
                 "X-Frame-Height": str(slot.height),
                 "X-Format": slot.mime_type,
+                "X-Monitor-Id": str(getattr(slot, "monitor_id", 0)),
             },
         )
 
@@ -655,6 +888,7 @@ async def frame_latest(
 async def frames(
     last: Optional[int] = Query(None, ge=1, le=100),
     seconds: Optional[float] = Query(None, ge=0.1, le=300),
+    monitor_id: Optional[int] = Query(None, description="Optional monitor id filter."),
     include_images: bool = Query(False),
     x_api_key: Optional[str] = Header(None),
 ):
@@ -674,9 +908,20 @@ async def frames(
         slots = _state.buffer.get_latest_n(last)
     else:
         slots = _state.buffer.get_latest_n(5)
-    
+
+    if monitor_id is not None:
+        try:
+            mid = int(monitor_id)
+            slots = [s for s in slots if int(getattr(s, "monitor_id", 0)) == mid]
+        except Exception:
+            slots = []
+
+    if last is not None and monitor_id is not None and len(slots) > int(last):
+        slots = slots[-int(last):]
+
     return {
         "count": len(slots),
+        "monitor_id": int(monitor_id) if monitor_id is not None else None,
         "frames": [_frame_to_json(s, include_base64=include_images) for s in slots],
     }
 
@@ -994,6 +1239,7 @@ def init_server(
 async def vision_snapshot(
     ocr: bool = Query(True),
     include_image: bool = Query(True),
+    monitor_id: Optional[int] = Query(None, description="Optional monitor id. Defaults to active monitor."),
     x_api_key: Optional[str] = Header(None),
 ):
     """
@@ -1010,12 +1256,14 @@ async def vision_snapshot(
     if not _state.buffer or not _state.vision:
         raise HTTPException(503, "Not initialized")
 
-    slot = _state.buffer.get_latest()
+    slot, resolved_mid = _latest_slot_for_monitor(monitor_id)
     if not slot:
         raise HTTPException(404, "No frames in buffer")
 
     enriched = _state.vision.enrich_frame(slot, run_ocr=ocr)
-    return JSONResponse(enriched.to_dict(include_image=include_image))
+    payload = enriched.to_dict(include_image=include_image)
+    payload["monitor_id"] = int(getattr(slot, "monitor_id", resolved_mid or 0) or (resolved_mid or 0))
+    return JSONResponse(payload)
 
 
 @app.get("/vision/ocr")
@@ -1024,6 +1272,7 @@ async def vision_ocr(
     region_y: Optional[int] = Query(None),
     region_w: Optional[int] = Query(None),
     region_h: Optional[int] = Query(None),
+    monitor_id: Optional[int] = Query(None, description="Optional monitor id. Defaults to active monitor."),
     x_api_key: Optional[str] = Header(None),
 ):
     """
@@ -1034,7 +1283,7 @@ async def vision_ocr(
     if not _state.buffer or not _state.vision:
         raise HTTPException(503, "Not initialized")
 
-    slot = _state.buffer.get_latest()
+    slot, resolved_mid = _latest_slot_for_monitor(monitor_id)
     if not slot:
         raise HTTPException(404, "No frames in buffer")
 
@@ -1043,6 +1292,11 @@ async def vision_ocr(
     else:
         result = _state.vision.ocr.extract_text(slot.frame_bytes)
 
+    if isinstance(result, dict):
+        result.setdefault(
+            "monitor_id",
+            int(getattr(slot, "monitor_id", resolved_mid or 0) or (resolved_mid or 0)),
+        )
     return result
 
 
@@ -1051,12 +1305,24 @@ async def vision_window(x_api_key: Optional[str] = Header(None)):
     """Info de la ventana activa actual."""
     _check_auth(x_api_key)
     from .vision import get_active_window_info
-    return get_active_window_info()
+    info = get_active_window_info() or {}
+    bounds = info.get("bounds") or {}
+    if bounds:
+        monitor_id = _monitor_id_for_rect(
+            int(bounds.get("left", 0)),
+            int(bounds.get("top", 0)),
+            int(bounds.get("width", 0)),
+            int(bounds.get("height", 0)),
+        )
+        if monitor_id is not None:
+            info["monitor_id"] = int(monitor_id)
+    return info
 
 
 @app.get("/vision/diff")
 async def vision_diff(
     include_deltas: bool = Query(False),
+    monitor_id: Optional[int] = Query(None, description="Optional monitor id. Defaults to active monitor."),
     x_api_key: Optional[str] = Header(None),
 ):
     """
@@ -1068,7 +1334,7 @@ async def vision_diff(
     if not _state.buffer or not _state.diff:
         raise HTTPException(503, "Not initialized")
 
-    slot = _state.buffer.get_latest()
+    slot, resolved_mid = _latest_slot_for_monitor(monitor_id)
     if not slot:
         raise HTTPException(404, "No frames in buffer")
 
@@ -1080,6 +1346,7 @@ async def vision_diff(
         "changed_cells": diff.changed_cells,
         "total_cells": diff.total_cells,
         "heatmap": diff.heatmap,
+        "monitor_id": int(getattr(slot, "monitor_id", resolved_mid or 0) or (resolved_mid or 0)),
         "description": _state.diff.diff_to_description(diff, slot.width, slot.height),
         "regions": [
             {
@@ -1735,6 +2002,59 @@ async def monitors_info(x_api_key: Optional[str] = Header(None)):
     return _state.monitor_mgr.to_dict()
 
 
+@app.get("/monitors/info")
+async def monitors_info_alias(x_api_key: Optional[str] = Header(None)):
+    """Alias compat para monitor info."""
+    return await monitors_info(x_api_key=x_api_key)
+
+
+@app.get("/spatial/state")
+async def spatial_state(
+    include_windows: bool = Query(True),
+    x_api_key: Optional[str] = Header(None),
+):
+    """
+    Unified desktop spatial snapshot for 1..N monitors.
+    Coordinates are always in virtual-desktop space.
+    """
+    _check_auth(x_api_key)
+    monitors = _monitor_layout_snapshot()
+    active_monitor_id = _resolve_active_monitor_id()
+    active_window = await windows_active(x_api_key=x_api_key)
+    windows_payload = {"windows": []}
+    if include_windows:
+        windows_payload = await windows_list(
+            monitor_id=None,
+            visible_only=True,
+            exclude_minimized=False,
+            exclude_system=True,
+            title_contains=None,
+            x_api_key=x_api_key,
+        )
+    windows = windows_payload.get("windows", [])
+    grouped: dict[str, list[dict]] = {}
+    for w in windows:
+        grouped.setdefault(str(w.get("monitor_id", 0)), []).append(w)
+
+    cursor = {}
+    if _state.actions:
+        try:
+            cursor = _state.actions.get_mouse_position()
+        except Exception:
+            cursor = {}
+
+    return {
+        "timestamp_ms": int(time.time() * 1000),
+        "monitor_count": len(monitors),
+        "active_monitor_id": int(active_monitor_id) if active_monitor_id is not None else None,
+        "monitors": monitors,
+        "active_window": active_window or {},
+        "cursor": cursor,
+        "windows": windows,
+        "windows_by_monitor": grouped,
+    }
+
+
 # ─── Plugins (F09) ───
 
 @app.get("/plugins")
@@ -2222,46 +2542,86 @@ async def action_disable(x_api_key: Optional[str] = Header(None)):
 async def action_click(
     x: int = Query(...), y: int = Query(...),
     button: str = Query("left"),
+    monitor_id: Optional[int] = Query(None, description="Optional monitor id for monitor-local coordinates"),
+    relative_to_monitor: bool = Query(False, description="If true, x/y are relative to monitor origin"),
+    focus_handle: Optional[int] = Query(None),
+    focus_title: Optional[str] = Query(None),
     x_api_key: Optional[str] = Header(None),
 ):
     _check_auth(x_api_key)
     if not _state.actions:
         raise HTTPException(503, "Actions not initialized")
-    result = _state.actions.click(x, y, button)
-    return result.to_dict()
+    if _state.windows and (focus_handle is not None or (focus_title and focus_title.strip())):
+        _state.windows.focus_window(title=focus_title, handle=focus_handle)
+        time.sleep(0.08)
+    rx, ry = _translate_click_coords(int(x), int(y), monitor_id, bool(relative_to_monitor))
+    result = _state.actions.click(rx, ry, button)
+    payload = result.to_dict()
+    payload["requested_x"] = int(x)
+    payload["requested_y"] = int(y)
+    payload["resolved_x"] = int(rx)
+    payload["resolved_y"] = int(ry)
+    payload["monitor_id"] = int(monitor_id) if monitor_id is not None else None
+    payload["relative_to_monitor"] = bool(relative_to_monitor)
+    return payload
 
 
 @app.post("/action/double_click")
 async def action_double_click(
     x: int = Query(...), y: int = Query(...),
+    monitor_id: Optional[int] = Query(None, description="Optional monitor id for monitor-local coordinates"),
+    relative_to_monitor: bool = Query(False, description="If true, x/y are relative to monitor origin"),
+    focus_handle: Optional[int] = Query(None),
+    focus_title: Optional[str] = Query(None),
     x_api_key: Optional[str] = Header(None),
 ):
     _check_auth(x_api_key)
     if not _state.actions:
         raise HTTPException(503, "Actions not initialized")
-    return _state.actions.double_click(x, y).to_dict()
+    if _state.windows and (focus_handle is not None or (focus_title and focus_title.strip())):
+        _state.windows.focus_window(title=focus_title, handle=focus_handle)
+        time.sleep(0.08)
+    rx, ry = _translate_click_coords(int(x), int(y), monitor_id, bool(relative_to_monitor))
+    result = _state.actions.double_click(rx, ry).to_dict()
+    result["requested_x"] = int(x)
+    result["requested_y"] = int(y)
+    result["resolved_x"] = int(rx)
+    result["resolved_y"] = int(ry)
+    result["monitor_id"] = int(monitor_id) if monitor_id is not None else None
+    result["relative_to_monitor"] = bool(relative_to_monitor)
+    return result
 
 
 @app.post("/action/type")
 async def action_type(
     text: str = Query(...),
     interval: float = Query(0.02),
+    focus_handle: Optional[int] = Query(None),
+    focus_title: Optional[str] = Query(None),
     x_api_key: Optional[str] = Header(None),
 ):
     _check_auth(x_api_key)
     if not _state.actions:
         raise HTTPException(503, "Actions not initialized")
+    if _state.windows and (focus_handle is not None or (focus_title and focus_title.strip())):
+        _state.windows.focus_window(title=focus_title, handle=focus_handle)
+        time.sleep(0.08)
     return _state.actions.type_text(text, interval).to_dict()
 
 
 @app.post("/action/hotkey")
 async def action_hotkey(
     keys: str = Query(..., description="Keys separated by + (e.g. ctrl+s)"),
+    focus_handle: Optional[int] = Query(None),
+    focus_title: Optional[str] = Query(None),
     x_api_key: Optional[str] = Header(None),
 ):
     _check_auth(x_api_key)
     if not _state.actions:
         raise HTTPException(503, "Actions not initialized")
+    if _state.windows and (focus_handle is not None or (focus_title and focus_title.strip())):
+        _state.windows.focus_window(title=focus_title, handle=focus_handle)
+        time.sleep(0.08)
     key_list = [k.strip() for k in keys.split("+")]
     return _state.actions.hotkey(*key_list).to_dict()
 
@@ -2270,12 +2630,30 @@ async def action_hotkey(
 async def action_scroll(
     amount: int = Query(...),
     x: Optional[int] = Query(None), y: Optional[int] = Query(None),
+    monitor_id: Optional[int] = Query(None, description="Optional monitor id for monitor-local x/y"),
+    relative_to_monitor: bool = Query(False, description="If true, x/y are relative to monitor origin"),
+    focus_handle: Optional[int] = Query(None),
+    focus_title: Optional[str] = Query(None),
     x_api_key: Optional[str] = Header(None),
 ):
     _check_auth(x_api_key)
     if not _state.actions:
         raise HTTPException(503, "Actions not initialized")
-    return _state.actions.scroll(amount, x, y).to_dict()
+    if _state.windows and (focus_handle is not None or (focus_title and focus_title.strip())):
+        _state.windows.focus_window(title=focus_title, handle=focus_handle)
+        time.sleep(0.08)
+    rx = None if x is None else int(x)
+    ry = None if y is None else int(y)
+    if rx is not None and ry is not None:
+        rx, ry = _translate_click_coords(rx, ry, monitor_id, bool(relative_to_monitor))
+    result = _state.actions.scroll(amount, rx, ry).to_dict()
+    result["requested_x"] = int(x) if x is not None else None
+    result["requested_y"] = int(y) if y is not None else None
+    result["resolved_x"] = int(rx) if rx is not None else None
+    result["resolved_y"] = int(ry) if ry is not None else None
+    result["monitor_id"] = int(monitor_id) if monitor_id is not None else None
+    result["relative_to_monitor"] = bool(relative_to_monitor)
+    return result
 
 
 @app.post("/action/drag")
@@ -2283,12 +2661,32 @@ async def action_drag(
     start_x: int = Query(...), start_y: int = Query(...),
     end_x: int = Query(...), end_y: int = Query(...),
     duration: float = Query(0.5),
+    monitor_id: Optional[int] = Query(None, description="Optional monitor id for monitor-local coordinates"),
+    relative_to_monitor: bool = Query(False, description="If true, coordinates are relative to monitor origin"),
+    focus_handle: Optional[int] = Query(None),
+    focus_title: Optional[str] = Query(None),
     x_api_key: Optional[str] = Header(None),
 ):
     _check_auth(x_api_key)
     if not _state.actions:
         raise HTTPException(503, "Actions not initialized")
-    return _state.actions.drag_drop(start_x, start_y, end_x, end_y, duration).to_dict()
+    if _state.windows and (focus_handle is not None or (focus_title and focus_title.strip())):
+        _state.windows.focus_window(title=focus_title, handle=focus_handle)
+        time.sleep(0.08)
+    sx, sy = _translate_click_coords(int(start_x), int(start_y), monitor_id, bool(relative_to_monitor))
+    ex, ey = _translate_click_coords(int(end_x), int(end_y), monitor_id, bool(relative_to_monitor))
+    result = _state.actions.drag_drop(sx, sy, ex, ey, duration).to_dict()
+    result["requested_start_x"] = int(start_x)
+    result["requested_start_y"] = int(start_y)
+    result["requested_end_x"] = int(end_x)
+    result["requested_end_y"] = int(end_y)
+    result["resolved_start_x"] = int(sx)
+    result["resolved_start_y"] = int(sy)
+    result["resolved_end_x"] = int(ex)
+    result["resolved_end_y"] = int(ey)
+    result["monitor_id"] = int(monitor_id) if monitor_id is not None else None
+    result["relative_to_monitor"] = bool(relative_to_monitor)
+    return result
 
 
 @app.get("/action/mouse")
@@ -2296,7 +2694,11 @@ async def action_mouse(x_api_key: Optional[str] = Header(None)):
     _check_auth(x_api_key)
     if not _state.actions:
         return {"x": 0, "y": 0}
-    return _state.actions.get_mouse_position()
+    pos = _state.actions.get_mouse_position()
+    mid = _monitor_id_for_rect(int(pos.get("x", 0)), int(pos.get("y", 0)), 1, 1)
+    if mid is not None:
+        pos["monitor_id"] = int(mid)
+    return pos
 
 
 @app.get("/action/log")
@@ -2398,11 +2800,49 @@ async def action_verify(
 # ─── Capa 1: Windows ───
 
 @app.get("/windows/list")
-async def windows_list(x_api_key: Optional[str] = Header(None)):
+async def windows_list(
+    monitor_id: Optional[int] = Query(None, description="Optional monitor filter"),
+    visible_only: bool = Query(True),
+    exclude_minimized: bool = Query(False),
+    exclude_system: bool = Query(True),
+    title_contains: Optional[str] = Query(None),
+    x_api_key: Optional[str] = Header(None),
+):
     _check_auth(x_api_key)
     if not _state.windows:
         return {"windows": []}
-    return {"windows": [w.to_dict() for w in _state.windows.list_windows()]}
+    items = []
+    title_filter = (title_contains or "").strip().lower()
+    for w in _state.windows.list_windows():
+        if visible_only and not bool(getattr(w, "is_visible", True)):
+            continue
+        if exclude_minimized and bool(getattr(w, "is_minimized", False)):
+            continue
+        if title_filter and title_filter not in str(getattr(w, "title", "")).lower():
+            continue
+        payload = w.to_dict()
+        mid = _monitor_id_for_rect(w.x, w.y, w.width, w.height)
+        if mid is not None:
+            payload["monitor_id"] = int(mid)
+        if exclude_system and _is_system_noise_window(payload):
+            continue
+        items.append(payload)
+
+    if monitor_id is not None:
+        try:
+            target_mid = int(monitor_id)
+            items = [w for w in items if int(w.get("monitor_id", -1)) == target_mid]
+        except Exception:
+            items = []
+
+    items.sort(
+        key=lambda w: (
+            not bool(w.get("is_visible", True)),
+            bool(w.get("is_minimized", False)),
+            -int(max(0, int(w.get("width", 0))) * max(0, int(w.get("height", 0)))),
+        )
+    )
+    return {"windows": items}
 
 
 @app.get("/windows/active")
@@ -2411,48 +2851,90 @@ async def windows_active(x_api_key: Optional[str] = Header(None)):
     if not _state.windows:
         return {}
     win = _state.windows.get_active_window()
-    return win.to_dict() if win else {}
+    if not win:
+        return {}
+    payload = win.to_dict()
+    monitor_id = _monitor_id_for_rect(win.x, win.y, win.width, win.height)
+    if monitor_id is not None:
+        payload["monitor_id"] = int(monitor_id)
+    return payload
 
 
 @app.post("/windows/focus")
 async def windows_focus(
-    title: str = Query(...),
+    title: Optional[str] = Query(None),
+    handle: Optional[int] = Query(None),
     x_api_key: Optional[str] = Header(None),
 ):
     _check_auth(x_api_key)
     if not _state.windows:
         raise HTTPException(503, "Not initialized")
-    return {"success": _state.windows.focus_window(title=title)}
+    if handle is None and not (title and title.strip()):
+        raise HTTPException(400, "Either title or handle is required")
+    return {"success": _state.windows.focus_window(title=title, handle=handle)}
 
 
 @app.post("/windows/minimize")
-async def windows_minimize(title: str = Query(...), x_api_key: Optional[str] = Header(None)):
+async def windows_minimize(
+    title: Optional[str] = Query(None),
+    handle: Optional[int] = Query(None),
+    x_api_key: Optional[str] = Header(None),
+):
     _check_auth(x_api_key)
-    return {"success": _state.windows.minimize_window(title=title) if _state.windows else False}
+    if handle is None and not (title and title.strip()):
+        raise HTTPException(400, "Either title or handle is required")
+    return {"success": _state.windows.minimize_window(title=title, handle=handle) if _state.windows else False}
 
 
 @app.post("/windows/maximize")
-async def windows_maximize(title: str = Query(...), x_api_key: Optional[str] = Header(None)):
+async def windows_maximize(
+    title: Optional[str] = Query(None),
+    handle: Optional[int] = Query(None),
+    x_api_key: Optional[str] = Header(None),
+):
     _check_auth(x_api_key)
-    return {"success": _state.windows.maximize_window(title=title) if _state.windows else False}
+    if handle is None and not (title and title.strip()):
+        raise HTTPException(400, "Either title or handle is required")
+    return {"success": _state.windows.maximize_window(title=title, handle=handle) if _state.windows else False}
 
 
 @app.post("/windows/close")
-async def windows_close(title: str = Query(...), x_api_key: Optional[str] = Header(None)):
+async def windows_close(
+    title: Optional[str] = Query(None),
+    handle: Optional[int] = Query(None),
+    x_api_key: Optional[str] = Header(None),
+):
     """DESTRUCTIVE: cierra una ventana."""
     _check_auth(x_api_key)
-    return {"success": _state.windows.close_window(title=title) if _state.windows else False}
+    if handle is None and not (title and title.strip()):
+        raise HTTPException(400, "Either title or handle is required")
+    return {"success": _state.windows.close_window(title=title, handle=handle) if _state.windows else False}
 
 
 @app.post("/windows/move")
 async def windows_move(
-    title: str = Query(...),
+    title: Optional[str] = Query(None),
+    handle: Optional[int] = Query(None),
     x: int = Query(...), y: int = Query(...),
     width: int = Query(-1), height: int = Query(-1),
+    monitor_id: Optional[int] = Query(None, description="Optional monitor id for monitor-local x/y"),
+    relative_to_monitor: bool = Query(False, description="If true, x/y are relative to monitor origin"),
     x_api_key: Optional[str] = Header(None),
 ):
     _check_auth(x_api_key)
-    return {"success": _state.windows.move_window(x, y, width, height, title=title) if _state.windows else False}
+    if handle is None and not (title and title.strip()):
+        raise HTTPException(400, "Either title or handle is required")
+    rx, ry = _translate_click_coords(int(x), int(y), monitor_id, bool(relative_to_monitor))
+    success = _state.windows.move_window(rx, ry, width, height, title=title, handle=handle) if _state.windows else False
+    return {
+        "success": bool(success),
+        "requested_x": int(x),
+        "requested_y": int(y),
+        "resolved_x": int(rx),
+        "resolved_y": int(ry),
+        "monitor_id": int(monitor_id) if monitor_id is not None else None,
+        "relative_to_monitor": bool(relative_to_monitor),
+    }
 
 
 # ─── Capa 1: Clipboard ───
@@ -2984,6 +3466,7 @@ async def tokens_reset(x_api_key: Optional[str] = Header(None)):
 @app.get("/vision/smart")
 async def vision_smart(
     mode: Optional[str] = Query(None),
+    monitor_id: Optional[int] = Query(None, description="Optional monitor id. Defaults to active monitor."),
     x_api_key: Optional[str] = Header(None),
 ):
     """
@@ -3009,7 +3492,7 @@ async def vision_smart(
             "suggestion": "Switch to text_only mode or increase budget",
         }, status_code=429)
 
-    slot = _state.buffer.get_latest()
+    slot, resolved_mid = _latest_slot_for_monitor(monitor_id)
     if not slot:
         raise HTTPException(404, "No frames in buffer")
 
@@ -3024,6 +3507,7 @@ async def vision_smart(
             "active_window": enriched.active_window,
             "ai_prompt": enriched.to_ai_prompt(),
             "change_score": enriched.change_score,
+            "monitor_id": int(getattr(slot, "monitor_id", resolved_mid or 0) or (resolved_mid or 0)),
         }
     else:
         # Resize image based on mode
@@ -3048,6 +3532,7 @@ async def vision_smart(
             d["height"] = new_size[1]
 
         d["mode"] = active_mode
+        d["monitor_id"] = int(getattr(slot, "monitor_id", resolved_mid or 0) or (resolved_mid or 0))
         result = d
 
     # Track tokens

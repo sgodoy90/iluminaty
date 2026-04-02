@@ -31,6 +31,11 @@ import os
 API_BASE = os.environ.get("ILUMINATY_API_URL", "http://127.0.0.1:8420")
 # Optional API key when ILUMINATY server auth is enabled
 API_KEY = os.environ.get("ILUMINATY_API_KEY", "")
+try:
+    API_TIMEOUT_S = float(os.environ.get("ILUMINATY_MCP_TIMEOUT_S", "12"))
+except Exception:
+    API_TIMEOUT_S = 12.0
+API_TIMEOUT_S = max(3.0, min(60.0, API_TIMEOUT_S))
 
 # ILUMINATY license key - gates MCP tools to free/pro plan
 ILUMINATY_KEY = os.environ.get("ILUMINATY_KEY", "")
@@ -44,6 +49,7 @@ FREE_MCP_TOOLS = {
     "vision_query",
     "grounding_status", "grounding_resolve", "click_grounded", "type_grounded",
     "window_minimize", "window_maximize", "window_close",
+    "move_window", "drag_screen", "spatial_state",
     "get_audio_level",
     "token_status", "set_token_mode", "set_token_budget",
 }
@@ -60,6 +66,7 @@ ALL_MCP_TOOLS = {
     "click_element", "type_text", "run_command",
     "list_windows", "find_ui_element", "read_file", "write_file",
     "window_minimize", "window_maximize", "window_close",
+    "move_window", "drag_screen", "spatial_state",
     "get_clipboard", "agent_status",
     # Human-like navigation
     "watch_screen", "focus_window", "browser_navigate", "browser_tabs",
@@ -102,7 +109,7 @@ def _api_get(path: str) -> dict:
     if API_KEY:
         headers["x-api-key"] = API_KEY
     req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req, timeout=5) as resp:
+    with urllib.request.urlopen(req, timeout=API_TIMEOUT_S) as resp:
         return json.loads(resp.read().decode())
 
 
@@ -118,7 +125,7 @@ def _api_post(path: str, body: dict | None = None) -> dict:
         req = urllib.request.Request(url, method="POST", data=data, headers=headers)
     else:
         req = urllib.request.Request(url, method="POST", data=b"", headers=headers)
-    with urllib.request.urlopen(req, timeout=5) as resp:
+    with urllib.request.urlopen(req, timeout=API_TIMEOUT_S) as resp:
         return json.loads(resp.read().decode())
 
 
@@ -145,6 +152,10 @@ TOOLS = [
                     "enum": ["text_only", "low_res", "medium_res", "full_res"],
                     "description": "Vision mode. text_only=cheapest, full_res=expensive. Default: text_only",
                     "default": "text_only",
+                },
+                "monitor": {
+                    "type": "integer",
+                    "description": "Optional monitor id. If omitted, backend uses active monitor.",
                 },
             },
         },
@@ -208,6 +219,10 @@ TOOLS = [
                     "description": "How many seconds back to look (default 10)",
                     "default": 10,
                 },
+                "monitor": {
+                    "type": "integer",
+                    "description": "Optional monitor id (1..N). If omitted, includes all monitors.",
+                },
             },
         },
     },
@@ -246,6 +261,7 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
+                "monitor": {"type": "integer", "description": "Optional monitor id (1..N)"},
                 "region_x": {"type": "integer", "description": "Region X (optional)"},
                 "region_y": {"type": "integer", "description": "Region Y (optional)"},
                 "region_w": {"type": "integer", "description": "Region width (optional)"},
@@ -537,44 +553,75 @@ TOOLS = [
     {
         "name": "list_windows",
         "description": (
-            "List all visible windows on the desktop with their titles, positions, and sizes."
+            "List windows with handle, title, position, size, and monitor_id. "
+            "Use handle-based targeting for reliable control."
         ),
         "inputSchema": {
             "type": "object",
-            "properties": {},
+            "properties": {
+                "monitor": {"type": "integer", "description": "Optional monitor id filter"},
+                "title_contains": {"type": "string", "description": "Optional title substring filter"},
+                "exclude_minimized": {"type": "boolean", "description": "Hide minimized windows", "default": True},
+            },
         },
     },
     {
         "name": "window_minimize",
-        "description": "Minimize a window by title.",
+        "description": "Minimize a window by handle or title.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "title": {"type": "string", "description": "Window title (partial match accepted by backend)"},
+                "handle": {"type": "integer", "description": "Exact window handle (preferred when available)"},
             },
-            "required": ["title"],
         },
     },
     {
         "name": "window_maximize",
-        "description": "Maximize a window by title.",
+        "description": "Maximize a window by handle or title.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "title": {"type": "string", "description": "Window title (partial match accepted by backend)"},
+                "handle": {"type": "integer", "description": "Exact window handle (preferred when available)"},
             },
-            "required": ["title"],
         },
     },
     {
         "name": "window_close",
-        "description": "Close a window by title.",
+        "description": "Close a window by handle or title.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "title": {"type": "string", "description": "Window title (partial match accepted by backend)"},
+                "handle": {"type": "integer", "description": "Exact window handle (preferred when available)"},
             },
-            "required": ["title"],
+        },
+    },
+    {
+        "name": "move_window",
+        "description": (
+            "Move/resize a window to specific desktop coordinates. "
+            "Useful to relocate windows between monitors quickly."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Window title (partial match)"},
+                "handle": {"type": "integer", "description": "Exact window handle (preferred)"},
+                "x": {"type": "integer", "description": "Target x (virtual desktop)"},
+                "y": {"type": "integer", "description": "Target y (virtual desktop)"},
+                "width": {"type": "integer", "description": "Optional width (default keep)", "default": -1},
+                "height": {"type": "integer", "description": "Optional height (default keep)", "default": -1},
+                "monitor": {"type": "integer", "description": "Optional monitor id for monitor-local coordinates"},
+                "coord_space": {
+                    "type": "string",
+                    "enum": ["global", "monitor"],
+                    "description": "global=virtual desktop coordinates, monitor=coords relative to selected monitor",
+                    "default": "global",
+                },
+            },
+            "required": ["x", "y"],
         },
     },
     {
@@ -652,8 +699,8 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "title": {"type": "string", "description": "Window title (partial match)"},
+                "handle": {"type": "integer", "description": "Exact window handle (preferred when available)"},
             },
-            "required": ["title"],
         },
     },
     {
@@ -682,8 +729,8 @@ TOOLS = [
         "name": "click_screen",
         "description": (
             "Click at a specific position on screen using REAL screen coordinates (not image coordinates). "
-            "For multi-monitor setups, coordinates span the full virtual desktop. "
-            "Use list_windows to see window positions and calculate where to click."
+            "For multi-monitor setups, coordinates span the full virtual desktop by default. "
+            "If you used see_monitor, pass monitor + coord_space='monitor' to auto-translate monitor-local coords."
         ),
         "inputSchema": {
             "type": "object",
@@ -691,8 +738,40 @@ TOOLS = [
                 "x": {"type": "integer", "description": "X coordinate (real screen pixels)"},
                 "y": {"type": "integer", "description": "Y coordinate (real screen pixels)"},
                 "button": {"type": "string", "description": "Mouse button: left, right, middle", "default": "left"},
+                "monitor": {"type": "integer", "description": "Optional monitor id when using monitor-local coordinates"},
+                "coord_space": {
+                    "type": "string",
+                    "enum": ["global", "monitor"],
+                    "description": "global=virtual desktop coordinates, monitor=coords relative to selected monitor",
+                    "default": "global",
+                },
             },
             "required": ["x", "y"],
+        },
+    },
+    {
+        "name": "drag_screen",
+        "description": (
+            "Drag from start to end coordinates. "
+            "Supports global coordinates or monitor-local coordinates."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "start_x": {"type": "integer", "description": "Drag start X"},
+                "start_y": {"type": "integer", "description": "Drag start Y"},
+                "end_x": {"type": "integer", "description": "Drag end X"},
+                "end_y": {"type": "integer", "description": "Drag end Y"},
+                "duration": {"type": "number", "description": "Drag duration seconds", "default": 0.35},
+                "monitor": {"type": "integer", "description": "Optional monitor id for monitor-local coordinates"},
+                "coord_space": {
+                    "type": "string",
+                    "enum": ["global", "monitor"],
+                    "description": "global=virtual desktop coordinates, monitor=coords relative to selected monitor",
+                    "default": "global",
+                },
+            },
+            "required": ["start_x", "start_y", "end_x", "end_y"],
         },
     },
     {
@@ -720,6 +799,15 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "amount": {"type": "integer", "description": "Scroll amount. Positive=down, negative=up. Default=3", "default": 3},
+                "x": {"type": "integer", "description": "Optional x coordinate for scroll target"},
+                "y": {"type": "integer", "description": "Optional y coordinate for scroll target"},
+                "monitor": {"type": "integer", "description": "Optional monitor id for monitor-local coordinates"},
+                "coord_space": {
+                    "type": "string",
+                    "enum": ["global", "monitor"],
+                    "description": "global=virtual desktop coordinates, monitor=coords relative to selected monitor",
+                    "default": "global",
+                },
             },
         },
     },
@@ -818,6 +906,18 @@ TOOLS = [
             "required": ["monitor"],
         },
     },
+    {
+        "name": "spatial_state",
+        "description": (
+            "Get unified desktop spatial map: monitors, active monitor/window, cursor, and windows grouped by monitor."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "include_windows": {"type": "boolean", "description": "Include full windows list", "default": True},
+            },
+        },
+    },
 ]
 
 
@@ -825,7 +925,11 @@ TOOLS = [
 
 def handle_see_screen(args: dict) -> dict:
     mode = args.get("mode", VISION_MODE)
-    data = _api_get(f"/vision/smart?mode={mode}")
+    monitor = args.get("monitor")
+    query = f"/vision/smart?mode={mode}"
+    if monitor is not None:
+        query += f"&monitor_id={int(monitor)}"
+    data = _api_get(query)
 
     if data.get("error") == "token_budget_exceeded":
         return [{"type": "text", "text": (
@@ -833,7 +937,11 @@ def handle_see_screen(args: dict) -> dict:
             f"Switch to text_only mode or increase budget with set_token_budget."
         )}]
 
-    tokens_info = f"\n\n---\n[Token mode: {mode} | ~{data.get('token_estimate', '?')} tokens | Total used: {data.get('tokens_used_total', '?')}]"
+    monitor_info = f"monitor={data.get('monitor_id', monitor if monitor is not None else 'auto')}"
+    tokens_info = (
+        f"\n\n---\n[{monitor_info} | Token mode: {mode} | "
+        f"~{data.get('token_estimate', '?')} tokens | Total used: {data.get('tokens_used_total', '?')}]"
+    )
 
     # text_only mode: just return text
     if mode == "text_only" or "image_base64" not in data:
@@ -1065,17 +1173,20 @@ def handle_watch_screen(args: dict) -> list:
     """Return last N frames as images — like watching a video replay."""
     n = min(args.get("frames", 3), 5)
     monitor = args.get("monitor")
-
-    data = _api_get(f"/frames?last={n}&include_images=true")
+    path = f"/frames?last={n}&include_images=true"
+    if monitor is not None:
+        path += f"&monitor_id={int(monitor)}"
+    data = _api_get(path)
     frames = data.get("frames", [])
 
     if not frames:
         return [{"type": "text", "text": "No frames in buffer yet."}]
 
     result = []
+    scope = f"monitor {monitor}" if monitor is not None else "all monitors"
     result.append({
         "type": "text",
-        "text": f"## Screen Replay ({len(frames)} frames)\nOldest → Newest. Watch for changes between frames.",
+        "text": f"## Screen Replay ({len(frames)} frames, {scope})\nOldest → Newest. Watch for changes between frames.",
     })
 
     for i, f in enumerate(frames):
@@ -1086,7 +1197,6 @@ def handle_watch_screen(args: dict) -> list:
         label = f"**Frame {i+1}/{len(frames)}** — {ts} | change: {change}"
 
         if img_b64:
-            # If monitor specified, we'd need per-monitor crop — for now send full frame
             result.append({"type": "text", "text": label})
             result.append({
                 "type": "image",
@@ -1134,8 +1244,12 @@ def handle_set_token_budget(args: dict) -> dict:
 
 def handle_see_changes(args: dict) -> list:
     seconds = args.get("seconds", 10)
+    monitor = args.get("monitor")
     # Get frames WITH images to actually see what changed
-    data = _api_get(f"/frames?seconds={seconds}&include_images=true")
+    path = f"/frames?seconds={seconds}&include_images=true"
+    if monitor is not None:
+        path += f"&monitor_id={int(monitor)}"
+    data = _api_get(path)
     count = data.get("count", 0)
     frames = data.get("frames", [])
 
@@ -1153,7 +1267,8 @@ def handle_see_changes(args: dict) -> list:
         step = len(significant) / 5
         significant = [significant[int(i * step)] for i in range(5)]
 
-    result = [{"type": "text", "text": f"## Screen Changes (last {seconds}s) — {count} total frames, showing {len(significant)} key frames"}]
+    scope = f"monitor {monitor}" if monitor is not None else "all monitors"
+    result = [{"type": "text", "text": f"## Screen Changes ({scope}, last {seconds}s) — {count} total frames, showing {len(significant)} key frames"}]
 
     for i, f in enumerate(significant):
         ts = f.get("timestamp_iso", "?")
@@ -1188,6 +1303,8 @@ def handle_annotate(args: dict) -> dict:
 
 def handle_read_text(args: dict) -> dict:
     params = []
+    if "monitor" in args and args["monitor"] is not None:
+        params.append(f"monitor_id={int(args['monitor'])}")
     for key in ["region_x", "region_y", "region_w", "region_h"]:
         if key in args and args[key] is not None:
             params.append(f"{key}={args[key]}")
@@ -1404,36 +1521,104 @@ def handle_run_command(args: dict) -> list:
 
 
 def handle_list_windows(args: dict) -> list:
-    data = _api_get("/windows/list")
+    monitor = args.get("monitor")
+    title_contains = (args.get("title_contains") or "").strip()
+    exclude_minimized = bool(args.get("exclude_minimized", True))
+    query = "/windows/list?visible_only=true"
+    if monitor is not None:
+        query += f"&monitor_id={int(monitor)}"
+    if title_contains:
+        query += f"&title_contains={urllib.parse.quote(title_contains)}"
+    if exclude_minimized:
+        query += "&exclude_minimized=true"
+    data = _api_get(query)
     windows = data.get("windows", [])
     lines = [f"## Windows ({len(windows)})"]
     for w in windows[:30]:
-        lines.append(f"- **{w.get('title', '?')[:60]}** (pid:{w.get('pid')}, {w.get('width')}x{w.get('height')})")
+        lines.append(
+            f"- h={w.get('handle')} | m={w.get('monitor_id', '?')} | "
+            f"**{w.get('title', '?')[:80]}** "
+            f"({w.get('x')},{w.get('y')}, {w.get('width')}x{w.get('height')}, "
+            f"min={w.get('is_minimized', False)})"
+        )
     return [{"type": "text", "text": "\n".join(lines)}]
 
 
 def handle_window_minimize(args: dict) -> list:
+    handle = args.get("handle")
     title = (args.get("title") or "").strip()
-    if not title:
-        return [{"type": "text", "text": "Error: title is required"}]
-    data = _api_post(f"/windows/minimize?title={urllib.parse.quote(title)}")
-    return [{"type": "text", "text": f"Minimize '{title}': {'SUCCESS' if data.get('success') else 'FAILED'}"}]
+    if handle is None and not title:
+        return [{"type": "text", "text": "Error: handle or title is required"}]
+    if handle is not None:
+        data = _api_post(f"/windows/minimize?handle={int(handle)}")
+        target = f"handle={int(handle)}"
+    else:
+        data = _api_post(f"/windows/minimize?title={urllib.parse.quote(title)}")
+        target = f"title='{title}'"
+    return [{"type": "text", "text": f"Minimize {target}: {'SUCCESS' if data.get('success') else 'FAILED'}"}]
 
 
 def handle_window_maximize(args: dict) -> list:
+    handle = args.get("handle")
     title = (args.get("title") or "").strip()
-    if not title:
-        return [{"type": "text", "text": "Error: title is required"}]
-    data = _api_post(f"/windows/maximize?title={urllib.parse.quote(title)}")
-    return [{"type": "text", "text": f"Maximize '{title}': {'SUCCESS' if data.get('success') else 'FAILED'}"}]
+    if handle is None and not title:
+        return [{"type": "text", "text": "Error: handle or title is required"}]
+    if handle is not None:
+        data = _api_post(f"/windows/maximize?handle={int(handle)}")
+        target = f"handle={int(handle)}"
+    else:
+        data = _api_post(f"/windows/maximize?title={urllib.parse.quote(title)}")
+        target = f"title='{title}'"
+    return [{"type": "text", "text": f"Maximize {target}: {'SUCCESS' if data.get('success') else 'FAILED'}"}]
 
 
 def handle_window_close(args: dict) -> list:
+    handle = args.get("handle")
     title = (args.get("title") or "").strip()
-    if not title:
-        return [{"type": "text", "text": "Error: title is required"}]
-    data = _api_post(f"/windows/close?title={urllib.parse.quote(title)}")
-    return [{"type": "text", "text": f"Close '{title}': {'SUCCESS' if data.get('success') else 'FAILED'}"}]
+    if handle is None and not title:
+        return [{"type": "text", "text": "Error: handle or title is required"}]
+    if handle is not None:
+        data = _api_post(f"/windows/close?handle={int(handle)}")
+        target = f"handle={int(handle)}"
+    else:
+        data = _api_post(f"/windows/close?title={urllib.parse.quote(title)}")
+        target = f"title='{title}'"
+    return [{"type": "text", "text": f"Close {target}: {'SUCCESS' if data.get('success') else 'FAILED'}"}]
+
+
+def handle_move_window(args: dict) -> list:
+    handle = args.get("handle")
+    title = (args.get("title") or "").strip()
+    if handle is None and not title:
+        return [{"type": "text", "text": "Error: handle or title is required"}]
+    x = int(args.get("x", 0))
+    y = int(args.get("y", 0))
+    width = int(args.get("width", -1))
+    height = int(args.get("height", -1))
+    monitor = args.get("monitor")
+    coord_space = str(args.get("coord_space", "global")).strip().lower()
+    if handle is not None:
+        path = f"/windows/move?handle={int(handle)}&x={x}&y={y}&width={width}&height={height}"
+        target = f"handle={int(handle)}"
+    else:
+        path = (
+            f"/windows/move?title={urllib.parse.quote(title)}"
+            f"&x={x}&y={y}&width={width}&height={height}"
+        )
+        target = f"title='{title}'"
+    if monitor is not None:
+        path += f"&monitor_id={int(monitor)}"
+    if coord_space in {"monitor", "local", "monitor_local"}:
+        path += "&relative_to_monitor=true"
+    data = _api_post(path)
+    return [{
+        "type": "text",
+        "text": (
+            f"Move {target} -> ({x},{y}) {width}x{height}: "
+            f"{'SUCCESS' if data.get('success') else 'FAILED'} "
+            f"(space={coord_space}, monitor={monitor if monitor is not None else 'auto'})"
+        ),
+    }]
 
 
 def handle_find_ui_element(args: dict) -> list:
@@ -1485,10 +1670,18 @@ def handle_agent_status(args: dict) -> list:
 
 
 def handle_focus_window(args: dict) -> list:
-    title = args.get("title", "")
-    if not title:
-        return [{"type": "text", "text": "Error: title is required"}]
-    # Try exact match first, then partial
+    handle = args.get("handle")
+    title = (args.get("title") or "").strip()
+    if handle is None and not title:
+        return [{"type": "text", "text": "Error: handle or title is required"}]
+
+    if handle is not None:
+        data = _api_post(f"/windows/focus?handle={int(handle)}")
+        if data.get("success"):
+            return [{"type": "text", "text": f"Focused window handle={int(handle)}"}]
+        return [{"type": "text", "text": f"Could not focus window handle={int(handle)}."}]
+
+    # Try exact/partial backend matching by title
     data = _api_post(f"/windows/focus?title={urllib.parse.quote(title)}")
     if data.get("success"):
         return [{"type": "text", "text": f"Focused window: '{title}'"}]
@@ -1540,8 +1733,50 @@ def handle_click_screen(args: dict) -> list:
     x = args.get("x", 0)
     y = args.get("y", 0)
     button = args.get("button", "left")
-    data = _api_post(f"/action/click?x={x}&y={y}&button={button}")
-    return [{"type": "text", "text": f"Clicked at ({x},{y}) {button}: {'SUCCESS' if data.get('success') else 'FAILED'}"}]
+    monitor = args.get("monitor")
+    coord_space = str(args.get("coord_space", "global")).strip().lower()
+    query = f"/action/click?x={x}&y={y}&button={urllib.parse.quote(str(button))}"
+    if monitor is not None:
+        query += f"&monitor_id={int(monitor)}"
+    if coord_space in {"monitor", "local", "monitor_local"}:
+        query += "&relative_to_monitor=true"
+    data = _api_post(query)
+    rx = data.get("resolved_x", x)
+    ry = data.get("resolved_y", y)
+    return [{
+        "type": "text",
+        "text": (
+            f"Clicked at ({x},{y}) {button}: {'SUCCESS' if data.get('success') else 'FAILED'} "
+            f"(resolved=({rx},{ry}), space={coord_space}, monitor={monitor if monitor is not None else 'auto'})"
+        ),
+    }]
+
+
+def handle_drag_screen(args: dict) -> list:
+    start_x = int(args.get("start_x", 0))
+    start_y = int(args.get("start_y", 0))
+    end_x = int(args.get("end_x", 0))
+    end_y = int(args.get("end_y", 0))
+    duration = float(args.get("duration", 0.35))
+    monitor = args.get("monitor")
+    coord_space = str(args.get("coord_space", "global")).strip().lower()
+    query = (
+        f"/action/drag?start_x={start_x}&start_y={start_y}"
+        f"&end_x={end_x}&end_y={end_y}&duration={duration}"
+    )
+    if monitor is not None:
+        query += f"&monitor_id={int(monitor)}"
+    if coord_space in {"monitor", "local", "monitor_local"}:
+        query += "&relative_to_monitor=true"
+    data = _api_post(query)
+    return [{
+        "type": "text",
+        "text": (
+            f"Dragged ({start_x},{start_y}) -> ({end_x},{end_y}): "
+            f"{'SUCCESS' if data.get('success') else 'FAILED'} "
+            f"(space={coord_space}, monitor={monitor if monitor is not None else 'auto'})"
+        ),
+    }]
 
 
 def handle_keyboard(args: dict) -> list:
@@ -1554,39 +1789,51 @@ def handle_keyboard(args: dict) -> list:
 
 def handle_scroll(args: dict) -> list:
     amount = args.get("amount", 3)
-    data = _api_post(f"/action/scroll?amount={amount}")
+    x = args.get("x")
+    y = args.get("y")
+    monitor = args.get("monitor")
+    coord_space = str(args.get("coord_space", "global")).strip().lower()
+    query = f"/action/scroll?amount={amount}"
+    if x is not None:
+        query += f"&x={int(x)}"
+    if y is not None:
+        query += f"&y={int(y)}"
+    if monitor is not None:
+        query += f"&monitor_id={int(monitor)}"
+    if coord_space in {"monitor", "local", "monitor_local"}:
+        query += "&relative_to_monitor=true"
+    data = _api_post(query)
     direction = "down" if amount > 0 else "up"
-    return [{"type": "text", "text": f"Scrolled {direction} ({abs(amount)}): {'SUCCESS' if data.get('success') else 'FAILED'}"}]
+    return [{
+        "type": "text",
+        "text": (
+            f"Scrolled {direction} ({abs(amount)}): {'SUCCESS' if data.get('success') else 'FAILED'} "
+            f"(space={coord_space}, monitor={monitor if monitor is not None else 'auto'})"
+        ),
+    }]
 
 
 def handle_monitor_info(args: dict) -> list:
     try:
-        import mss
-        with mss.mss() as sct:
-            lines = ["## Monitor Layout"]
-            for i, m in enumerate(sct.monitors):
-                if i == 0:
-                    lines.append(f"- **Virtual Desktop**: {m['width']}x{m['height']} at ({m['left']},{m['top']})")
-                else:
-                    lines.append(f"- **Monitor {i}**: {m['width']}x{m['height']} at ({m['left']},{m['top']})")
-            # Also show which windows are on which monitor
-            windows = _api_get("/windows/list")
-            if windows and "windows" in windows:
-                lines.append("\n## Windows by Monitor")
-                for w in windows["windows"]:
-                    if not w.get("is_visible") or w.get("is_minimized"):
-                        continue
-                    wx = w.get("x", 0)
-                    wy = w.get("y", 0)
-                    mon = "?"
-                    for j, m in enumerate(sct.monitors):
-                        if j == 0:
-                            continue
-                        if m["left"] <= wx < m["left"] + m["width"] and m["top"] <= wy < m["top"] + m["height"]:
-                            mon = str(j)
-                            break
-                    lines.append(f"  - Monitor {mon}: **{w['title'][:50]}** at ({wx},{wy}) {w.get('width',0)}x{w.get('height',0)}")
-            return [{"type": "text", "text": "\n".join(lines)}]
+        monitors = _api_get("/monitors/info")
+        lines = ["## Monitor Layout"]
+        for m in monitors.get("monitors", []):
+            lines.append(
+                f"- **Monitor {m.get('id')}**: {m.get('resolution')} at {m.get('position')} "
+                f"(active={m.get('active')}, primary={m.get('primary')})"
+            )
+
+        windows = _api_get("/windows/list?visible_only=true&exclude_minimized=true")
+        items = windows.get("windows", [])
+        if items:
+            lines.append("\n## Windows by Monitor")
+            for w in items[:80]:
+                lines.append(
+                    f"- m{w.get('monitor_id', '?')} | h={w.get('handle')} | "
+                    f"**{w.get('title', '?')[:70]}** "
+                    f"({w.get('x')},{w.get('y')} {w.get('width')}x{w.get('height')})"
+                )
+        return [{"type": "text", "text": "\n".join(lines)}]
     except Exception as e:
         return [{"type": "text", "text": f"Error getting monitor info: {e}"}]
 
@@ -1595,38 +1842,54 @@ def handle_see_monitor(args: dict) -> list:
     monitor = args.get("monitor", 1)
     mode = args.get("mode", "medium_res")
     try:
-        import mss, io, base64
-        from PIL import Image
-        with mss.mss() as sct:
-            if monitor >= len(sct.monitors):
-                return [{"type": "text", "text": f"Monitor {monitor} not found. Max: {len(sct.monitors)-1}"}]
-            mon = sct.monitors[monitor]
-            img = sct.grab(mon)
-            pil_img = Image.frombytes("RGB", (img.width, img.height), img.rgb)
-
-            # Resize based on mode
-            max_w = {"low_res": 640, "medium_res": 1280, "full_res": 1920}.get(mode, 1280)
-            if pil_img.width > max_w:
-                ratio = max_w / pil_img.width
-                pil_img = pil_img.resize((max_w, int(pil_img.height * ratio)), Image.LANCZOS)
-
-            buf = io.BytesIO()
-            pil_img.save(buf, format="WEBP", quality=85)
-            b64 = base64.b64encode(buf.getvalue()).decode()
-
-            # Get active window info
-            active = _api_get("/windows/active") or {}
-            text = (
-                f"## Monitor {monitor} ({mon['width']}x{mon['height']})\n"
-                f"**Active Window**: {active.get('title', '?')}\n"
-                f"**Position**: ({mon['left']},{mon['top']})\n"
-            )
-            return [
-                {"type": "text", "text": text},
-                {"type": "image", "data": b64, "mimeType": "image/webp"},
-            ]
+        data = _api_get(f"/vision/smart?mode={urllib.parse.quote(str(mode))}&monitor_id={int(monitor)}")
+        monitors = _api_get("/monitors/info")
+        mon_meta = next((m for m in monitors.get("monitors", []) if int(m.get("id", -1)) == int(monitor)), None)
+        active = _api_get("/windows/active") or {}
+        text = (
+            f"## Monitor {monitor}\n"
+            f"**Resolution**: {mon_meta.get('resolution', '?') if mon_meta else '?'}\n"
+            f"**Position**: {mon_meta.get('position', '?') if mon_meta else '?'}\n"
+            f"**Active Window**: {active.get('title', '?')}\n"
+            f"**Captured monitor_id**: {data.get('monitor_id', '?')}\n"
+            f"**Click Mapping**: use `click_screen(x, y, monitor={monitor}, coord_space='monitor')`.\n"
+        )
+        if "image_base64" not in data:
+            return [{"type": "text", "text": text + "\nNo image payload in this mode. Use mode=low_res|medium_res|full_res."}]
+        return [
+            {"type": "text", "text": text},
+            {"type": "image", "data": data["image_base64"], "mimeType": "image/webp"},
+        ]
     except Exception as e:
         return [{"type": "text", "text": f"Error capturing monitor {monitor}: {e}"}]
+
+
+def handle_spatial_state(args: dict) -> list:
+    include_windows = bool(args.get("include_windows", True))
+    try:
+        data = _api_get(f"/spatial/state?include_windows={'true' if include_windows else 'false'}")
+    except Exception as e:
+        return [{"type": "text", "text": f"Spatial state unavailable: {e}"}]
+    lines = [
+        "## Spatial State",
+        f"- Monitor count: {data.get('monitor_count', 0)}",
+        f"- Active monitor: {data.get('active_monitor_id', '?')}",
+    ]
+    active = data.get("active_window", {}) or {}
+    if active:
+        lines.append(
+            f"- Active window: h={active.get('handle')} m={active.get('monitor_id', '?')} "
+            f"{active.get('title', '')[:100]}"
+        )
+    cursor = data.get("cursor", {}) or {}
+    if cursor:
+        lines.append(f"- Cursor: ({cursor.get('x')},{cursor.get('y')})")
+    for mon in data.get("monitors", []):
+        lines.append(
+            f"- Monitor {mon.get('id')}: ({mon.get('left')},{mon.get('top')}) "
+            f"{mon.get('width')}x{mon.get('height')} active={mon.get('is_active')}"
+        )
+    return [{"type": "text", "text": "\n".join(lines)}]
 
 
 HANDLERS = {
@@ -1659,6 +1922,7 @@ HANDLERS = {
     "window_minimize": handle_window_minimize,
     "window_maximize": handle_window_maximize,
     "window_close": handle_window_close,
+    "move_window": handle_move_window,
     "find_ui_element": handle_find_ui_element,
     "read_file": handle_read_file,
     "write_file": handle_write_file,
@@ -1669,10 +1933,12 @@ HANDLERS = {
     "browser_navigate": handle_browser_navigate,
     "browser_tabs": handle_browser_tabs,
     "click_screen": handle_click_screen,
+    "drag_screen": handle_drag_screen,
     "keyboard": handle_keyboard,
     "scroll": handle_scroll,
     "monitor_info": handle_monitor_info,
     "see_monitor": handle_see_monitor,
+    "spatial_state": handle_spatial_state,
     # Token management
     "token_status": handle_token_status,
     "set_token_mode": handle_set_token_mode,
