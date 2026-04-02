@@ -61,26 +61,32 @@ def _build_system_prompt(world: Optional[dict]) -> str:
     what ILUMINATY is, and what the current screen state looks like.
     """
     base = (
-        "Eres IluminatyBrain — el cerebro de IA del sistema ILUMINATY.\n"
-        "ILUMINATY ve la pantalla del usuario en tiempo real y puede controlar el PC.\n"
-        "Responde en espanol, de forma util y directa.\n"
+        "Eres IluminatyBrain. Controlas el PC del usuario via ILUMINATY.\n"
+        "REGLAS ESTRICTAS:\n"
+        "1. NUNCA preguntes confirmacion. Actua directamente.\n"
+        "2. NUNCA uses acciones que no esten en la lista.\n"
+        "3. Responde siempre en espanol.\n"
+        "4. Cuando el usuario pida hacer algo en el PC, responde UNA frase corta y el JSON.\n"
         "\n"
-        "CAPACIDADES: puedes ejecutar acciones reales en el PC del usuario.\n"
-        "Cuando el usuario pida hacer algo, responde con texto explicando que haras\n"
-        "y luego incluye el JSON de la accion. Formato exacto:\n"
+        "ACCIONES DISPONIBLES (solo estas, exactamente asi):\n"
+        "  {\"action\": \"focus_window\", \"title\": \"NombreVentana\"}\n"
+        "  {\"action\": \"type_text\", \"text\": \"texto a escribir\"}\n"
+        "  {\"action\": \"hotkey\", \"keys\": \"ctrl+s\"}\n"
+        "  {\"action\": \"click\", \"x\": 500, \"y\": 300}\n"
+        "  {\"action\": \"scroll\", \"direction\": \"down\", \"amount\": 3}\n"
+        "  {\"action\": \"browser_navigate\", \"url\": \"https://...\"}\n"
+        "  {\"action\": \"run_command\", \"cmd\": \"comando\"}\n"
+        "  {\"action\": \"done\"}\n"
         "\n"
-        "Para hacer click: {\"action\": \"click\", \"x\": 100, \"y\": 200}\n"
-        "Para escribir texto: {\"action\": \"type_text\", \"text\": \"hola mundo\"}\n"
-        "Para hotkey: {\"action\": \"hotkey\", \"keys\": \"ctrl+s\"}\n"
-        "Para scroll: {\"action\": \"scroll\", \"direction\": \"down\", \"amount\": 3}\n"
-        "Para buscar ventana: {\"action\": \"focus_window\", \"title\": \"Claude\"}\n"
-        "Para navegar browser: {\"action\": \"browser_navigate\", \"url\": \"https://...\"}\n"
-        "Para ejecutar comando: {\"action\": \"run_command\", \"cmd\": \"notepad\"}\n"
-        "Para terminar: {\"action\": \"done\"}\n"
+        "EJEMPLO CORRECTO:\n"
+        "Usuario: abre el bloc de notas y escribe hola\n"
+        "Respuesta: Abro el bloc de notas y escribo hola.\n"
+        "{\"action\": \"run_command\", \"cmd\": \"notepad\"}\n"
         "\n"
-        "IMPORTANTE: cuando el usuario pida hacer algo en pantalla, SIEMPRE incluye\n"
-        "el JSON de accion en tu respuesta para que ILUMINATY lo ejecute.\n"
-        "Si necesitas varias acciones, describe cada una y pon su JSON.\n"
+        "EJEMPLO CORRECTO:\n"
+        "Usuario: enfoca Claude Code y escribe un saludo\n"
+        "Respuesta: Enfoco Claude Code y escribo el saludo.\n"
+        "{\"action\": \"focus_window\", \"title\": \"Claude\"}\n"
     )
 
     if not world:
@@ -159,7 +165,7 @@ def _infer_stream(
             for chunk in _brain._model(
                 prompt,
                 max_tokens=max_tokens,
-                temperature=0.7,
+                temperature=0.15,
                 stream=True,
                 stop=["<|im_end|>", "<|im_start|>", "\n\nUser", "\n\nUsuario"],
                 echo=False,
@@ -186,7 +192,7 @@ def _infer_stream(
                 gen_kwargs = {
                     **inputs,
                     "max_new_tokens": max_tokens,
-                    "temperature": 0.7,
+                    "temperature": 0.15,
                     "do_sample": True,
                     "top_p": 0.9,
                     "pad_token_id": _brain._tokenizer.eos_token_id,
@@ -272,12 +278,30 @@ async def api_stream(stream_id: str):
     )
 
 
+_ACTION_ALIASES = {
+    "find_window":    "focus_window",
+    "open_window":    "focus_window",
+    "switch_window":  "focus_window",
+    "write":          "type_text",
+    "type":           "type_text",
+    "keyboard":       "hotkey",
+    "press":          "hotkey",
+    "navigate":       "browser_navigate",
+    "open_url":       "browser_navigate",
+    "command":        "run_command",
+    "exec":           "run_command",
+    "double_click":   "click",
+}
+
 @app.post("/api/execute")
 async def api_execute(req: Request):
     """Execute an action via ILUMINATY. Called when model outputs a JSON action."""
     import urllib.request as ureq
     data = await req.json()
     action = data.get("action", {})
+    # Normalize action names the model sometimes gets wrong
+    if isinstance(action, dict) and action.get("action") in _ACTION_ALIASES:
+        action["action"] = _ACTION_ALIASES[action["action"]]
     act = action.get("action", "")
 
     headers_bytes = {"Content-Type": "application/json"}
