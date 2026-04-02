@@ -69,9 +69,19 @@ class MonitorManager:
             m.fps_multiplier = self.active_multiplier if m.is_active else self.inactive_multiplier
 
     def detect_active_from_window(self, window_bounds: dict) -> int:
-        """Detecta en que monitor esta la ventana activa."""
-        if not window_bounds or not self._monitors:
-            return 1
+        """Detecta en que monitor esta la ventana activa.
+        Short-circuits to monitor 1 when there is only one monitor (zero iteration overhead).
+        """
+        if not self._monitors:
+            return int(self._active_monitor_id or 1)
+        if not window_bounds:
+            # Keep last known active monitor whenever we do not have fresh bounds.
+            if self._active_monitor_id and any(m.id == self._active_monitor_id for m in self._monitors):
+                return int(self._active_monitor_id)
+            return int(self._monitors[0].id)
+        if len(self._monitors) == 1:
+            # single monitor — skip the geometry loop entirely
+            return self._monitors[0].id
 
         wx = window_bounds.get("left", 0) + window_bounds.get("width", 0) // 2
         wy = window_bounds.get("top", 0) + window_bounds.get("height", 0) // 2

@@ -237,6 +237,7 @@ def _latest_slot_for_monitor(
         return None, None
 
     resolved_mid: Optional[int] = None
+    monitor_was_requested = monitor_id is not None
     if monitor_id is not None:
         try:
             resolved_mid = int(monitor_id)
@@ -250,7 +251,12 @@ def _latest_slot_for_monitor(
         slot = _state.buffer.get_latest_for_monitor(int(resolved_mid))
         if slot:
             return slot, int(getattr(slot, "monitor_id", resolved_mid) or resolved_mid)
+        # Strict monitor isolation: when a monitor was explicitly requested,
+        # do not fall back to a global latest frame from another monitor.
+        if monitor_was_requested:
+            return None, resolved_mid
 
+    # Legacy/global fallback only when monitor is not explicitly requested.
     slot = _state.buffer.get_latest()
     if slot:
         return slot, int(getattr(slot, "monitor_id", resolved_mid or 0) or (resolved_mid or 0))
@@ -483,7 +489,7 @@ def _build_precheck(
     mode: str,
     include_readiness: bool = True,
     context_tick_id: Optional[int] = None,
-    max_staleness_ms: int = 1500,
+    max_staleness_ms: Optional[int] = None,
     grounding_request: Optional[dict] = None,
 ) -> dict:
     mode_norm = _normalize_operating_mode(mode)
@@ -500,6 +506,26 @@ def _build_precheck(
             readiness = _state.perception.get_readiness()
         except Exception as e:
             logger.debug("Failed to read perception readiness during precheck: %s", e)
+
+    domain_policy = readiness.get("domain_policy") or {}
+    policy_staleness = {}
+    if isinstance(domain_policy, dict):
+        policy_staleness = domain_policy.get("max_staleness_ms") or {}
+    mode_key = mode_norm.lower()
+    default_staleness = 1500
+    if isinstance(policy_staleness, dict):
+        try:
+            candidate = int(policy_staleness.get(mode_key, default_staleness))
+            default_staleness = max(1, min(60000, candidate))
+        except Exception:
+            default_staleness = 1500
+    requested_staleness = None
+    if max_staleness_ms is not None:
+        try:
+            requested_staleness = int(max_staleness_ms)
+        except Exception:
+            requested_staleness = None
+    effective_max_staleness_ms = max(1, min(60000, requested_staleness if requested_staleness is not None else default_staleness))
 
     kill_check = {"allowed": True, "reason": "ok"}
     if _state.safety and _state.safety.is_killed:
@@ -527,12 +553,12 @@ def _build_precheck(
             if hasattr(_state.perception, "check_context_freshness"):
                 context_check = _state.perception.check_context_freshness(
                     context_tick_id=context_tick_id,
-                    max_staleness_ms=max_staleness_ms,
+                    max_staleness_ms=effective_max_staleness_ms,
                 )
             else:
                 staleness = int(readiness.get("staleness_ms", 0))
                 latest_tick = readiness.get("tick_id")
-                if staleness > int(max_staleness_ms):
+                if staleness > int(effective_max_staleness_ms):
                     context_check = {
                         "allowed": False,
                         "reason": "context_stale",
@@ -584,7 +610,7 @@ def _build_precheck(
                     mode=mode_norm,
                     category=intent.category,
                     context_tick_id=context_tick_id,
-                    max_staleness_ms=max_staleness_ms,
+                    max_staleness_ms=effective_max_staleness_ms,
                     top_k=grounding_request.get("top_k", 5),
                 )
                 target = result.get("target")
@@ -623,7 +649,8 @@ def _build_precheck(
         "readiness_check": readiness_check,
         "context_applies": context_applies,
         "context_tick_id": context_tick_id,
-        "max_staleness_ms": int(max_staleness_ms),
+        "max_staleness_ms": int(effective_max_staleness_ms),
+        "requested_max_staleness_ms": requested_staleness,
         "context_check": context_check,
         "grounding_applies": grounding_applies,
         "grounding_check": grounding_check,
@@ -636,7 +663,7 @@ def _execute_intent(
     mode: str,
     verify: bool = True,
     context_tick_id: Optional[int] = None,
-    max_staleness_ms: int = 1500,
+    max_staleness_ms: Optional[int] = None,
     grounding_request: Optional[dict] = None,
 ) -> dict:
     if not _state.resolver:
@@ -1614,6 +1641,49 @@ async def perception_readiness(x_api_key: Optional[str] = Header(None)):
     if not _state.perception:
         raise HTTPException(503, "Perception engine not initialized")
     return _state.perception.get_readiness()
+
+
+@app.get("/domain-packs")
+async def domain_packs_list(x_api_key: Optional[str] = Header(None)):
+    """List available domain packs, active selection, and override state."""
+    _check_auth(x_api_key)
+    if not _state.perception:
+        raise HTTPException(503, "Perception engine not initialized")
+    if not hasattr(_state.perception, "list_domain_packs"):
+        raise HTTPException(501, "Domain packs are not available in this build")
+    return _state.perception.list_domain_packs()
+
+
+@app.post("/domain-packs/reload")
+async def domain_packs_reload(x_api_key: Optional[str] = Header(None)):
+    """Reload custom domain packs from configured directory."""
+    _check_auth(x_api_key)
+    if not _state.perception:
+        raise HTTPException(503, "Perception engine not initialized")
+    if not hasattr(_state.perception, "reload_domain_packs"):
+        raise HTTPException(501, "Domain packs are not available in this build")
+    return _state.perception.reload_domain_packs()
+
+
+@app.post("/domain-packs/override")
+async def domain_packs_override(
+    request_body: dict,
+    x_api_key: Optional[str] = Header(None),
+):
+    """
+    Force domain pack selection or switch back to auto mode.
+    Body: {"name": "trading"} or {"name":"auto"}.
+    """
+    _check_auth(x_api_key)
+    if not _state.perception:
+        raise HTTPException(503, "Perception engine not initialized")
+    if not hasattr(_state.perception, "set_domain_override"):
+        raise HTTPException(501, "Domain packs are not available in this build")
+    name = request_body.get("name")
+    result = _state.perception.set_domain_override(name)
+    if not bool(result.get("ok", False)):
+        raise HTTPException(400, result.get("reason", "invalid_domain_pack"))
+    return result
 
 
 @app.post("/perception/query")
@@ -2727,7 +2797,9 @@ async def action_precheck(
     grounding_request = _grounding_request_from_payload(request_body, intent)
     mode = request_body.get("mode") or _state.operating_mode
     context_tick_id = request_body.get("context_tick_id")
-    max_staleness_ms = int(request_body.get("max_staleness_ms", 1500))
+    max_staleness_ms = request_body.get("max_staleness_ms")
+    if max_staleness_ms is not None:
+        max_staleness_ms = int(max_staleness_ms)
     return _build_precheck(
         intent,
         mode,
@@ -2753,7 +2825,9 @@ async def action_execute(
     mode = request_body.get("mode") or _state.operating_mode
     verify = bool(request_body.get("verify", True))
     context_tick_id = request_body.get("context_tick_id")
-    max_staleness_ms = int(request_body.get("max_staleness_ms", 1500))
+    max_staleness_ms = request_body.get("max_staleness_ms")
+    if max_staleness_ms is not None:
+        max_staleness_ms = int(max_staleness_ms)
     return _execute_intent(
         intent,
         mode=mode,

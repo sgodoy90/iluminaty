@@ -75,6 +75,15 @@ class ScreenCapture:
         self._on_frame: Optional[Callable] = None  # callback opcional
         self._smart_quality_counter = 0
         self._smart_quality_value = self.config.quality
+        # Cache env-var webp method at init time (not per-frame)
+        _env_method = os.environ.get("ILUMINATY_WEBP_METHOD", "").strip()
+        if _env_method:
+            try:
+                self._webp_method = max(0, min(6, int(_env_method)))
+            except Exception:
+                self._webp_method = self.config.webp_method
+        else:
+            self._webp_method = self.config.webp_method
         
     @property
     def is_running(self) -> bool:
@@ -110,8 +119,9 @@ class ScreenCapture:
             if self._smart_quality_counter % max(1, self.config.smart_quality_sample_every) == 0:
                 try:
                     import numpy as np
-                    small = img.resize((64, 64))
-                    arr = np.array(small.convert("L"))
+                    # Resize to 32x32 instead of 64x64 — 4x fewer pixels, same signal
+                    small = img.resize((32, 32))
+                    arr = np.frombuffer(small.convert("L").tobytes(), dtype=np.uint8)
                     local_std = arr.std()
                     if local_std > 60:  # mucho contraste = texto/UI
                         self._smart_quality_value = min(self.config.quality + 15, 95)
@@ -123,13 +133,7 @@ class ScreenCapture:
             quality = self._smart_quality_value
 
         if fmt == "webp":
-            method = self.config.webp_method
-            env_method = os.environ.get("ILUMINATY_WEBP_METHOD", "").strip()
-            if env_method:
-                try:
-                    method = max(0, min(6, int(env_method)))
-                except Exception:
-                    method = self.config.webp_method
+            method = self._webp_method  # cached at init — not read from env per frame
             img.save(buf, format="WEBP", quality=quality, method=method)
             mime = "image/webp"
         elif fmt == "png":
@@ -210,7 +214,15 @@ class ScreenCapture:
                     
                     # Callback si hay uno registrado
                     if was_stored and self._on_frame:
-                        self._on_frame(self.buffer.get_latest())
+                        slot = None
+                        if hasattr(self.buffer, "get_latest_for_monitor"):
+                            try:
+                                slot = self.buffer.get_latest_for_monitor(int(self.config.monitor))
+                            except Exception:
+                                slot = None
+                        if slot is None:
+                            slot = self.buffer.get_latest()
+                        self._on_frame(slot)
                         
                 except Exception as e:
                     # No crashear el loop por un frame fallido

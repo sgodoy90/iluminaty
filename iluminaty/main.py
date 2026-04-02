@@ -140,11 +140,13 @@ def main():
         webp_method=max(0, min(6, int(args.webp_method))),
     )
 
-    # Auto-detect multi-monitor: if >1 monitor and not pinned to specific one
+    # Multi-monitor orchestration is explicit:
+    #   --monitor 0  => auto all monitors
+    #   --monitor N  => pinned single monitor N
     from iluminaty.monitors import MonitorManager
     _mon_mgr = MonitorManager()
     _mon_mgr.refresh()
-    if _mon_mgr.count > 1 and args.monitor in (0, 1):
+    if _mon_mgr.count > 1 and args.monitor == 0:
         # Multi-monitor: scale buffer for N monitors
         buffer.max_slots = int(args.buffer_seconds * (args.fps * 2 + (_mon_mgr.count - 1) * 0.5))
         buffer._buffer = deque(buffer._buffer, maxlen=buffer.max_slots)
