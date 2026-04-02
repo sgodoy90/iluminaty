@@ -150,14 +150,15 @@ def _world_to_prompt(world: dict, goal: str, history: list[dict]) -> str:
 
 
 def _parse_json(text: str) -> Optional[dict]:
-    """Extract first {...} JSON block from LLM output."""
+    """Extract first {...} JSON block from LLM output (supports nested objects)."""
     if not text:
         return None
     # Strip <think>...</think> blocks (qwen3 thinking mode)
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
     # Strip markdown code fences
     text = re.sub(r"```(?:json)?\s*", "", text).strip().rstrip("`").strip()
-    match = re.search(r"\{[^{}]+\}", text, re.DOTALL)
+    # Match JSON with up to one level of nesting
+    match = re.search(r"\{(?:[^{}]|\{[^{}]*\})*\}", text, re.DOTALL)
     if not match:
         return None
     try:
@@ -276,6 +277,18 @@ class BrainEngine:
 
         tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
 
+        def _load_model(device_map, quant_config=None):
+            kwargs = {
+                "device_map": device_map,
+                "trust_remote_code": True,
+            }
+            if quant_config:
+                kwargs["quantization_config"] = quant_config
+            else:
+                kwargs["torch_dtype"] = torch.bfloat16
+            return AutoModelForCausalLM.from_pretrained(model_id, **kwargs)
+
+        bnb_config = None
         if load_in_4bit:
             bnb_config = BitsAndBytesConfig(
                 load_in_4bit=True,
@@ -283,24 +296,42 @@ class BrainEngine:
                 bnb_4bit_use_double_quant=True,
                 bnb_4bit_quant_type="nf4",
             )
-            model = AutoModelForCausalLM.from_pretrained(
-                model_id,
-                quantization_config=bnb_config,
-                device_map="cuda",
-                trust_remote_code=True,
-            )
-        else:
-            model = AutoModelForCausalLM.from_pretrained(
-                model_id,
-                torch_dtype=torch.bfloat16,
-                device_map="cuda",
-                trust_remote_code=True,
-            )
+
+        try:
+            model = _load_model("cuda", bnb_config)
+        except torch.cuda.OutOfMemoryError:
+            torch.cuda.empty_cache()
+            if not load_in_4bit:
+                # Retry with INT4 quantization
+                logger.warning("CUDA OOM with BF16 — retrying with INT4 quantization")
+                print("[IluminatyBrain] GPU sin memoria con BF16, intentando INT4...")
+                bnb_config = BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_compute_dtype=torch.bfloat16,
+                    bnb_4bit_use_double_quant=True,
+                    bnb_4bit_quant_type="nf4",
+                )
+                try:
+                    model = _load_model("cuda", bnb_config)
+                except torch.cuda.OutOfMemoryError:
+                    torch.cuda.empty_cache()
+                    logger.warning("CUDA OOM even with INT4 — falling back to CPU")
+                    print("[IluminatyBrain] GPU sin memoria incluso con INT4, usando CPU...")
+                    model = _load_model("cpu")
+            else:
+                # Already INT4 and still OOM — fall back to CPU
+                logger.warning("CUDA OOM with INT4 — falling back to CPU")
+                print("[IluminatyBrain] GPU sin memoria con INT4, usando CPU...")
+                model = _load_model("cpu")
 
         elapsed = time.time() - t0
-        vram_gb = torch.cuda.memory_allocated() / 1024**3
-        logger.info("HuggingFace loaded '%s' in %.1fs (%.1fGB VRAM)", model_id, elapsed, vram_gb)
-        print(f"[IluminatyBrain] Loaded {model_id} in {elapsed:.1f}s ({vram_gb:.1f}GB VRAM)")
+        if torch.cuda.is_available():
+            vram_gb = torch.cuda.memory_allocated() / 1024**3
+            logger.info("HuggingFace loaded '%s' in %.1fs (%.1fGB VRAM)", model_id, elapsed, vram_gb)
+            print(f"[IluminatyBrain] Loaded {model_id} in {elapsed:.1f}s ({vram_gb:.1f}GB VRAM)")
+        else:
+            logger.info("HuggingFace loaded '%s' in %.1fs (CPU)", model_id, elapsed)
+            print(f"[IluminatyBrain] Loaded {model_id} in {elapsed:.1f}s (CPU)")
 
         engine = cls("transformers", model)
         engine._tokenizer = tokenizer
@@ -368,12 +399,13 @@ class BrainEngine:
 
     def _infer_transformers(self, prompt: str) -> str:
         import torch
+        device = next(self._model.parameters()).device
         inputs = self._tokenizer(
             prompt,
             return_tensors="pt",
             truncation=True,
             max_length=1024,
-        ).to("cuda")
+        ).to(device)
         with torch.no_grad():
             outputs = self._model.generate(
                 **inputs,

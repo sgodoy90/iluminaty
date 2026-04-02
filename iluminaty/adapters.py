@@ -663,8 +663,6 @@ ADAPTERS = {
     "kimi": KimiAdapter,
     "generic": GenericAdapter,
 }
-    "generic": GenericAdapter,
-}
 
 
 def create_adapter(provider: str, api_key: str, **kwargs) -> BaseAdapter:

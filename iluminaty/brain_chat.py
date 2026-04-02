@@ -1,54 +1,69 @@
 """
 ILUMINATY Brain Chat Terminal
 ==============================
-Habla con el modelo directamente desde la terminal.
-El modelo ve el WorldState actual de tu pantalla en cada mensaje.
+Terminal interactivo para hablar con el modelo local de IluminatyBrain.
+El modelo ve el WorldState de tu pantalla en cada mensaje.
 
 Modos:
   --mode chat      Conversacion libre (el modelo responde en texto)
-  --mode agent     El modelo decide acciones y las ejecuta (igual que --llm brain)
-  --mode train     El modelo responde y TU calificas cada respuesta (genera datos de entrenamiento)
+  --mode agent     El modelo decide acciones y las ejecuta
+  --mode train     El modelo responde y TU calificas cada respuesta
 
 Uso:
   python -m iluminaty.brain_chat
   python -m iluminaty.brain_chat --mode agent --autonomy confirm
   python -m iluminaty.brain_chat --mode train
   python -m iluminaty.brain_chat --model qwen2.5:7b
+  python -m iluminaty.brain_chat --hf --model Qwen/Qwen3-4B --4bit
 """
 
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import os
+import pathlib
 import sys
 import time
+import urllib.parse
 import urllib.request
 from typing import Optional
 
 ILUMINATY_URL = "http://127.0.0.1:8420"
+SESSIONS_DIR = pathlib.Path.home() / ".iluminaty" / "brain_sessions"
 
 # ─── Colors ──────────────────────────────────────────────────────────────────
+
 class C:
-    RESET  = "\033[0m"
-    BOLD   = "\033[1m"
-    GREEN  = "\033[92m"
-    CYAN   = "\033[96m"
-    YELLOW = "\033[93m"
-    RED    = "\033[91m"
-    GRAY   = "\033[90m"
-    BLUE   = "\033[94m"
-    MAGENTA= "\033[95m"
+    RESET   = "\033[0m"
+    BOLD    = "\033[1m"
+    DIM     = "\033[2m"
+    GREEN   = "\033[92m"
+    CYAN    = "\033[96m"
+    YELLOW  = "\033[93m"
+    RED     = "\033[91m"
+    GRAY    = "\033[90m"
+    BLUE    = "\033[94m"
+    MAGENTA = "\033[95m"
+    WHITE   = "\033[97m"
+    BG_GRAY = "\033[100m"
+
+_color_enabled: Optional[bool] = None
 
 def _supports_color() -> bool:
-    return hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
+    global _color_enabled
+    if _color_enabled is None:
+        _color_enabled = hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
+    return _color_enabled
 
 def _c(color: str, text: str) -> str:
     if _supports_color():
         return color + text + C.RESET
     return text
 
-# ─── ILUMINATY API helpers ────────────────────────────────────────────────────
+
+# ─── ILUMINATY API helpers ───────────────────────────────────────────────────
 
 def _get_world(api_url: str = ILUMINATY_URL) -> Optional[dict]:
     try:
@@ -63,19 +78,20 @@ def _get_screen_text(api_url: str = ILUMINATY_URL) -> str:
         req = urllib.request.Request(f"{api_url}/vision/ocr")
         with urllib.request.urlopen(req, timeout=3) as r:
             data = json.loads(r.read())
-            return data.get("text", "")[:400]
+            return data.get("text", "")[:500]
     except Exception:
         return ""
 
 def _execute(action: dict, api_url: str = ILUMINATY_URL) -> dict:
-    """Execute an action via ILUMINATY."""
-    import urllib.parse
+    """Execute an action via ILUMINATY API."""
     act = action.get("action", "")
     headers = {"Content-Type": "application/json"}
 
     def post(path, body):
         data = json.dumps(body).encode()
-        req = urllib.request.Request(f"{api_url}{path}", data=data, headers=headers, method="POST")
+        req = urllib.request.Request(
+            f"{api_url}{path}", data=data, headers=headers, method="POST"
+        )
         with urllib.request.urlopen(req, timeout=10) as r:
             return json.loads(r.read())
 
@@ -89,7 +105,14 @@ def _execute(action: dict, api_url: str = ILUMINATY_URL) -> dict:
             k = urllib.parse.quote(str(action.get("keys", "")))
             return post(f"/action/hotkey?keys={k}", {})
         if act == "click":
-            return post("/action/click", {"x": action.get("x",0), "y": action.get("y",0)})
+            return post("/action/click", {
+                "x": action.get("x", 0), "y": action.get("y", 0),
+            })
+        if act == "double_click":
+            return post("/action/click", {
+                "x": action.get("x", 0), "y": action.get("y", 0),
+                "double": True,
+            })
         if act == "scroll":
             d = action.get("direction", "down")
             a = int(action.get("amount", 3))
@@ -101,64 +124,315 @@ def _execute(action: dict, api_url: str = ILUMINATY_URL) -> dict:
         if act == "focus_window":
             t = urllib.parse.quote(str(action.get("title", "")))
             return post(f"/windows/focus?title={t}", {})
+        if act == "done":
+            return {"success": True, "done": True}
+        if act == "ask":
+            return {"success": True, "question": action.get("text", "")}
         return post("/action/execute", {"instruction": json.dumps(action)})
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-# ─── Chat modes ───────────────────────────────────────────────────────────────
+
+# ─── Chat template builder ──────────────────────────────────────────────────
+
+def _build_chat_prompt(
+    messages: list[dict],
+    system: str,
+    backend: str,
+    screen_ctx: str = "",
+) -> str:
+    """
+    Build a proper chat prompt using the model's expected format.
+    Qwen models use ChatML: <|im_start|>role\ncontent<|im_end|>
+    Generic fallback for other models.
+    """
+    full_system = system
+    if screen_ctx:
+        full_system += f"\n\n[Estado de pantalla actual]\n{screen_ctx}"
+
+    # ChatML format (Qwen, many GGUF models)
+    parts = [f"<|im_start|>system\n{full_system}<|im_end|>"]
+    for msg in messages:
+        role = msg["role"]
+        content = msg["content"]
+        parts.append(f"<|im_start|>{role}\n{content}<|im_end|>")
+    parts.append("<|im_start|>assistant\n")
+    return "\n".join(parts)
+
+
+def _build_agent_prompt(
+    world: dict,
+    goal: str,
+    history: list[dict],
+) -> str:
+    """Compact WorldState + goal prompt for agent mode."""
+    surface = world.get("active_surface") or "unknown"
+    phase = world.get("task_phase", "unknown")
+    ready = world.get("readiness", False)
+    affordances = world.get("affordances", [])[:6]
+    texts = [
+        str(f.get("text") or f.get("content") or "")[:80]
+        for f in (world.get("visual_facts") or [])[:4]
+        if f.get("text") or f.get("content")
+    ]
+    hist = [
+        f"[{'OK' if h.get('success') else 'FAIL'}] {h.get('action')} "
+        f"{h.get('reason', '')[:40]}"
+        for h in history[-3:]
+    ]
+    parts = [
+        f"GOAL: {goal}",
+        f"surface={surface} phase={phase} ready={ready}",
+        f"affordances={affordances}",
+    ]
+    if texts:
+        parts.append(f"visible={texts}")
+    if hist:
+        parts.append("recent=" + " | ".join(hist))
+    parts.append("Next action?")
+    return "\n".join(parts)
+
+
+# ─── Session persistence ────────────────────────────────────────────────────
+
+def _ensure_sessions_dir():
+    SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+
+def _save_session(
+    session_name: str,
+    history: list[dict],
+    model_name: str,
+    mode: str,
+    training_data: list[dict],
+):
+    """Save conversation session to disk."""
+    _ensure_sessions_dir()
+    data = {
+        "name": session_name,
+        "model": model_name,
+        "mode": mode,
+        "created": datetime.datetime.now().isoformat(),
+        "messages": history,
+        "training_data": training_data,
+        "message_count": len(history),
+    }
+    path = SESSIONS_DIR / f"{session_name}.json"
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    return path
+
+def _load_session(session_name: str) -> Optional[dict]:
+    """Load a saved session."""
+    path = SESSIONS_DIR / f"{session_name}.json"
+    if not path.exists():
+        return None
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def _list_sessions() -> list[dict]:
+    """List all saved sessions."""
+    _ensure_sessions_dir()
+    sessions = []
+    for f in sorted(SESSIONS_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+        try:
+            with open(f, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            sessions.append({
+                "name": data.get("name", f.stem),
+                "model": data.get("model", "?"),
+                "mode": data.get("mode", "?"),
+                "messages": data.get("message_count", len(data.get("messages", []))),
+                "created": data.get("created", "?"),
+            })
+        except Exception:
+            continue
+    return sessions
+
+
+# ─── Streaming for transformers backend ──────────────────────────────────────
+
+def _stream_transformers(brain, prompt: str, max_tokens: int = 512):
+    """
+    Token-by-token streaming for transformers backend using TextIteratorStreamer.
+    Yields text chunks as they're generated.
+    """
+    import torch
+    from threading import Thread
+
+    try:
+        from transformers import TextIteratorStreamer
+    except ImportError:
+        # Fallback: generate full then yield at once
+        text = brain._infer_transformers(prompt)
+        yield text
+        return
+
+    streamer = TextIteratorStreamer(
+        brain._tokenizer,
+        skip_prompt=True,
+        skip_special_tokens=True,
+    )
+
+    device = next(brain._model.parameters()).device
+    inputs = brain._tokenizer(
+        prompt,
+        return_tensors="pt",
+        truncation=True,
+        max_length=1536,
+    ).to(device)
+
+    gen_kwargs = {
+        **inputs,
+        "max_new_tokens": max_tokens,
+        "temperature": 0.7,
+        "do_sample": True,
+        "top_p": 0.9,
+        "pad_token_id": brain._tokenizer.eos_token_id,
+        "streamer": streamer,
+    }
+
+    thread = Thread(target=brain._model.generate, kwargs=gen_kwargs)
+    thread.start()
+
+    for text_chunk in streamer:
+        yield text_chunk
+
+    thread.join()
+
+
+# ─── UI helpers ──────────────────────────────────────────────────────────────
 
 def _world_summary(world: Optional[dict]) -> str:
     if not world:
-        return _c(C.GRAY, "  [pantalla: no disponible — ILUMINATY no está corriendo]")
+        return _c(C.GRAY, "  [pantalla: no disponible]")
     surface = world.get("active_surface", "?")
-    phase   = world.get("task_phase", "?")
-    ready   = world.get("readiness", False)
-    texts   = [f.get("text","") for f in (world.get("visual_facts") or [])[:3] if f.get("text")]
+    phase = world.get("task_phase", "?")
+    ready = world.get("readiness", False)
+    texts = [
+        f.get("text", "") for f in (world.get("visual_facts") or [])[:3]
+        if f.get("text")
+    ]
     s = f"  {_c(C.GRAY, 'pantalla:')} {surface} | {phase} | listo={ready}"
     if texts:
         s += f"\n  {_c(C.GRAY, 'visible:')} {' | '.join(t[:40] for t in texts)}"
     return s
 
 
-def run_chat(brain, api_url: str, mode: str, autonomy: str, save_training: bool):
-    """Main interactive loop."""
-    history = []
-    training_data = []
+def _status_line(
+    world: Optional[dict],
+    model_name: str,
+    mode: str,
+    msg_count: int,
+) -> str:
+    """Compact status bar shown above the input prompt."""
+    connected = _c(C.GREEN, "ON") if world else _c(C.RED, "OFF")
+    surface = world.get("active_surface", "?")[:12] if world else "?"
+    return (
+        _c(C.GRAY, "[") +
+        f"{_c(C.CYAN, mode)} | "
+        f"{_c(C.MAGENTA, model_name[:20])} | "
+        f"pantalla:{connected} {surface} | "
+        f"msgs:{msg_count}" +
+        _c(C.GRAY, "]")
+    )
 
+
+def _print_banner(model_name: str, mode: str, autonomy: str, backend: str):
+    """Print the startup banner."""
     print()
-    print(_c(C.CYAN, "╔══════════════════════════════════════════════════════╗"))
-    print(_c(C.CYAN, "║") + _c(C.BOLD, "         ILUMINATY Brain Chat Terminal               ") + _c(C.CYAN, "║"))
-    print(_c(C.CYAN, "╠══════════════════════════════════════════════════════╣"))
-    model_name = getattr(brain, '_model', None) or getattr(brain._model, 'model_path', '?') if hasattr(brain, '_model') else '?'
-    print(_c(C.CYAN, "║") + f"  Modelo : {_c(C.GREEN, str(model_name)[:40]):<50}" + _c(C.CYAN, "║"))
-    print(_c(C.CYAN, "║") + f"  Modo   : {_c(C.YELLOW, mode):<50}" + _c(C.CYAN, "║"))
-    print(_c(C.CYAN, "║") + f"  Control: {_c(C.YELLOW, autonomy):<50}" + _c(C.CYAN, "║"))
-    print(_c(C.CYAN, "╠══════════════════════════════════════════════════════╣"))
-    print(_c(C.CYAN, "║") + "  Comandos especiales:                               " + _c(C.CYAN, "║"))
-    print(_c(C.CYAN, "║") + "   /pantalla  — ver WorldState actual                " + _c(C.CYAN, "║"))
-    print(_c(C.CYAN, "║") + "   /historia  — ver historial de acciones            " + _c(C.CYAN, "║"))
-    print(_c(C.CYAN, "║") + "   /limpiar   — limpiar historial                    " + _c(C.CYAN, "║"))
-    print(_c(C.CYAN, "║") + "   /stats     — estadísticas del modelo              " + _c(C.CYAN, "║"))
-    print(_c(C.CYAN, "║") + "   /guardar   — guardar datos de entrenamiento       " + _c(C.CYAN, "║"))
-    print(_c(C.CYAN, "║") + "   salir / exit / quit — terminar                   " + _c(C.CYAN, "║"))
-    print(_c(C.CYAN, "╚══════════════════════════════════════════════════════╝"))
+    w = 58
+    print(_c(C.CYAN, "+" + "=" * w + "+"))
+    title = "ILUMINATY Brain Chat"
+    print(_c(C.CYAN, "|") + _c(C.BOLD + C.WHITE, title.center(w)) + _c(C.CYAN, "|"))
+    print(_c(C.CYAN, "+" + "-" * w + "+"))
+    print(_c(C.CYAN, "|") + f"  Modelo  : {_c(C.GREEN, str(model_name)[:40])}" .ljust(w + 13) + _c(C.CYAN, "|"))
+    print(_c(C.CYAN, "|") + f"  Backend : {_c(C.YELLOW, backend)}" .ljust(w + 13) + _c(C.CYAN, "|"))
+    print(_c(C.CYAN, "|") + f"  Modo    : {_c(C.YELLOW, mode)}" .ljust(w + 13) + _c(C.CYAN, "|"))
+    if mode == "agent":
+        print(_c(C.CYAN, "|") + f"  Control : {_c(C.YELLOW, autonomy)}" .ljust(w + 13) + _c(C.CYAN, "|"))
+    print(_c(C.CYAN, "+" + "-" * w + "+"))
+    print(_c(C.CYAN, "|") + _c(C.GRAY, "  Comandos:").ljust(w + 10) + _c(C.CYAN, "|"))
+    cmds = [
+        ("/pantalla",  "ver estado de pantalla"),
+        ("/historia",  "historial de mensajes"),
+        ("/stats",     "estadisticas del modelo"),
+        ("/sesiones",  "listar sesiones guardadas"),
+        ("/guardar",   "guardar sesion actual"),
+        ("/cargar",    "cargar una sesion anterior"),
+        ("/limpiar",   "borrar historial"),
+        ("/sistema",   "ver/editar system prompt"),
+        ("/modo",      "cambiar modo (chat/agent/train)"),
+        ("/exportar",  "exportar chat a texto"),
+        ("exit",       "salir"),
+    ]
+    for cmd, desc in cmds:
+        line = f"  {_c(C.YELLOW, cmd):<28} {_c(C.GRAY, desc)}"
+        print(_c(C.CYAN, "|") + line.ljust(w + 32) + _c(C.CYAN, "|"))
+    print(_c(C.CYAN, "+" + "=" * w + "+"))
     print()
+
+
+# ─── Main chat loop ─────────────────────────────────────────────────────────
+
+DEFAULT_SYSTEM_CHAT = (
+    "Eres IluminatyBrain, un asistente de escritorio inteligente. "
+    "Ves la pantalla del usuario en tiempo real y ayudas con lo que necesite. "
+    "Responde de forma util, concisa y en espanol. "
+    "Si el usuario pregunta sobre lo que ve en pantalla, usa el contexto proporcionado."
+)
+
+DEFAULT_SYSTEM_AGENT = (
+    "You are IluminatyBrain, a desktop automation agent. "
+    "Reply ONLY with one JSON action. No explanation, no markdown.\n"
+    "Actions: click, double_click, type_text, hotkey, scroll, "
+    "run_command, browser_navigate, focus_window, wait, done, ask."
+)
+
+
+def run_chat(
+    brain,
+    api_url: str,
+    mode: str,
+    autonomy: str,
+    save_training: bool,
+    model_name: str = "?",
+    session_name: Optional[str] = None,
+):
+    """Main interactive loop."""
+    history: list[dict] = []
+    training_data: list[dict] = []
+    system_prompt = DEFAULT_SYSTEM_AGENT if mode == "agent" else DEFAULT_SYSTEM_CHAT
+    session_name = session_name or f"brain_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    total_tokens_out = 0
+
+    # Load session if specified
+    if session_name and (SESSIONS_DIR / f"{session_name}.json").exists():
+        loaded = _load_session(session_name)
+        if loaded:
+            history = loaded.get("messages", [])
+            training_data = loaded.get("training_data", [])
+            print(_c(C.GREEN, f"  Sesion '{session_name}' cargada ({len(history)} mensajes)"))
+
+    backend = brain._backend
+    _print_banner(model_name, mode, autonomy, backend)
 
     if mode == "agent":
-        print(_c(C.YELLOW, "Modo AGENTE: el modelo decidirá acciones para ejecutar en tu pantalla."))
+        print(_c(C.YELLOW, "  Modo AGENTE: el modelo decide acciones para tu pantalla."))
     elif mode == "train":
-        print(_c(C.YELLOW, "Modo ENTRENAMIENTO: califica cada respuesta con 1-5 para generar datos."))
+        print(_c(C.YELLOW, "  Modo ENTRENAMIENTO: califica respuestas (1-5) para generar datos."))
     else:
-        print(_c(C.YELLOW, "Modo CHAT: conversación libre. El modelo ve tu pantalla en tiempo real."))
+        print(_c(C.YELLOW, "  Modo CHAT: conversacion libre. El modelo ve tu pantalla."))
     print()
 
     while True:
-        # Show current screen state briefly
         world = _get_world(api_url)
 
-        # Prompt
+        # Status line
+        print(_status_line(world, model_name, mode, len(history)))
+
+        # Input
         try:
-            user_input = input(_c(C.BLUE, "Tú") + " > ").strip()
+            user_input = input(_c(C.BLUE, " Tu") + " > ").strip()
         except (EOFError, KeyboardInterrupt):
             print()
             break
@@ -166,223 +440,398 @@ def run_chat(brain, api_url: str, mode: str, autonomy: str, save_training: bool)
         if not user_input:
             continue
 
-        # Special commands
-        if user_input.lower() in ("salir", "exit", "quit", "q"):
+        # ─── Slash commands ──────────────────────────────────────────────
+
+        low = user_input.lower()
+        if low in ("salir", "exit", "quit", "q"):
             break
 
-        if user_input == "/pantalla":
-            print(_c(C.CYAN, "\n── Estado actual de pantalla ──"))
+        if low == "/pantalla":
+            print(_c(C.CYAN, "\n-- Estado de pantalla --"))
             print(_world_summary(world))
             ocr = _get_screen_text(api_url)
             if ocr:
-                print(f"  {_c(C.GRAY, 'texto OCR:')} {ocr[:200]}")
+                print(f"  {_c(C.GRAY, 'OCR:')} {ocr[:300]}")
             print()
             continue
 
-        if user_input == "/historia":
-            print(_c(C.CYAN, "\n── Historial ──"))
+        if low == "/historia":
+            print(_c(C.CYAN, "\n-- Historial --"))
             if not history:
-                print("  (vacío)")
-            for i, h in enumerate(history[-10:], 1):
-                role = _c(C.BLUE, "Tú") if h["role"] == "user" else _c(C.GREEN, "IA ")
-                print(f"  {i}. [{role}] {h['content'][:80]}")
+                print("  (vacio)")
+            for i, h in enumerate(history[-15:], 1):
+                role = _c(C.BLUE, "Tu ") if h["role"] == "user" else _c(C.GREEN, "IA ")
+                content = h["content"][:100].replace("\n", " ")
+                print(f"  {i:2d}. [{role}] {content}")
             print()
             continue
 
-        if user_input == "/limpiar":
+        if low == "/limpiar":
             history.clear()
-            print(_c(C.GRAY, "  Historial limpiado."))
+            total_tokens_out = 0
+            print(_c(C.GRAY, "  Historial limpiado.\n"))
             continue
 
-        if user_input == "/stats":
+        if low == "/stats":
             stats = brain.status()
-            print(_c(C.CYAN, "\n── Estadísticas del modelo ──"))
+            print(_c(C.CYAN, "\n-- Estadisticas --"))
             for k, v in stats.items():
                 print(f"  {k}: {v}")
+            print(f"  total_tokens_out: ~{total_tokens_out}")
+            print(f"  messages: {len(history)}")
+            print(f"  training_samples: {len(training_data)}")
             print()
             continue
 
-        if user_input == "/guardar":
-            if training_data:
-                import pathlib
-                out = pathlib.Path("brain_training_session.jsonl")
-                with open(out, "a", encoding="utf-8") as f:
-                    for item in training_data:
-                        f.write(json.dumps(item, ensure_ascii=False) + "\n")
-                print(_c(C.GREEN, f"  {len(training_data)} ejemplos guardados en {out}"))
-                training_data.clear()
-            else:
-                print(_c(C.GRAY, "  No hay datos nuevos para guardar."))
+        if low == "/sesiones":
+            sessions = _list_sessions()
+            print(_c(C.CYAN, "\n-- Sesiones guardadas --"))
+            if not sessions:
+                print("  (ninguna)")
+            for i, s in enumerate(sessions[:10], 1):
+                print(
+                    f"  {i}. {_c(C.GREEN, s['name'])} "
+                    f"({s['messages']} msgs, {s['mode']}, {s['model']})"
+                )
+            print()
             continue
 
-        # Build context for the model
+        if low == "/guardar":
+            path = _save_session(session_name, history, model_name, mode, training_data)
+            print(_c(C.GREEN, f"  Sesion guardada: {path}\n"))
+            continue
+
+        if low.startswith("/cargar"):
+            parts = user_input.split(maxsplit=1)
+            if len(parts) < 2:
+                # Show sessions and ask
+                sessions = _list_sessions()
+                if not sessions:
+                    print(_c(C.GRAY, "  No hay sesiones guardadas.\n"))
+                    continue
+                print(_c(C.CYAN, "  Sesiones disponibles:"))
+                for i, s in enumerate(sessions[:10], 1):
+                    print(f"    {i}. {s['name']}")
+                try:
+                    choice = input(_c(C.YELLOW, "  Numero o nombre: ")).strip()
+                except (EOFError, KeyboardInterrupt):
+                    print()
+                    continue
+                if choice.isdigit():
+                    idx = int(choice) - 1
+                    if 0 <= idx < len(sessions):
+                        sname = sessions[idx]["name"]
+                    else:
+                        print(_c(C.RED, "  Indice invalido.\n"))
+                        continue
+                else:
+                    sname = choice
+            else:
+                sname = parts[1].strip()
+
+            loaded = _load_session(sname)
+            if loaded:
+                history = loaded.get("messages", [])
+                training_data = loaded.get("training_data", [])
+                session_name = sname
+                print(_c(C.GREEN, f"  Cargada: {sname} ({len(history)} mensajes)\n"))
+            else:
+                print(_c(C.RED, f"  Sesion '{sname}' no encontrada.\n"))
+            continue
+
+        if low == "/sistema":
+            print(_c(C.CYAN, "\n-- System Prompt actual --"))
+            print(f"  {system_prompt[:200]}")
+            print()
+            try:
+                new = input(_c(C.YELLOW, "  Nuevo (Enter=mantener): ")).strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                continue
+            if new:
+                system_prompt = new
+                print(_c(C.GREEN, "  System prompt actualizado.\n"))
+            continue
+
+        if low.startswith("/modo"):
+            parts = user_input.split(maxsplit=1)
+            if len(parts) >= 2 and parts[1] in ("chat", "agent", "train"):
+                mode = parts[1]
+                system_prompt = DEFAULT_SYSTEM_AGENT if mode == "agent" else DEFAULT_SYSTEM_CHAT
+                save_training = mode == "train"
+                print(_c(C.GREEN, f"  Modo cambiado a: {mode}\n"))
+            else:
+                print(_c(C.GRAY, f"  Modo actual: {mode}"))
+                print(_c(C.GRAY, "  Uso: /modo chat|agent|train\n"))
+            continue
+
+        if low == "/exportar":
+            export_path = pathlib.Path(f"brain_chat_export_{session_name}.txt")
+            with open(export_path, "w", encoding="utf-8") as f:
+                f.write(f"ILUMINATY Brain Chat - {session_name}\n")
+                f.write(f"Modelo: {model_name} | Modo: {mode}\n")
+                f.write("=" * 60 + "\n\n")
+                for h in history:
+                    role = "Tu" if h["role"] == "user" else "IA"
+                    f.write(f"[{role}] {h['content']}\n\n")
+            print(_c(C.GREEN, f"  Exportado a: {export_path}\n"))
+            continue
+
+        # ─── Process message ─────────────────────────────────────────────
+
         history.append({"role": "user", "content": user_input})
 
         if mode == "agent":
-            # Agent mode: decide action from goal
-            if world:
-                action = brain.decide(world, goal=user_input, history=[
+            # Agent mode: decide action
+            w = world or {
+                "active_surface": "unknown",
+                "task_phase": "idle",
+                "readiness": True,
+                "visual_facts": [],
+            }
+            action = brain.decide(
+                w,
+                goal=user_input,
+                history=[
                     {"action": h["content"], "success": True}
-                    for h in history[-5:] if h["role"] == "assistant"
-                ])
-            else:
-                action = brain.decide({"active_surface": "unknown", "task_phase": "idle",
-                                        "readiness": True, "visual_facts": []},
-                                       goal=user_input)
+                    for h in history[-5:]
+                    if h["role"] == "assistant"
+                ],
+            )
 
             if action:
                 action_str = json.dumps(action, ensure_ascii=False)
                 print()
-                print(_c(C.GREEN, "IA ") + f"→ {_c(C.BOLD, action_str)}")
+                print(
+                    _c(C.GREEN, " IA") + " > " +
+                    _c(C.BOLD, action_str)
+                )
 
+                executed = False
                 if autonomy == "suggest":
-                    print(_c(C.GRAY, "   (modo suggest — no ejecuta)"))
-                    history.append({"role": "assistant", "content": action_str})
-
+                    print(_c(C.GRAY, "    (suggest mode)"))
                 elif autonomy == "confirm":
-                    confirm = input(_c(C.YELLOW, "   Ejecutar? [y/N/stop]: ")).strip().lower()
-                    if confirm == "stop":
+                    try:
+                        confirm = input(
+                            _c(C.YELLOW, "    Ejecutar? [y/N]: ")
+                        ).strip().lower()
+                    except (EOFError, KeyboardInterrupt):
+                        print()
                         break
                     if confirm == "y":
                         result = _execute(action, api_url)
                         ok = result.get("success", False)
-                        status = _c(C.GREEN, "OK") if ok else _c(C.RED, "FAIL")
-                        print(f"   [{status}] {result.get('error', '')}")
+                        st = _c(C.GREEN, "OK") if ok else _c(C.RED, "FAIL")
+                        err = result.get("error", "")
+                        print(f"    [{st}] {err}")
+                        executed = True
                         if save_training:
                             training_data.append({
                                 "goal": user_input,
-                                "world_surface": (world or {}).get("active_surface"),
+                                "surface": w.get("active_surface"),
                                 "action": action,
-                                "executed": True,
                                 "success": ok,
                                 "rating": 5 if ok else 1,
                             })
-                    history.append({"role": "assistant", "content": action_str})
-
                 else:  # auto
                     result = _execute(action, api_url)
                     ok = result.get("success", False)
-                    status = _c(C.GREEN, "OK") if ok else _c(C.RED, "FAIL")
-                    print(f"   [{status}]")
-                    history.append({"role": "assistant", "content": action_str})
+                    st = _c(C.GREEN, "OK") if ok else _c(C.RED, "FAIL")
+                    print(f"    [{st}]")
+                    executed = True
+
+                history.append({"role": "assistant", "content": action_str})
             else:
-                print(_c(C.RED, "IA ") + " No pude generar una acción válida.")
+                print(_c(C.RED, " IA") + " > No pude generar accion valida.")
 
         else:
-            # Chat mode: free conversation with screen context
-            # Build a conversational prompt
+            # ─── Chat / Train mode ───────────────────────────────────────
+
+            # Build screen context
             screen_ctx = ""
             if world:
                 surface = world.get("active_surface", "?")
-                phase   = world.get("task_phase", "?")
-                texts   = [f.get("text","") for f in (world.get("visual_facts") or [])[:3] if f.get("text")]
-                screen_ctx = f"[pantalla: {surface}, {phase}, visible: {texts}]"
+                phase = world.get("task_phase", "?")
+                texts = [
+                    f.get("text", "")
+                    for f in (world.get("visual_facts") or [])[:3]
+                    if f.get("text")
+                ]
+                screen_ctx = f"app={surface} fase={phase}"
+                if texts:
+                    screen_ctx += f" visible=[{', '.join(t[:40] for t in texts)}]"
 
-            # Build multi-turn prompt
-            conv_parts = [
-                "Eres IluminatyBrain, un asistente de escritorio que ve la pantalla del usuario.",
-                "Responde de forma útil y concisa. Puedes hablar en español.",
-                f"Estado actual: {screen_ctx}" if screen_ctx else "",
-                "",
+            # Build proper chat prompt
+            chat_messages = [
+                {"role": h["role"], "content": h["content"]}
+                for h in history[-12:]  # Keep last 12 messages for context
             ]
-            for h in history[-8:]:
-                role = "Usuario" if h["role"] == "user" else "Asistente"
-                conv_parts.append(f"{role}: {h['content']}")
-            conv_parts.append("Asistente:")
+            prompt = _build_chat_prompt(
+                chat_messages, system_prompt, backend, screen_ctx
+            )
 
-            prompt = "\n".join(p for p in conv_parts if p is not None)
-
-            print(_c(C.GREEN, "IA ") + " ", end="", flush=True)
+            print(_c(C.GREEN, " IA") + " > ", end="", flush=True)
             t0 = time.time()
 
-            # Stream output token by token via llama.cpp
             response_text = ""
+            token_count = 0
             try:
-                if brain._backend == "llamacpp":
+                if backend == "llamacpp":
+                    # llama.cpp native streaming
                     for chunk in brain._model(
                         prompt,
-                        max_tokens=300,
+                        max_tokens=512,
                         temperature=0.7,
                         stream=True,
-                        stop=["Usuario:", "\nUsuario", "Asistente:", "\n\n\n"],
+                        stop=[
+                            "<|im_end|>", "<|im_start|>",
+                            "Usuario:", "\nUsuario",
+                        ],
                         echo=False,
                     ):
                         token = chunk["choices"][0]["text"]
                         print(token, end="", flush=True)
                         response_text += token
+                        token_count += 1
                 else:
-                    # transformers: generate full then print
-                    response_text = brain._infer_transformers(prompt)
-                    print(response_text, end="", flush=True)
+                    # transformers: stream via TextIteratorStreamer
+                    for chunk in _stream_transformers(brain, prompt, max_tokens=512):
+                        # Stop on ChatML end tokens
+                        if "<|im_end|>" in chunk:
+                            chunk = chunk.split("<|im_end|>")[0]
+                            if chunk:
+                                print(chunk, end="", flush=True)
+                                response_text += chunk
+                                token_count += len(chunk.split())
+                            break
+                        if "<|im_start|>" in chunk:
+                            chunk = chunk.split("<|im_start|>")[0]
+                            if chunk:
+                                print(chunk, end="", flush=True)
+                                response_text += chunk
+                                token_count += len(chunk.split())
+                            break
+                        print(chunk, end="", flush=True)
+                        response_text += chunk
+                        token_count += len(chunk.split())
+
             except Exception as e:
-                print(_c(C.RED, f"\n[Error: {e}]"))
+                print(_c(C.RED, f"\n  [Error: {e}]"))
 
             elapsed = time.time() - t0
-            print(f"\n  {_c(C.GRAY, f'({elapsed:.1f}s)')}")
+            total_tokens_out += token_count
+            tps = token_count / elapsed if elapsed > 0 else 0
 
-            history.append({"role": "assistant", "content": response_text.strip()})
+            print()
+            print(
+                _c(C.GRAY, f"    [{elapsed:.1f}s | ~{token_count} tokens | "
+                f"{tps:.1f} tok/s]")
+            )
+
+            response_clean = response_text.strip()
+            history.append({"role": "assistant", "content": response_clean})
 
             # Training mode: ask for rating
-            if mode == "train" and response_text.strip():
-                rating_str = input(_c(C.YELLOW, "   Rating 1-5 (Enter=skip): ")).strip()
-                if rating_str in ("1","2","3","4","5"):
+            if mode == "train" and response_clean:
+                try:
+                    rating_str = input(
+                        _c(C.YELLOW, "    Rating 1-5 (Enter=skip): ")
+                    ).strip()
+                except (EOFError, KeyboardInterrupt):
+                    print()
+                    break
+                if rating_str in ("1", "2", "3", "4", "5"):
                     training_data.append({
                         "prompt": user_input,
-                        "response": response_text.strip(),
+                        "response": response_clean,
                         "screen_surface": (world or {}).get("active_surface"),
                         "rating": int(rating_str),
                     })
-                    print(_c(C.GRAY, f"   Guardado (rating {rating_str})"))
+                    print(_c(C.GRAY, f"    Guardado (rating {rating_str})"))
 
         print()
 
-    # Save on exit if training data exists
+    # ─── Cleanup on exit ─────────────────────────────────────────────────
+
+    # Auto-save session on exit
+    if history:
+        path = _save_session(session_name, history, model_name, mode, training_data)
+        print(_c(C.GREEN, f"\n  Sesion auto-guardada: {path}"))
+
+    # Save training data
     if training_data:
-        import pathlib
         out = pathlib.Path("brain_training_session.jsonl")
         with open(out, "a", encoding="utf-8") as f:
             for item in training_data:
                 f.write(json.dumps(item, ensure_ascii=False) + "\n")
-        print(_c(C.GREEN, f"\nSesión guardada: {len(training_data)} ejemplos en {out}"))
+        print(_c(C.GREEN, f"  Training data: {len(training_data)} ejemplos -> {out}"))
 
-    print(_c(C.CYAN, "\nHasta luego."))
+    print(_c(C.CYAN, "\n  Hasta luego.\n"))
 
 
-# ─── Entry point ──────────────────────────────────────────────────────────────
+# ─── Entry point ─────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="IluminatyBrain Chat Terminal")
-    parser.add_argument("--model",    default="qwen2.5:7b",
-                        help="Ollama model name o HuggingFace ID (default: qwen2.5:7b)")
-    parser.add_argument("--mode",     default="chat",
-                        choices=["chat", "agent", "train"],
-                        help="chat=libre, agent=ejecuta acciones, train=genera datos")
-    parser.add_argument("--autonomy", default="confirm",
-                        choices=["suggest", "confirm", "auto"],
-                        help="Solo en modo agent: suggest/confirm/auto")
-    parser.add_argument("--api-url",  default=ILUMINATY_URL,
-                        help=f"ILUMINATY API URL (default: {ILUMINATY_URL})")
-    parser.add_argument("--hf",       action="store_true",
-                        help="Cargar desde HuggingFace en lugar de Ollama GGUF")
-    parser.add_argument("--4bit",     action="store_true", dest="load_4bit",
-                        help="Cargar en INT4 (solo con --hf, ahorra VRAM)")
-    parser.add_argument("--checkpoint", default=None,
-                        help="Ruta a checkpoint fine-tuneado")
+    parser = argparse.ArgumentParser(
+        description="IluminatyBrain Chat Terminal",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Ejemplos:
+  python -m iluminaty.brain_chat                        # Chat con modelo Ollama
+  python -m iluminaty.brain_chat --mode agent           # Modo agente
+  python -m iluminaty.brain_chat --hf --4bit            # HuggingFace INT4
+  python -m iluminaty.brain_chat --session mi_sesion    # Reanudar sesion
+        """,
+    )
+    parser.add_argument(
+        "--model", default="qwen2.5:7b",
+        help="Ollama model name o HuggingFace ID (default: qwen2.5:7b)",
+    )
+    parser.add_argument(
+        "--mode", default="chat",
+        choices=["chat", "agent", "train"],
+        help="chat=libre, agent=ejecuta acciones, train=genera datos",
+    )
+    parser.add_argument(
+        "--autonomy", default="confirm",
+        choices=["suggest", "confirm", "auto"],
+        help="Solo en modo agent: suggest/confirm/auto",
+    )
+    parser.add_argument(
+        "--api-url", default=ILUMINATY_URL,
+        help=f"ILUMINATY API URL (default: {ILUMINATY_URL})",
+    )
+    parser.add_argument(
+        "--hf", action="store_true",
+        help="Cargar desde HuggingFace en lugar de Ollama GGUF",
+    )
+    parser.add_argument(
+        "--4bit", action="store_true", dest="load_4bit",
+        help="Cargar en INT4 (solo con --hf, ahorra VRAM)",
+    )
+    parser.add_argument(
+        "--checkpoint", default=None,
+        help="Ruta a checkpoint fine-tuneado",
+    )
+    parser.add_argument(
+        "--session", default=None,
+        help="Nombre de sesion para reanudar o crear",
+    )
     args = parser.parse_args()
 
     # Check if ILUMINATY is running
     world = _get_world(args.api_url)
     if world:
-        print(_c(C.GREEN, f"ILUMINATY conectado ({args.api_url})"))
+        print(_c(C.GREEN, f"\n  ILUMINATY conectado ({args.api_url})"))
     else:
         print(_c(C.YELLOW,
-            f"ILUMINATY no responde en {args.api_url} — "
-            "el modelo funcionará sin contexto de pantalla.\n"
-            "Para activarlo: python main.py start --actions"
+            f"\n  ILUMINATY no responde en {args.api_url}\n"
+            "  El modelo funcionara sin contexto de pantalla.\n"
+            "  Para activarlo: python main.py start --actions"
         ))
 
     # Load model
-    print(f"\nCargando modelo {_c(C.BOLD, args.model)}...")
+    print(f"\n  Cargando modelo {_c(C.BOLD, args.model)}...")
     from iluminaty.brain_engine import BrainEngine
     t0 = time.time()
     try:
@@ -393,10 +842,11 @@ def main():
         else:
             brain = BrainEngine.from_ollama_blob(args.model)
     except Exception as e:
-        print(_c(C.RED, f"Error cargando modelo: {e}"))
+        print(_c(C.RED, f"\n  Error cargando modelo: {e}"))
         sys.exit(1)
 
-    print(_c(C.GREEN, f"Listo en {time.time()-t0:.1f}s"))
+    load_time = time.time() - t0
+    print(_c(C.GREEN, f"  Modelo listo en {load_time:.1f}s"))
 
     run_chat(
         brain=brain,
@@ -404,6 +854,8 @@ def main():
         mode=args.mode,
         autonomy=args.autonomy,
         save_training=(args.mode == "train"),
+        model_name=args.model,
+        session_name=args.session,
     )
 
 
