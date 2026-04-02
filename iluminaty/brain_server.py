@@ -61,13 +61,26 @@ def _build_system_prompt(world: Optional[dict]) -> str:
     what ILUMINATY is, and what the current screen state looks like.
     """
     base = (
-        "Eres IluminatyBrain — el cerebro de inteligencia artificial del sistema ILUMINATY.\n"
-        "ILUMINATY es un sistema que ve la pantalla del usuario en tiempo real (IPA — ILUMINATY Perception Algorithm) "
-        "y puede controlar el PC: clicks, teclado, comandos, browser, ventanas.\n"
-        "Tienes acceso a lo que el usuario tiene en pantalla ahora mismo.\n"
-        "Responde en español, de forma útil y directa.\n"
-        "Cuando el usuario te pida hacer algo en su PC, puedes proponer la acción concreta "
-        "o explicar cómo ILUMINATY lo ejecutaría.\n"
+        "Eres IluminatyBrain — el cerebro de IA del sistema ILUMINATY.\n"
+        "ILUMINATY ve la pantalla del usuario en tiempo real y puede controlar el PC.\n"
+        "Responde en espanol, de forma util y directa.\n"
+        "\n"
+        "CAPACIDADES: puedes ejecutar acciones reales en el PC del usuario.\n"
+        "Cuando el usuario pida hacer algo, responde con texto explicando que haras\n"
+        "y luego incluye el JSON de la accion. Formato exacto:\n"
+        "\n"
+        "Para hacer click: {\"action\": \"click\", \"x\": 100, \"y\": 200}\n"
+        "Para escribir texto: {\"action\": \"type_text\", \"text\": \"hola mundo\"}\n"
+        "Para hotkey: {\"action\": \"hotkey\", \"keys\": \"ctrl+s\"}\n"
+        "Para scroll: {\"action\": \"scroll\", \"direction\": \"down\", \"amount\": 3}\n"
+        "Para buscar ventana: {\"action\": \"focus_window\", \"title\": \"Claude\"}\n"
+        "Para navegar browser: {\"action\": \"browser_navigate\", \"url\": \"https://...\"}\n"
+        "Para ejecutar comando: {\"action\": \"run_command\", \"cmd\": \"notepad\"}\n"
+        "Para terminar: {\"action\": \"done\"}\n"
+        "\n"
+        "IMPORTANTE: cuando el usuario pida hacer algo en pantalla, SIEMPRE incluye\n"
+        "el JSON de accion en tu respuesta para que ILUMINATY lo ejecute.\n"
+        "Si necesitas varias acciones, describe cada una y pon su JSON.\n"
     )
 
     if not world:
@@ -1017,10 +1030,18 @@ async function updateStats() {
     const screenEl = document.getElementById('footer-screen');
     if (s.iluminaty_connected) {
       ipaEl.innerHTML = `<span style="color:var(--green)">● IPA conectado</span>`;
-      screenEl.textContent = `App: ${s.screen_surface || '?'} · ${s.screen_phase || '?'}`;
+      const surf = (s.screen_surface || '?').split(' :: ')[0];
+      screenEl.textContent = `App: ${surf} · ${s.screen_phase || '?'}`;
+      // Auto-enable agent mode when IPA connects
+      if (!agentMode) {
+        agentMode = true;
+        document.getElementById('agent-label').textContent = 'ON';
+        document.getElementById('agent-toggle').style.borderColor = 'var(--green)';
+        document.getElementById('agent-toggle').style.color = 'var(--green)';
+      }
     } else {
-      ipaEl.innerHTML = `<span style="color:var(--text2)">○ IPA offline</span> <span style="font-size:10px;color:var(--text2)">(sin pantalla)</span>`;
-      screenEl.textContent = 'Iniciá ILUMINATY para ver la pantalla';
+      ipaEl.innerHTML = `<span style="color:var(--text2)">○ IPA offline</span>`;
+      screenEl.textContent = 'Sin vision de pantalla';
     }
 
     document.getElementById('footer-samples').textContent = `Training: ${s.training_samples || 0} muestras`;
