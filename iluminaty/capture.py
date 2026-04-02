@@ -13,6 +13,7 @@ Características:
 
 import io
 import logging
+import os
 import time
 import threading
 from typing import Optional, Callable
@@ -40,6 +41,8 @@ class CaptureConfig:
         min_fps: float = 0.2,
         max_fps: float = 5.0,
         smart_quality: bool = True,    # adapta calidad segun contenido
+        smart_quality_sample_every: int = 4,
+        webp_method: int = 4,
     ):
         self.fps = fps
         self.quality = quality
@@ -52,6 +55,8 @@ class CaptureConfig:
         self.min_fps = min_fps
         self.max_fps = max_fps
         self.smart_quality = smart_quality
+        self.smart_quality_sample_every = max(1, int(smart_quality_sample_every))
+        self.webp_method = max(0, min(6, int(webp_method)))
 
 
 class ScreenCapture:
@@ -68,6 +73,8 @@ class ScreenCapture:
         self._current_fps = self.config.fps
         self._consecutive_unchanged = 0
         self._on_frame: Optional[Callable] = None  # callback opcional
+        self._smart_quality_counter = 0
+        self._smart_quality_value = self.config.quality
         
     @property
     def is_running(self) -> bool:
@@ -98,20 +105,32 @@ class ScreenCapture:
 
         # Smart quality: detectar si hay mucho contraste (texto/UI)
         if self.config.smart_quality:
-            # Sampling rapido: si el frame tiene mucha variacion de intensidad
-            # en bloques pequenos, probablemente es texto/codigo -> subir calidad
-            try:
-                import numpy as np
-                small = img.resize((64, 64))
-                arr = np.array(small.convert("L"))
-                local_std = arr.std()
-                if local_std > 60:  # mucho contraste = texto/UI
-                    quality = min(quality + 15, 95)
-            except ImportError:
-                logger.debug("numpy not available; smart quality boost disabled")
+            # Sample only every N frames and reuse last decision.
+            self._smart_quality_counter += 1
+            if self._smart_quality_counter % max(1, self.config.smart_quality_sample_every) == 0:
+                try:
+                    import numpy as np
+                    small = img.resize((64, 64))
+                    arr = np.array(small.convert("L"))
+                    local_std = arr.std()
+                    if local_std > 60:  # mucho contraste = texto/UI
+                        self._smart_quality_value = min(self.config.quality + 15, 95)
+                    else:
+                        self._smart_quality_value = self.config.quality
+                except ImportError:
+                    logger.debug("numpy not available; smart quality boost disabled")
+                    self._smart_quality_value = self.config.quality
+            quality = self._smart_quality_value
 
         if fmt == "webp":
-            img.save(buf, format="WEBP", quality=quality, method=4)
+            method = self.config.webp_method
+            env_method = os.environ.get("ILUMINATY_WEBP_METHOD", "").strip()
+            if env_method:
+                try:
+                    method = max(0, min(6, int(env_method)))
+                except Exception:
+                    method = self.config.webp_method
+            img.save(buf, format="WEBP", quality=quality, method=method)
             mime = "image/webp"
         elif fmt == "png":
             img.save(buf, format="PNG", optimize=True)

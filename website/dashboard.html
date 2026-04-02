@@ -171,7 +171,7 @@
       </div>
       <div class="card">
         <div class="card-label">MCP Tools</div>
-        <div class="card-value" id="dash-tools">7 / 17</div>
+          <div class="card-value" id="dash-tools">29 / 48</div>
       </div>
       <div class="card">
         <div class="card-label">Member Since</div>
@@ -205,10 +205,10 @@
       <div class="plan-features" id="plan-features">
         <div class="plan-feature"><span class="check">&#10003;</span> Core vision engine</div>
         <div class="plan-feature"><span class="check">&#10003;</span> 7 basic actions</div>
-        <div class="plan-feature"><span class="check">&#10003;</span> 7 MCP tools</div>
+        <div class="plan-feature"><span class="check">&#10003;</span> 29 MCP tools</div>
         <div class="plan-feature"><span class="check">&#10003;</span> REST API (local)</div>
         <div class="plan-feature locked"><span class="lock">&#128274;</span> 42+ full actions</div>
-        <div class="plan-feature locked"><span class="lock">&#128274;</span> 17 MCP tools</div>
+        <div class="plan-feature locked"><span class="lock">&#128274;</span> 48 MCP tools</div>
         <div class="plan-feature locked"><span class="lock">&#128274;</span> Browser automation</div>
         <div class="plan-feature locked"><span class="lock">&#128274;</span> Terminal + Git ops</div>
         <div class="plan-feature locked"><span class="lock">&#128274;</span> File system access</div>
@@ -332,7 +332,7 @@ function showDashboard(session) {
   // Cards
   document.getElementById("dash-plan").textContent = isPro ? "Pro" : "Free";
   document.getElementById("dash-actions").textContent = isPro ? "42+" : "7 / 42";
-  document.getElementById("dash-tools").textContent = isPro ? "17" : "7 / 17";
+  document.getElementById("dash-tools").textContent = isPro ? "48" : "29 / 48";
   document.getElementById("dash-since").textContent = user.created_at
     ? new Date(user.created_at).toLocaleDateString("en-US", { month: "short", year: "numeric" })
     : "—";

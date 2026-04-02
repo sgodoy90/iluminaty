@@ -9,10 +9,37 @@ Todo en RAM. Cero disco. Cuando el proceso muere, todo desaparece.
 """
 
 import argparse
+import os
 import sys
 import signal
 from collections import deque
 import uvicorn
+
+
+def _apply_runtime_limits() -> None:
+    """
+    Apply conservative CPU defaults before heavy deps load.
+    Can be overridden explicitly via environment variables.
+    """
+    if os.environ.get("ILUMINATY_CPU_FRIENDLY", "1") != "1":
+        return
+
+    thread_budget = os.environ.get("ILUMINATY_CPU_THREADS", "").strip() or "2"
+    for key in (
+        "OMP_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+        "VECLIB_MAXIMUM_THREADS",
+        "ORT_NUM_THREADS",
+    ):
+        os.environ.setdefault(key, thread_budget)
+    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+    os.environ.setdefault("OMP_WAIT_POLICY", "PASSIVE")
+    os.environ.setdefault("KMP_BLOCKTIME", "0")
+
+
+_apply_runtime_limits()
 
 from iluminaty.ring_buffer import RingBuffer
 from iluminaty.capture import ScreenCapture, CaptureConfig
@@ -47,6 +74,18 @@ def main():
     parser.add_argument("--api-key", type=str, default=None, help="API key for auth (optional)")
     parser.add_argument("--no-adaptive", action="store_true", help="Disable adaptive FPS")
     parser.add_argument("--no-smart-quality", action="store_true", help="Disable smart quality adjustment")
+    parser.add_argument(
+        "--smart-quality-sample-every",
+        type=int,
+        default=4,
+        help="Analyze contrast every N frames for smart-quality (default: 4)",
+    )
+    parser.add_argument(
+        "--webp-method",
+        type=int,
+        default=4,
+        help="WebP encode method 0-6 (lower=faster, default: 4)",
+    )
     parser.add_argument("--audio", type=str, default="off", choices=["off", "mic", "system", "all"],
                         help="Audio capture mode (default: off)")
     parser.add_argument("--audio-buffer", type=int, default=60, help="Audio buffer seconds (default: 60)")
@@ -97,6 +136,8 @@ def main():
         monitor=args.monitor,
         adaptive_fps=not args.no_adaptive,
         smart_quality=not args.no_smart_quality,
+        smart_quality_sample_every=max(1, int(args.smart_quality_sample_every)),
+        webp_method=max(0, min(6, int(args.webp_method))),
     )
 
     # Auto-detect multi-monitor: if >1 monitor and not pinned to specific one

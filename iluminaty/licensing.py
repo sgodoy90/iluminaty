@@ -62,14 +62,25 @@ PRO_ACTIONS = {
 ALL_ACTIONS = FREE_ACTIONS | PRO_ACTIONS
 
 FREE_MCP_TOOLS = {
-    "see_screen", "see_changes", "read_screen_text",
-    "screen_status", "get_context", "do_action", "get_audio_level",
+    "see_screen", "see_changes", "read_screen_text", "perception",
+    "screen_status", "get_context", "do_action", "raw_action",
+    "action_precheck", "verify_action",
+    "operate_cycle",
+    "perception_world", "perception_trace", "set_operating_mode",
+    "vision_query",
+    "grounding_status", "grounding_resolve", "click_grounded", "type_grounded",
+    "window_minimize", "window_maximize", "window_close",
+    "move_window", "drag_screen", "spatial_state",
+    "get_audio_level",
+    "token_status", "set_token_mode", "set_token_budget",
 }
 
 PRO_MCP_TOOLS = {
-    "annotate_screen", "click_element", "type_text",
-    "run_command", "list_windows", "find_ui_element",
-    "read_file", "write_file", "get_clipboard", "agent_status",
+    "agent_status", "annotate_screen", "browser_navigate", "browser_tabs",
+    "click_element", "click_screen", "find_ui_element", "focus_window",
+    "get_clipboard", "keyboard", "list_windows", "monitor_info",
+    "read_file", "run_command", "scroll", "see_monitor",
+    "type_text", "watch_screen", "write_file",
 }
 
 ALL_MCP_TOOLS = FREE_MCP_TOOLS | PRO_MCP_TOOLS

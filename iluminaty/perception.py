@@ -33,6 +33,7 @@ New RAM: <20KB total
 
 import io
 import logging
+import os
 import time
 import threading
 from collections import deque
@@ -111,6 +112,22 @@ def _bytes_to_gray(frame_bytes: bytes, target_width: int = 480) -> Optional[np.n
         return img
     except Exception:
         return None
+
+
+def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.environ.get(name, str(default)))
+    except Exception:
+        value = default
+    return max(minimum, min(maximum, value))
+
+
+def _env_float(name: str, default: float, minimum: float, maximum: float) -> float:
+    try:
+        value = float(os.environ.get(name, str(default)))
+    except Exception:
+        value = default
+    return max(minimum, min(maximum, value))
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -664,14 +681,25 @@ class MonitorPerceptionState:
     last_analyzed: float = 0.0
     is_active: bool = False
     frame_skip_counter: int = 0
+    inactive_skip_every: int = 3
+    inactive_force_interval_s: float = 2.0
 
     def should_analyze(self, is_active_monitor: bool) -> bool:
-        """Active monitors: every frame. Inactive: every 3rd frame."""
+        """Active monitors: every frame. Inactive: sampled with bounded staleness."""
         self.is_active = is_active_monitor
         if is_active_monitor:
+            self.frame_skip_counter = 0
             return True
+
+        now = time.time()
+        force_interval = max(0.2, float(self.inactive_force_interval_s))
+        if self.last_analyzed > 0 and (now - self.last_analyzed) >= force_interval:
+            self.frame_skip_counter = 0
+            return True
+
+        skip_every = max(2, int(self.inactive_skip_every))
         self.frame_skip_counter += 1
-        if self.frame_skip_counter >= 3:
+        if self.frame_skip_counter >= skip_every:
             self.frame_skip_counter = 0
             return True
         return False
@@ -736,6 +764,7 @@ class PerceptionEngine:
         self._event_fuser = TemporalEventFuser()
         self._predictor = CapturePredictor()
         self._monitor_states: dict[int, MonitorPerceptionState] = {}
+        self._last_active_monitor_id: int = 0
         self._world = WorldStateEngine(horizon_seconds=90)
         self._temporal = TemporalVisualStore(
             horizon_seconds=90,
@@ -750,6 +779,51 @@ class PerceptionEngine:
         self._last_world_update = 0.0
         self._world_update_interval = 0.12
         self._last_visual_delta_ms = int(time.time() * 1000)
+        self._window_probe_min_interval = _env_float(
+            "ILUMINATY_WINDOW_POLL_MIN_INTERVAL_S", 0.25, 0.05, 2.0
+        )
+        self._last_window_probe_ts = 0.0
+
+        # CPU hardening knobs (safe defaults, overridable via env).
+        self._inactive_monitor_skip_every = _env_int(
+            "ILUMINATY_FAST_INACTIVE_SKIP", 4, 2, 20
+        )
+        self._inactive_monitor_force_s = _env_float(
+            "ILUMINATY_FAST_INACTIVE_FORCE_S", 2.0, 0.2, 30.0
+        )
+        self._inactive_low_change_min = _env_float(
+            "ILUMINATY_FAST_INACTIVE_MIN_CHANGE", 0.08, 0.0, 1.0
+        )
+
+        self._ocr_active_interval_s = _env_float(
+            "ILUMINATY_OCR_ACTIVE_INTERVAL_S", 4.0, 0.5, 60.0
+        )
+        self._ocr_inactive_interval_s = _env_float(
+            "ILUMINATY_OCR_INACTIVE_INTERVAL_S", 10.0, 1.0, 180.0
+        )
+        self._ocr_change_threshold = _env_float(
+            "ILUMINATY_OCR_CHANGE_THRESHOLD", 0.35, 0.05, 1.0
+        )
+        self._ocr_phash_threshold = _env_int(
+            "ILUMINATY_OCR_PHASH_THRESHOLD", 18, 0, 64
+        )
+
+        self._secondary_heartbeat_ms = max(
+            1000,
+            int(float(os.environ.get("ILUMINATY_VLM_SECONDARY_HEARTBEAT_S", "8")) * 1000.0),
+        )
+        self._deep_loop_stats = {
+            "cycles": 0,
+            "active_monitor_id": 0,
+            "enqueued": 0,
+            "enqueued_active": 0,
+            "enqueued_secondary": 0,
+            "skipped_inactive": 0,
+            "skipped_low_priority": 0,
+            "last_cycle_ms": 0,
+            "secondary_heartbeat_ms": self._secondary_heartbeat_ms,
+            "per_monitor": {},
+        }
 
         # OCR engine
         self._ocr = None
@@ -762,8 +836,44 @@ class PerceptionEngine:
     def _get_monitor_state(self, monitor_id: int) -> MonitorPerceptionState:
         """Get or create per-monitor state."""
         if monitor_id not in self._monitor_states:
-            self._monitor_states[monitor_id] = MonitorPerceptionState(monitor_id=monitor_id)
+            self._monitor_states[monitor_id] = MonitorPerceptionState(
+                monitor_id=monitor_id,
+                inactive_skip_every=self._inactive_monitor_skip_every,
+                inactive_force_interval_s=self._inactive_monitor_force_s,
+            )
         return self._monitor_states[monitor_id]
+
+    def _note_deep_monitor(self, monitor_id: int, key: str, inc: int = 1) -> None:
+        with self._lock:
+            per = self._deep_loop_stats["per_monitor"].setdefault(
+                int(monitor_id),
+                {"enqueued": 0, "enqueued_active": 0, "enqueued_secondary": 0, "skipped_inactive": 0, "skipped_low_priority": 0},
+            )
+            per[key] = int(per.get(key, 0)) + int(inc)
+
+    def _resolve_active_vlm_monitor(self) -> int:
+        active_vlm_monitor = int(self._last_active_monitor_id or 0)
+        if not self._monitor_mgr:
+            return active_vlm_monitor
+        try:
+            bounds = (self._last_window_info or {}).get("bounds", {}) or {}
+            if bounds and hasattr(self._monitor_mgr, "detect_active_from_window"):
+                active_vlm_monitor = int(self._monitor_mgr.detect_active_from_window(bounds) or 0)
+        except Exception:
+            active_vlm_monitor = int(self._last_active_monitor_id or 0)
+        if active_vlm_monitor > 0:
+            self._last_active_monitor_id = active_vlm_monitor
+            return active_vlm_monitor
+        try:
+            active = self._monitor_mgr.get_active_monitor()
+            if active:
+                resolved = int(getattr(active, "id", 0) or 0)
+                if resolved > 0:
+                    self._last_active_monitor_id = resolved
+                return resolved
+        except Exception:
+            return int(self._last_active_monitor_id or 0)
+        return int(self._last_active_monitor_id or 0)
 
     def start(self, buffer):
         """Start the perception loop."""
@@ -845,13 +955,19 @@ class PerceptionEngine:
                     time.sleep(self._fast_loop_interval)
                     continue
 
+                active_monitor_id = int(self._resolve_active_vlm_monitor() or 0)
+                if active_monitor_id <= 0 and per_monitor:
+                    active_monitor_id = int(next(iter(per_monitor.keys())))
+                if active_monitor_id > 0:
+                    self._last_active_monitor_id = active_monitor_id
+
                 analyzed_any = False
                 for monitor_id, slot in per_monitor.items():
                     prev_ts = last_ts_per_monitor.get(monitor_id, 0.0)
                     if slot.timestamp <= prev_ts:
                         continue
                     last_ts_per_monitor[monitor_id] = slot.timestamp
-                    self._analyze_frame(slot)
+                    self._analyze_frame(slot, active_monitor_id=active_monitor_id)
                     analyzed_any = True
 
                 if not analyzed_any:
@@ -870,6 +986,7 @@ class PerceptionEngine:
         This path is asynchronous and never blocks the fast semantic loop.
         """
         last_enqueued_ts: dict[int, float] = {}
+        last_secondary_ts: dict[int, int] = {}
         while self._running:
             started = time.time()
             try:
@@ -878,15 +995,42 @@ class PerceptionEngine:
                     continue
                 per_monitor = self._buffer.get_latest_per_monitor()
                 now_ms = int(time.time() * 1000)
+
+                # Resolve which monitor has user focus — VLM prioritizes active monitor.
+                active_vlm_monitor = self._resolve_active_vlm_monitor()
+                with self._lock:
+                    self._deep_loop_stats["cycles"] = int(self._deep_loop_stats.get("cycles", 0)) + 1
+                    self._deep_loop_stats["active_monitor_id"] = int(active_vlm_monitor or 0)
+                    self._deep_loop_stats["last_cycle_ms"] = now_ms
+
                 for monitor_id, slot in per_monitor.items():
                     prev = last_enqueued_ts.get(monitor_id, 0.0)
                     if slot.timestamp <= prev:
                         continue
                     mon_state = self._get_monitor_state(monitor_id)
-
-                    # Prioritize high-change or unstable scenes.
                     priority = min(1.0, max(0.1, float(getattr(slot, "change_score", 0.0)) + (1.0 - mon_state.scene.confidence)))
+
+                    # Smart VLM targeting:
+                    # - Active monitor: regular VLM scheduling.
+                    # - Inactive monitors: heartbeat VLM every N seconds to keep contextual presence.
+                    is_active = (active_vlm_monitor == 0 or monitor_id == active_vlm_monitor)
+                    if not is_active:
+                        last_secondary = int(last_secondary_ts.get(monitor_id, 0))
+                        if (now_ms - last_secondary) < self._secondary_heartbeat_ms:
+                            with self._lock:
+                                self._deep_loop_stats["skipped_inactive"] = int(self._deep_loop_stats.get("skipped_inactive", 0)) + 1
+                            self._note_deep_monitor(monitor_id, "skipped_inactive")
+                            last_enqueued_ts[monitor_id] = slot.timestamp  # mark as seen, skip VLM
+                            continue
+                        last_secondary_ts[monitor_id] = now_ms
+                        # Secondary pulses run at lower urgency.
+                        priority = max(0.12, min(priority, 0.35))
+
                     if priority < 0.2 and (now_ms - int(slot.timestamp * 1000)) > 1200:
+                        with self._lock:
+                            self._deep_loop_stats["skipped_low_priority"] = int(self._deep_loop_stats.get("skipped_low_priority", 0)) + 1
+                        self._note_deep_monitor(monitor_id, "skipped_low_priority")
+                        last_enqueued_ts[monitor_id] = slot.timestamp  # mark as seen, skip VLM
                         continue
 
                     predicted_tick = self._world.tick_id + 1
@@ -915,7 +1059,19 @@ class PerceptionEngine:
                         motion_summary=motion_desc,
                         priority=priority,
                     )
-                    self._visual.enqueue(task)
+                    enqueued = self._visual.enqueue(task)
+                    if enqueued:
+                        with self._lock:
+                            self._deep_loop_stats["enqueued"] = int(self._deep_loop_stats.get("enqueued", 0)) + 1
+                            if is_active:
+                                self._deep_loop_stats["enqueued_active"] = int(self._deep_loop_stats.get("enqueued_active", 0)) + 1
+                            else:
+                                self._deep_loop_stats["enqueued_secondary"] = int(self._deep_loop_stats.get("enqueued_secondary", 0)) + 1
+                        self._note_deep_monitor(monitor_id, "enqueued")
+                        if is_active:
+                            self._note_deep_monitor(monitor_id, "enqueued_active")
+                        else:
+                            self._note_deep_monitor(monitor_id, "enqueued_secondary")
                     last_enqueued_ts[monitor_id] = slot.timestamp
             except Exception as e:
                 logger.debug("Deep loop iteration failed: %s", e)
@@ -931,6 +1087,10 @@ class PerceptionEngine:
         """Detect active window changes. Returns (changed, window_info)."""
         if not HAS_VISION:
             return False, self._last_window_info
+        now = time.time()
+        if (now - self._last_window_probe_ts) < self._window_probe_min_interval:
+            return False, self._last_window_info
+        self._last_window_probe_ts = now
         try:
             win = get_active_window_info() or {}
             name = win.get("name") or win.get("app_name") or "unknown"
@@ -983,18 +1143,18 @@ class PerceptionEngine:
     def _check_phash(self, mon_state: MonitorPerceptionState, frame_bytes: bytes) -> int:
         """Compute perceptual hash and return hamming distance from last frame."""
         if not HAS_IMAGEHASH:
-            return 99
+            return 0
         try:
             img = Image.open(io.BytesIO(frame_bytes))
             current_hash = imagehash.phash(img, hash_size=8)
             if mon_state.last_phash is None:
                 mon_state.last_phash = current_hash
-                return 99
+                return 0
             distance = current_hash - mon_state.last_phash
             mon_state.last_phash = current_hash
             return distance
         except Exception:
-            return 99
+            return 0
 
     # ─── GATE 3: Optical Flow (where is motion happening?) ───
 
@@ -1063,7 +1223,7 @@ class PerceptionEngine:
 
     # ─── MAIN ANALYSIS (IPA 4-Gate Pipeline) ───
 
-    def _analyze_frame(self, slot):
+    def _analyze_frame(self, slot, active_monitor_id: Optional[int] = None):
         """
         IPA 4-Gate Pipeline:
         Gate 0 → Window check (free)
@@ -1081,17 +1241,22 @@ class PerceptionEngine:
         # Get per-monitor state
         mon_state = self._get_monitor_state(monitor_id)
 
-        # Determine active monitor
-        active_monitor_id = 0
-        if self._monitor_mgr:
-            try:
-                active = self._monitor_mgr.get_active_monitor()
-                if active:
-                    active_monitor_id = getattr(active, 'id', 0)
-            except Exception as e:
-                logger.debug("Failed to resolve active monitor, defaulting to 0: %s", e)
+        # Determine active monitor with robust fallback.
+        if active_monitor_id is None:
+            active_monitor_id = int(self._resolve_active_vlm_monitor() or 0)
+        if active_monitor_id <= 0:
+            active_monitor_id = int(monitor_id)
+        is_active_monitor = monitor_id == active_monitor_id
 
-        if not mon_state.should_analyze(monitor_id == active_monitor_id):
+        if (
+            not is_active_monitor
+            and change < self._inactive_low_change_min
+            and (now - mon_state.last_analyzed) < self._inactive_monitor_force_s
+        ):
+            self._attention.decay()
+            return
+
+        if not mon_state.should_analyze(is_active_monitor):
             self._attention.decay()
             return
 
@@ -1293,9 +1458,10 @@ class PerceptionEngine:
             mon_state.motion_reported = False
 
         # ── Gate 4: OCR diff (expensive, only on major changes, max every 3s) ──
+        ocr_interval = self._ocr_active_interval_s if is_active_monitor else self._ocr_inactive_interval_s
         if (self._ocr and self._ocr.available
-                and (change > 0.3 or phash_dist > 15)
-                and (now - mon_state.last_ocr_time) > 3.0):
+                and (change > self._ocr_change_threshold or phash_dist > self._ocr_phash_threshold)
+                and (now - mon_state.last_ocr_time) > ocr_interval):
             # Focus OCR on hot attention zones if possible
             mon_state.last_ocr_time = now
             try:
@@ -1516,6 +1682,14 @@ class PerceptionEngine:
         attention = primary.attention if primary else self._attention
         predictor = primary.predictor if primary else self._predictor
         scene = primary.scene if primary else self._scene_machine
+        with self._lock:
+            deep_stats = {
+                **{k: v for k, v in self._deep_loop_stats.items() if k != "per_monitor"},
+                "per_monitor": {
+                    str(k): dict(v)
+                    for k, v in self._deep_loop_stats.get("per_monitor", {}).items()
+                },
+            }
 
         return {
             "scene_state": scene.state.value,
@@ -1544,6 +1718,7 @@ class PerceptionEngine:
             },
             "world": self.get_world_state(),
             "visual": self._visual.stats(),
+            "deep_loop": deep_stats,
             "temporal": self._temporal.stats(),
             "event_count": len(self._events),
             "running": self._running,

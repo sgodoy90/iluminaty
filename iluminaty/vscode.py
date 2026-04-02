@@ -45,7 +45,7 @@ class VSCodeBridge:
                 )
                 if result.returncode == 0:
                     return cmd
-            except (FileNotFoundError, OSError):
+            except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
                 continue
         return None
 

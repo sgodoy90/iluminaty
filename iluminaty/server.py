@@ -3155,6 +3155,18 @@ async def browser_tabs(x_api_key: Optional[str] = Header(None)):
     return {"tabs": _state.browser.list_tabs() if _state.browser else []}
 
 
+@app.post("/browser/new_tab")
+async def browser_new_tab(url: str = Query("about:blank"), x_api_key: Optional[str] = Header(None)):
+    _check_auth(x_api_key)
+    return _state.browser.new_tab(url) if _state.browser else {"success": False}
+
+
+@app.post("/browser/activate")
+async def browser_activate(tab_id: str = Query(...), x_api_key: Optional[str] = Header(None)):
+    _check_auth(x_api_key)
+    return _state.browser.activate_tab(tab_id) if _state.browser else {"success": False}
+
+
 @app.post("/browser/navigate")
 async def browser_navigate(url: str = Query(...), x_api_key: Optional[str] = Header(None)):
     _check_auth(x_api_key)
@@ -3365,7 +3377,7 @@ async def license_status():
         "mcp_tools": {
             "available": sorted(lic.available_mcp_tools),
             "total": len(lic.available_mcp_tools),
-            "max": len(lic.available_mcp_tools) if lic.is_pro else 7,
+            "max": len(lic.available_mcp_tools),
         },
         "upgrade_url": None if lic.is_pro else "https://iluminaty.dev/#pricing",
     }

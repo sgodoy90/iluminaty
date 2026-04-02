@@ -16,6 +16,36 @@ let pollTimer = null;
 let visionTimer = null;
 let logs = [];
 let currentOperatingMode = "SAFE";
+let runtimeTimer = null;
+let desktopSettings = null;
+
+const PRODUCT_CAPS = {
+  free_actions: 7,
+  pro_actions: "42+",
+  free_mcp_tools: 29,
+  pro_mcp_tools: 48,
+};
+
+const DEFAULT_DESKTOP_SETTINGS = {
+  autonomy: "confirm",
+  operating_mode: "SAFE",
+  monitor: 0,
+  capture_interval_ms: 500,
+  fast_loop_hz: 10.0,
+  deep_loop_hz: 1.0,
+  vision_profile: "core_ram",
+  api_port: 8420,
+  vlm_enabled: false,
+  vlm_backend: "smol",
+  vlm_model: "HuggingFaceTB/SmolVLM2-500M-Instruct",
+  vlm_int8: true,
+  vlm_image_size: 384,
+  vlm_max_tokens: 64,
+  vlm_min_interval_ms: 900,
+  vlm_keepalive_ms: 7000,
+  vlm_priority_threshold: 0.55,
+  vlm_secondary_heartbeat_s: 8.0,
+};
 
 // ─── DOM Cache ───
 const $ = (sel) => document.querySelector(sel);
@@ -30,6 +60,178 @@ function escapeHtml(str) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#039;");
+}
+
+function clampNumber(value, min, max, fallback) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, n));
+}
+
+function applyDesktopSettingsToUI(settings) {
+  const s = { ...DEFAULT_DESKTOP_SETTINGS, ...(settings || {}) };
+  const set = (id, value) => {
+    const el = $(id);
+    if (!el) return;
+    if (el.type === "checkbox") {
+      el.checked = !!value;
+    } else {
+      el.value = value;
+    }
+  };
+
+  set("#set-autonomy", s.autonomy);
+  set("#set-operating-mode", s.operating_mode);
+  set("#set-interval", s.capture_interval_ms);
+  set("#set-port", s.api_port);
+  set("#set-fast-loop-hz", s.fast_loop_hz);
+  set("#set-deep-loop-hz", s.deep_loop_hz);
+  set("#set-vision-profile", s.vision_profile);
+  set("#set-vlm-enabled", s.vlm_enabled);
+  set("#set-vlm-backend", s.vlm_backend);
+  set("#set-vlm-model", s.vlm_model);
+  set("#set-vlm-int8", s.vlm_int8);
+  set("#set-vlm-image-size", s.vlm_image_size);
+  set("#set-vlm-max-tokens", s.vlm_max_tokens);
+  currentOperatingMode = String(s.operating_mode || "SAFE").toUpperCase();
+}
+
+function readDesktopSettingsFromUI() {
+  return {
+    autonomy: $("#set-autonomy")?.value || "confirm",
+    operating_mode: ($("#set-operating-mode")?.value || "SAFE").toUpperCase(),
+    monitor: 0,
+    capture_interval_ms: Math.round(clampNumber($("#set-interval")?.value, 100, 10000, 500)),
+    fast_loop_hz: clampNumber($("#set-fast-loop-hz")?.value, 2.0, 20.0, 10.0),
+    deep_loop_hz: clampNumber($("#set-deep-loop-hz")?.value, 0.5, 4.0, 1.0),
+    vision_profile: $("#set-vision-profile")?.value || "core_ram",
+    api_port: Math.round(clampNumber($("#set-port")?.value, 1024, 65535, 8420)),
+    vlm_enabled: !!$("#set-vlm-enabled")?.checked,
+    vlm_backend: $("#set-vlm-backend")?.value || "smol",
+    vlm_model: ($("#set-vlm-model")?.value || DEFAULT_DESKTOP_SETTINGS.vlm_model).trim(),
+    vlm_int8: !!$("#set-vlm-int8")?.checked,
+    vlm_image_size: Math.round(clampNumber($("#set-vlm-image-size")?.value, 224, 768, 384)),
+    vlm_max_tokens: Math.round(clampNumber($("#set-vlm-max-tokens")?.value, 16, 256, 64)),
+    vlm_min_interval_ms: 900,
+    vlm_keepalive_ms: 7000,
+    vlm_priority_threshold: 0.55,
+    vlm_secondary_heartbeat_s: 8.0,
+  };
+}
+
+async function loadDesktopSettings() {
+  if (!isTauri || !invoke) {
+    desktopSettings = { ...DEFAULT_DESKTOP_SETTINGS };
+    applyDesktopSettingsToUI(desktopSettings);
+    return desktopSettings;
+  }
+  try {
+    const settings = await invoke("get_desktop_settings");
+    desktopSettings = { ...DEFAULT_DESKTOP_SETTINGS, ...(settings || {}) };
+    applyDesktopSettingsToUI(desktopSettings);
+    return desktopSettings;
+  } catch (e) {
+    desktopSettings = { ...DEFAULT_DESKTOP_SETTINGS };
+    applyDesktopSettingsToUI(desktopSettings);
+    addLog("runtime", `Settings load fallback: ${e?.message || e}`, "warn");
+    return desktopSettings;
+  }
+}
+
+function setRuntimeStatusText(text, color = "var(--text-dim)") {
+  const el = $("#runtime-status");
+  if (!el) return;
+  el.textContent = text || "--";
+  el.style.color = color;
+}
+
+function setVlmDownloadStatusText(text, color = "var(--text-dim)") {
+  const el = $("#vlm-download-status");
+  if (!el) return;
+  el.textContent = text || "idle";
+  el.style.color = color;
+}
+
+async function refreshRuntimeStatus() {
+  if (!isTauri || !invoke) return;
+  try {
+    const status = await invoke("get_runtime_status");
+    if (status?.ready) {
+      const label = `ready | ${status.python?.split("\\").pop() || "python"}`;
+      setRuntimeStatusText(label, "var(--green)");
+    } else {
+      const miss = Array.isArray(status?.missing) && status.missing.length
+        ? `missing: ${status.missing.join(", ")}`
+        : (status?.message || "not ready");
+      setRuntimeStatusText(miss, "var(--yellow)");
+    }
+  } catch (e) {
+    setRuntimeStatusText(`error: ${e?.message || e}`, "var(--red)");
+  }
+}
+
+function startRuntimePolling() {
+  if (runtimeTimer) return;
+  runtimeTimer = setInterval(async () => {
+    await refreshRuntimeStatus();
+    if (!isTauri || !invoke) return;
+    try {
+      const status = await invoke("get_vlm_download_status");
+      if (!status) return;
+      if (status.status === "running") setVlmDownloadStatusText(`downloading ${status.model}...`, "var(--yellow)");
+      else if (status.status === "done") setVlmDownloadStatusText("model cached", "var(--green)");
+      else if (status.status === "error") setVlmDownloadStatusText(status.message || "download error", "var(--red)");
+      else setVlmDownloadStatusText(status.message || "idle", "var(--text-dim)");
+    } catch {}
+  }, 4000);
+}
+
+function stopRuntimePolling() {
+  if (!runtimeTimer) return;
+  clearInterval(runtimeTimer);
+  runtimeTimer = null;
+}
+
+async function bootstrapRuntime(installVlm = false) {
+  if (!isTauri || !invoke) return null;
+  setRuntimeStatusText("bootstrapping runtime...", "var(--yellow)");
+  try {
+    const result = await invoke("bootstrap_runtime", { installVlm });
+    if (result?.ready) {
+      setRuntimeStatusText("runtime ready", "var(--green)");
+      addLog("runtime", "Runtime bootstrap complete", "ok");
+    } else {
+      setRuntimeStatusText(result?.message || "runtime missing modules", "var(--yellow)");
+      addLog("runtime", result?.message || "Runtime incomplete", "warn");
+    }
+    return result;
+  } catch (e) {
+    setRuntimeStatusText(`bootstrap failed: ${e?.message || e}`, "var(--red)");
+    addLog("runtime", `Bootstrap failed: ${e?.message || e}`, "fail");
+    return null;
+  }
+}
+
+async function startVlmDownload() {
+  if (!isTauri || !invoke) return;
+  const model = ($("#set-vlm-model")?.value || DEFAULT_DESKTOP_SETTINGS.vlm_model).trim();
+  if (!model) {
+    addLog("vlm", "Model id required", "fail");
+    return;
+  }
+  setVlmDownloadStatusText("starting download...", "var(--yellow)");
+  try {
+    const status = await invoke("start_vlm_download", { modelId: model, force: false });
+    if (status?.status === "running") {
+      setVlmDownloadStatusText(`downloading ${model}...`, "var(--yellow)");
+      addLog("vlm", `Downloading ${model} in background`, "ok");
+    } else {
+      setVlmDownloadStatusText(status?.message || "idle");
+    }
+  } catch (e) {
+    setVlmDownloadStatusText(`error: ${e?.message || e}`, "var(--red)");
+    addLog("vlm", `Download start failed: ${e?.message || e}`, "fail");
+  }
 }
 
 // ─── Auth / Onboarding ───
@@ -56,6 +258,7 @@ async function logout() {
   stopPolling();
   stopVisionPolling();
   stopTokenPolling();
+  stopRuntimePolling();
   clearSession();
   // Show login screen
   $("#onboarding").classList.remove("hidden");
@@ -111,7 +314,9 @@ function updatePlanBanner(session) {
     const badge = $("#plan-banner-badge");
     if (badge) { badge.textContent = "PRO"; badge.classList.add("pro"); }
     const text = $(".plan-banner-text");
-    if (text) text.textContent = "42+ actions \u00b7 44 MCP tools \u00b7 Full access";
+    if (text) {
+      text.textContent = `${PRODUCT_CAPS.pro_actions} actions \u00b7 ${PRODUCT_CAPS.pro_mcp_tools} MCP tools \u00b7 Full access`;
+    }
     const btn = $("#plan-banner-upgrade");
     if (btn) btn.classList.add("hidden");
   }
@@ -250,8 +455,8 @@ function updateApiKeyCard(session) {
   if (info) {
     if (isPro) {
       info.innerHTML = `
-        <div class="plan-feature"><span class="plan-check">&#10003;</span> 42+ actions</div>
-        <div class="plan-feature"><span class="plan-check">&#10003;</span> 44 MCP tools</div>
+        <div class="plan-feature"><span class="plan-check">&#10003;</span> ${PRODUCT_CAPS.pro_actions} actions</div>
+        <div class="plan-feature"><span class="plan-check">&#10003;</span> ${PRODUCT_CAPS.pro_mcp_tools} MCP tools</div>
         <div class="plan-feature"><span class="plan-check">&#10003;</span> Vision + OCR</div>
         <div class="plan-feature"><span class="plan-check">&#10003;</span> Browser + Terminal</div>
         <div class="plan-feature"><span class="plan-check">&#10003;</span> File System</div>
@@ -991,6 +1196,8 @@ function init() {
   initOnboarding();
   initNav();
   initActionButtons();
+  loadDesktopSettings().then(() => refreshRuntimeStatus());
+  startRuntimePolling();
 
   // Server toggle
   $("#server-toggle").addEventListener("click", toggleServer);
@@ -1016,32 +1223,79 @@ function init() {
 
   // J11: Settings save
   const saveSettings = async () => {
-    const settings = {
-      autonomy: $("#set-autonomy").value,
-      capture_interval: parseInt($("#set-interval").value, 10),
-      ocr_enabled: $("#set-ocr").checked,
-      buffer_size: parseInt($("#set-buffer").value, 10),
-      port: parseInt($("#set-port").value, 10),
-      browser_port: parseInt($("#set-browser-port").value, 10),
-      rate_limit: parseInt($("#set-rate").value, 10),
-      kill_zones: $("#set-killzones").checked,
-      audit_trail: $("#set-audit").checked,
-      mcp_enabled: $("#set-mcp").checked,
-    };
-    const interval = Math.max(100, settings.capture_interval || 1000);
+    const previousPort = Number(
+      desktopSettings?.api_port ?? DEFAULT_DESKTOP_SETTINGS.api_port
+    );
+    const settings = readDesktopSettingsFromUI();
+    let effectiveSettings = { ...settings };
+
+    if (isTauri && invoke) {
+      try {
+        const persisted = await invoke("save_desktop_settings", { settings });
+        desktopSettings = { ...DEFAULT_DESKTOP_SETTINGS, ...(persisted || settings) };
+        effectiveSettings = { ...desktopSettings };
+        applyDesktopSettingsToUI(desktopSettings);
+      } catch (e) {
+        addLog("settings", `Desktop save failed: ${e?.message || e}`, "fail");
+      }
+    } else {
+      desktopSettings = { ...DEFAULT_DESKTOP_SETTINGS, ...settings };
+      effectiveSettings = { ...desktopSettings };
+    }
+
+    const newPort = Number(
+      effectiveSettings?.api_port ?? DEFAULT_DESKTOP_SETTINGS.api_port
+    );
+    const portChanged = previousPort !== newPort;
+
+    if (portChanged && serverOnline && isTauri && invoke) {
+      addLog(
+        "settings",
+        `Port changed (${previousPort} → ${newPort}), restarting server...`,
+        "warn"
+      );
+      try {
+        await invoke("stop_server");
+        await new Promise((r) => setTimeout(r, 300));
+        await invoke("start_server");
+        await new Promise((r) => setTimeout(r, 700));
+      } catch (e) {
+        addLog("settings", `Port restart failed: ${e?.message || e}`, "fail");
+      }
+    }
+
+    const interval = Math.max(100, effectiveSettings.capture_interval_ms || 1000);
     const fps = +(1000 / interval).toFixed(2);
     const mode = getPreferredMode();
+
+    // Live backend settings (subset supported hot-reload).
     const result = await apiPost(`/config?fps=${fps}`);
     const modeResult = await apiPost(`/operating/mode?mode=${encodeURIComponent(mode)}`);
+
     if (result && modeResult?.mode) {
       currentOperatingMode = String(modeResult.mode).toUpperCase();
-      addLog("settings", `Capture + mode (${currentOperatingMode}) applied`, "ok");
+      addLog(
+        "settings",
+        `Saved (${effectiveSettings.vision_profile}${effectiveSettings.vlm_enabled ? " + VLM" : ""})`,
+        "ok"
+      );
     } else {
-      addLog("settings", "Failed to save settings", "fail");
+      addLog("settings", "Saved local profile; backend not reachable", "warn");
     }
   };
   const saveBtn = $("#btn-save-settings");
   if (saveBtn) saveBtn.addEventListener("click", saveSettings);
+
+  const runtimeBtn = $("#btn-runtime-bootstrap");
+  if (runtimeBtn) {
+    runtimeBtn.addEventListener("click", async () => {
+      const wantsVlm = !!$("#set-vlm-enabled")?.checked;
+      await bootstrapRuntime(wantsVlm);
+    });
+  }
+
+  const dlBtn = $("#btn-vlm-download");
+  if (dlBtn) dlBtn.addEventListener("click", startVlmDownload);
 
   // Logout button
   const logoutBtn = $("#btn-logout");
@@ -1061,10 +1315,14 @@ function init() {
       stopPolling();
       stopVisionPolling();
       stopTokenPolling();
+      stopRuntimePolling();
     } else if (serverOnline) {
       startPolling();
       startVisionPolling();
       startTokenPolling();
+      startRuntimePolling();
+    } else {
+      startRuntimePolling();
     }
   });
 

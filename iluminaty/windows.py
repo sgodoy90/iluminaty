@@ -58,12 +58,14 @@ class WindowManager:
         self._platform = sys.platform
         self._user32 = None
         self._psapi = None
+        self._kernel32 = None
 
         if self._platform == "win32":
             try:
                 import ctypes
                 self._user32 = ctypes.windll.user32
                 self._psapi = ctypes.windll.psapi
+                self._kernel32 = ctypes.windll.kernel32
                 self._ctypes = ctypes
             except Exception as e:
                 logger.debug("Windows API bridge init failed: %s", e)
@@ -199,8 +201,12 @@ class WindowManager:
             return False
 
         if self._platform == "win32":
-            self._user32.ShowWindow(handle, 9)  # SW_RESTORE
-            return bool(self._user32.SetForegroundWindow(handle))
+            # On Windows, SetForegroundWindow may fail depending on focus lock rules.
+            # We only restore when minimized and use a multi-step foreground strategy.
+            show_cmd = self._get_window_show_cmd(handle)
+            if show_cmd in {2, 6, 7, 11}:  # minimized variants
+                self._user32.ShowWindow(handle, 9)  # SW_RESTORE
+            return self._focus_window_win32(handle)
         elif self._platform == "darwin":
             return self._applescript_window_action(title, "set index to 1")
         else:
@@ -287,12 +293,127 @@ class WindowManager:
     # ─── Helpers ───
 
     def _find_by_title(self, title: str) -> Optional[int]:
-        """Busca una ventana por titulo (match parcial case-insensitive)."""
-        title_lower = title.lower()
-        for win in self.list_windows():
-            if title_lower in win.title.lower():
-                return win.handle
-        return None
+        """Busca una ventana por titulo (match parcial case-insensitive con ranking)."""
+        title_lower = title.lower().strip()
+        matches = [w for w in self.list_windows() if title_lower in w.title.lower()]
+        if not matches:
+            return None
+
+        def _score(win: WindowInfo) -> float:
+            win_title = (win.title or "").lower()
+            score = 0.0
+            if win_title == title_lower:
+                score += 1000.0
+            elif win_title.startswith(title_lower):
+                score += 700.0
+            elif f" {title_lower}" in win_title:
+                score += 500.0
+            else:
+                score += 300.0
+
+            if win.is_visible:
+                score += 100.0
+            if not win.is_minimized:
+                score += 200.0
+            if win.is_maximized:
+                score += 40.0
+
+            # Off-screen/minimized placeholder windows (common on Windows) are less reliable.
+            if win.x <= -30000 or win.y <= -30000:
+                score -= 250.0
+
+            area = max(0, int(win.width)) * max(0, int(win.height))
+            score += min(area, 10_000_000) / 100_000.0
+            return score
+
+        best = max(matches, key=_score)
+        return best.handle
+
+    def _get_window_show_cmd(self, handle: int) -> Optional[int]:
+        """Return Win32 showCmd for a window handle, or None if unavailable."""
+        if self._platform != "win32" or not self._user32:
+            return None
+        try:
+            ctypes = self._ctypes
+
+            class WINDOWPLACEMENT(ctypes.Structure):
+                _fields_ = [
+                    ("length", ctypes.c_uint),
+                    ("flags", ctypes.c_uint),
+                    ("showCmd", ctypes.c_uint),
+                    ("ptMinPosition", ctypes.wintypes.POINT),
+                    ("ptMaxPosition", ctypes.wintypes.POINT),
+                    ("rcNormalPosition", ctypes.wintypes.RECT),
+                ]
+
+            placement = WINDOWPLACEMENT()
+            placement.length = ctypes.sizeof(placement)
+            ok = self._user32.GetWindowPlacement(handle, ctypes.byref(placement))
+            if not ok:
+                return None
+            return int(placement.showCmd)
+        except Exception:
+            return None
+
+    def _focus_window_win32(self, handle: int) -> bool:
+        """Best-effort foreground activation on Windows with fallback strategies."""
+        ctypes = self._ctypes
+        user32 = self._user32
+        kernel32 = self._kernel32
+        if not user32 or not kernel32:
+            return False
+
+        SWP_NOSIZE = 0x0001
+        SWP_NOMOVE = 0x0002
+        SWP_SHOWWINDOW = 0x0040
+        HWND_TOP = 0
+        VK_MENU = 0x12  # ALT
+        KEYEVENTF_KEYUP = 0x0002
+
+        fg_hwnd = user32.GetForegroundWindow()
+        current_tid = kernel32.GetCurrentThreadId()
+
+        fg_pid = ctypes.wintypes.DWORD()
+        target_pid = ctypes.wintypes.DWORD()
+        fg_tid = user32.GetWindowThreadProcessId(fg_hwnd, ctypes.byref(fg_pid)) if fg_hwnd else 0
+        target_tid = user32.GetWindowThreadProcessId(handle, ctypes.byref(target_pid))
+
+        attached_fg = False
+        attached_target = False
+
+        try:
+            if fg_tid and fg_tid != current_tid:
+                attached_fg = bool(user32.AttachThreadInput(current_tid, fg_tid, True))
+            if target_tid and target_tid != current_tid:
+                attached_target = bool(user32.AttachThreadInput(current_tid, target_tid, True))
+
+            user32.BringWindowToTop(handle)
+            user32.SetWindowPos(handle, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW)
+
+            if bool(user32.SetForegroundWindow(handle)):
+                return True
+
+            # Foreground lock workaround: send ALT press/release before retry.
+            user32.keybd_event(VK_MENU, 0, 0, 0)
+            user32.keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0)
+
+            if bool(user32.SetForegroundWindow(handle)):
+                return True
+
+            user32.SetActiveWindow(handle)
+            user32.SetFocus(handle)
+            return int(user32.GetForegroundWindow()) == int(handle)
+        finally:
+            try:
+                if attached_target:
+                    user32.AttachThreadInput(current_tid, target_tid, False)
+            except Exception:
+                pass
+            try:
+                if attached_fg:
+                    user32.AttachThreadInput(current_tid, fg_tid, False)
+            except Exception:
+                pass
 
     def _applescript_window_action(self, title: str, action: str) -> bool:
         if not title:

@@ -35,7 +35,7 @@ class GitOps:
             )
             if result.returncode == 0:
                 return "git"
-        except (FileNotFoundError, OSError) as e:
+        except (FileNotFoundError, OSError, subprocess.TimeoutExpired) as e:
             logger.debug("git binary not available: %s", e)
         return None
 

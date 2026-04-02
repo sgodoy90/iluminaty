@@ -42,8 +42,15 @@ ocr = [
     "onnxruntime>=1.15",
     "opencv-python>=4.5",
 ]
+vlm = [
+    "torch>=2.3",
+    "transformers>=4.46",
+    "accelerate>=0.33",
+    "sentencepiece>=0.2",
+]
 all = [
     "iluminaty[ocr]",
+    "iluminaty[vlm]",
 ]
 
 [project.scripts]

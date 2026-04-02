@@ -40,11 +40,12 @@ API_TIMEOUT_S = max(3.0, min(60.0, API_TIMEOUT_S))
 # ILUMINATY license key - gates MCP tools to free/pro plan
 ILUMINATY_KEY = os.environ.get("ILUMINATY_KEY", "")
 
-# Free tier tools (10) — available without license
+# Free tier tools (29) — available without license
 FREE_MCP_TOOLS = {
     "see_screen", "see_changes", "read_screen_text", "perception",
     "screen_status", "get_context", "do_action", "raw_action",
     "action_precheck", "verify_action",
+    "operate_cycle",
     "perception_world", "perception_trace", "set_operating_mode",
     "vision_query",
     "grounding_status", "grounding_resolve", "click_grounded", "type_grounded",
@@ -54,12 +55,13 @@ FREE_MCP_TOOLS = {
     "token_status", "set_token_mode", "set_token_budget",
 }
 
-# All tools (28) — available with Pro license
+# All tools (48) — available with Pro license
 ALL_MCP_TOOLS = {
     "see_screen", "see_changes", "annotate_screen", "read_screen_text", "perception",
     "perception_world", "perception_trace",
     "screen_status", "get_context", "get_audio_level",
     "do_action", "raw_action", "action_precheck", "verify_action",
+    "operate_cycle",
     "set_operating_mode",
     "vision_query",
     "grounding_status", "grounding_resolve", "click_grounded", "type_grounded",
@@ -127,6 +129,441 @@ def _api_post(path: str, body: dict | None = None) -> dict:
         req = urllib.request.Request(url, method="POST", data=b"", headers=headers)
     with urllib.request.urlopen(req, timeout=API_TIMEOUT_S) as resp:
         return json.loads(resp.read().decode())
+
+
+# ─── Human-like Operation Helpers ───
+
+_BROWSER_HINTS = ("brave", "chrome", "edge", "firefox", "opera", "vivaldi", "browser")
+_BROWSER_NAME_MAP = {
+    "auto": ("brave", "chrome", "edge", "firefox"),
+    "brave": ("brave", "chrome", "edge", "firefox"),
+    "chrome": ("chrome", "brave", "edge", "firefox"),
+    "edge": ("edge", "chrome", "brave", "firefox"),
+    "firefox": ("firefox", "chrome", "brave", "edge"),
+}
+_BROWSER_PID_CACHE = {"ts": 0.0, "pids": set()}
+_WINDOW_QUERY_ALIASES = {
+    "notepad": ["bloc de notas", "notepad"],
+    "bloc de notas": ["bloc de notas", "notepad"],
+    "explorer": ["explorer", "file explorer", "explorador de archivos"],
+    "file explorer": ["explorer", "file explorer", "explorador de archivos"],
+    "browser": ["browser", "brave", "chrome", "edge", "firefox", "navegador"],
+}
+
+
+def _as_bool(value, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return bool(value)
+
+
+def _normalize_url(url: str) -> str:
+    u = (url or "").strip()
+    if not u:
+        return ""
+    if "://" in u:
+        return u
+    if u.startswith(("localhost", "127.", "0.0.0.0")):
+        return f"http://{u}"
+    return f"https://{u}"
+
+
+def _window_text(win: dict) -> str:
+    return f"{win.get('title', '')} {win.get('app_name', '')}".lower()
+
+
+def _looks_like_browser_window(win: dict) -> bool:
+    text = _window_text(win)
+    if any(h in text for h in _BROWSER_HINTS):
+        return True
+    # Browser pages frequently include domains in the title.
+    return ".com" in text or ".ai" in text or ".org" in text or ".io" in text
+
+
+def _browser_preference(preferred: str) -> tuple[str, ...]:
+    pref = (preferred or "auto").strip().lower()
+    return _BROWSER_NAME_MAP.get(pref, _BROWSER_NAME_MAP["auto"])
+
+
+def _browser_pid_set(force_refresh: bool = False) -> set[int]:
+    now = time.time()
+    if (not force_refresh) and (now - _BROWSER_PID_CACHE["ts"] < 3.0):
+        return set(_BROWSER_PID_CACHE["pids"])
+
+    names = ("brave", "chrome", "msedge", "firefox", "opera", "vivaldi")
+    pids: set[int] = set()
+    for name in names:
+        try:
+            found = _api_get(f"/process/find?name={urllib.parse.quote(name)}").get("matches", [])
+        except Exception:
+            continue
+        for proc in found:
+            pid = proc.get("pid")
+            if isinstance(pid, int):
+                pids.add(pid)
+
+    _BROWSER_PID_CACHE["ts"] = now
+    _BROWSER_PID_CACHE["pids"] = set(pids)
+    return pids
+
+
+def _get_windows_context() -> tuple[dict, list[dict]]:
+    active = {}
+    windows: list[dict] = []
+    try:
+        active = _api_get("/windows/active") or {}
+    except Exception:
+        active = {}
+    try:
+        windows = _api_get("/windows/list?visible_only=true&exclude_minimized=true&exclude_system=true").get("windows", [])
+    except Exception:
+        try:
+            windows = _api_get("/windows/list?visible_only=true&exclude_minimized=true").get("windows", [])
+        except Exception:
+            windows = []
+    return active, windows
+
+
+def _window_match_score(query: str, win: dict, active: dict, prefer_active_monitor: bool) -> int:
+    q = (query or "").strip().lower()
+    if not q:
+        return 0
+    text = _window_text(win)
+    title = str(win.get("title", "")).strip().lower()
+    tokens = [t for t in q.replace("-", " ").split() if t]
+    expanded_queries = [q]
+    expanded_queries.extend(_WINDOW_QUERY_ALIASES.get(q, []))
+    for token in list(tokens):
+        expanded_queries.extend(_WINDOW_QUERY_ALIASES.get(token, []))
+    # preserve insertion order + uniqueness
+    dedup = []
+    seen = set()
+    for item in expanded_queries:
+        item = str(item).strip().lower()
+        if item and item not in seen:
+            seen.add(item)
+            dedup.append(item)
+    expanded_queries = dedup
+    score = 0
+
+    for qq in expanded_queries:
+        if title == qq:
+            score += 220
+            break
+    else:
+        for qq in expanded_queries:
+            if qq in title:
+                score += 160
+                break
+        for qq in expanded_queries:
+            if qq in text:
+                score += 120
+                break
+
+    for token in tokens:
+        if token in text:
+            score += 16
+    if tokens and all(token in text for token in tokens):
+        score += 38
+
+    if win.get("is_visible", True):
+        score += 6
+    if not win.get("is_minimized", False):
+        score += 8
+
+    try:
+        active_handle = int(active.get("handle", 0) or 0)
+        if active_handle and int(win.get("handle", 0) or 0) == active_handle:
+            score += 20
+    except Exception:
+        pass
+
+    if prefer_active_monitor:
+        try:
+            active_monitor = int(active.get("monitor_id", 0) or 0)
+            win_monitor = int(win.get("monitor_id", 0) or 0)
+            if active_monitor and win_monitor and win_monitor == active_monitor:
+                score += 18
+        except Exception:
+            pass
+
+    return score
+
+
+def _resolve_window_by_query(title_query: str, prefer_active_monitor: bool = True) -> dict | None:
+    active, windows = _get_windows_context()
+    if not windows:
+        return None
+
+    best = None
+    best_score = -1
+    for win in windows:
+        score = _window_match_score(title_query, win, active, prefer_active_monitor)
+        if score > best_score:
+            best = win
+            best_score = score
+    if best is not None and best_score >= 48:
+        return best
+    return None
+
+
+def _select_browser_window(active: dict, windows: list[dict], preferred: str = "auto") -> tuple[dict | None, str]:
+    if active and _looks_like_browser_window(active):
+        return active, "active_browser_window"
+
+    preferred_names = _browser_preference(preferred)
+    browser_pids = _browser_pid_set(force_refresh=False)
+
+    best = None
+    best_score = -1
+    for win in windows:
+        text = _window_text(win)
+        score = 0
+        if _looks_like_browser_window(win):
+            score += 60
+        pid = win.get("pid")
+        if isinstance(pid, int) and pid in browser_pids:
+            score += 140
+        for idx, name in enumerate(preferred_names):
+            if name in text:
+                score += 100 - (idx * 12)
+                break
+        if win.get("is_visible", True):
+            score += 5
+        if not win.get("is_minimized", False):
+            score += 8
+        if score > best_score:
+            best = win
+            best_score = score
+
+    if best is not None and best_score >= 70:
+        return best, "best_visible_browser_window"
+    return None, "no_browser_window_match"
+
+
+def _navigate_with_keyboard(url: str, focus_handle: int | None, new_tab: bool) -> tuple[bool, str]:
+    suffix = f"&focus_handle={int(focus_handle)}" if focus_handle is not None else ""
+    try:
+        if new_tab:
+            _api_post(f"/action/hotkey?keys=ctrl%2Bt{suffix}")
+            time.sleep(0.10)
+        _api_post(f"/action/hotkey?keys=ctrl%2Bl{suffix}")
+        time.sleep(0.08)
+        typed = _api_post(
+            f"/action/type?text={urllib.parse.quote(url)}&interval=0.008{suffix}"
+        )
+        _api_post(f"/action/hotkey?keys=enter{suffix}")
+        ok = bool(typed.get("success", True))
+        return ok, "keyboard_address_bar"
+    except Exception as e:
+        return False, f"keyboard_failed: {e}"
+
+
+def _launch_browser_or_url(url: str, preferred: str) -> tuple[bool, str]:
+    pref = (preferred or "auto").strip().lower()
+    launch_candidates = []
+    if pref in {"auto", "brave"}:
+        launch_candidates += [
+            r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
+            "brave.exe",
+            "brave",
+        ]
+    if pref in {"auto", "chrome"}:
+        launch_candidates += [
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            "chrome.exe",
+            "chrome",
+        ]
+    if pref in {"auto", "edge"}:
+        launch_candidates += ["msedge.exe", "msedge"]
+    if pref in {"auto", "firefox"}:
+        launch_candidates += ["firefox.exe", "firefox"]
+
+    # Last candidate: open URL with system handler.
+    launch_candidates.append(url)
+
+    for cmd in launch_candidates:
+        try:
+            res = _api_post(f"/process/launch?command={urllib.parse.quote(cmd)}")
+            if res.get("success"):
+                return True, f"process_launch:{cmd}"
+        except Exception:
+            continue
+    return False, "process_launch_failed"
+
+
+def _execute_cycle_action(action: dict, focus_handle: int | None, monitor_hint: int | None) -> tuple[str, dict]:
+    kind = str(action.get("kind") or action.get("type") or "").strip().lower()
+    if not kind:
+        return "none", {"success": False, "message": "missing action kind"}
+
+    focus_suffix = f"&focus_handle={int(focus_handle)}" if focus_handle is not None else ""
+    monitor = action.get("monitor")
+    if monitor is None:
+        monitor = monitor_hint
+
+    if kind == "click":
+        x = int(action.get("x", 0))
+        y = int(action.get("y", 0))
+        button = urllib.parse.quote(str(action.get("button", "left")))
+        coord_space = str(action.get("coord_space", "global")).strip().lower()
+        query = f"/action/click?x={x}&y={y}&button={button}{focus_suffix}"
+        if monitor is not None:
+            query += f"&monitor_id={int(monitor)}"
+        if coord_space in {"monitor", "local", "monitor_local"}:
+            query += "&relative_to_monitor=true"
+        return kind, _api_post(query)
+
+    if kind == "type":
+        text = urllib.parse.quote(str(action.get("text", "")))
+        interval = float(action.get("interval", 0.01))
+        query = f"/action/type?text={text}&interval={interval}{focus_suffix}"
+        return kind, _api_post(query)
+
+    if kind == "hotkey":
+        keys = urllib.parse.quote(str(action.get("keys", "")))
+        query = f"/action/hotkey?keys={keys}{focus_suffix}"
+        return kind, _api_post(query)
+
+    if kind == "scroll":
+        amount = int(action.get("amount", 3))
+        coord_space = str(action.get("coord_space", "global")).strip().lower()
+        query = f"/action/scroll?amount={amount}{focus_suffix}"
+        if "x" in action and action.get("x") is not None:
+            query += f"&x={int(action.get('x'))}"
+        if "y" in action and action.get("y") is not None:
+            query += f"&y={int(action.get('y'))}"
+        if monitor is not None:
+            query += f"&monitor_id={int(monitor)}"
+        if coord_space in {"monitor", "local", "monitor_local"}:
+            query += "&relative_to_monitor=true"
+        return kind, _api_post(query)
+
+    if kind == "drag":
+        sx = int(action.get("start_x", 0))
+        sy = int(action.get("start_y", 0))
+        ex = int(action.get("end_x", 0))
+        ey = int(action.get("end_y", 0))
+        duration = float(action.get("duration", 0.35))
+        coord_space = str(action.get("coord_space", "global")).strip().lower()
+        query = (
+            f"/action/drag?start_x={sx}&start_y={sy}&end_x={ex}&end_y={ey}"
+            f"&duration={duration}{focus_suffix}"
+        )
+        if monitor is not None:
+            query += f"&monitor_id={int(monitor)}"
+        if coord_space in {"monitor", "local", "monitor_local"}:
+            query += "&relative_to_monitor=true"
+        return kind, _api_post(query)
+
+    return kind, {"success": False, "message": f"unsupported action kind: {kind}"}
+
+
+def _extract_dialog_affordances(ocr_text: str) -> list[str]:
+    text = str(ocr_text or "")
+    candidates: list[str] = []
+    seen = set()
+    for raw in text.splitlines():
+        s = raw.strip()
+        if not s:
+            continue
+        if len(s) > 20:
+            continue
+        if len(s.split()) > 3:
+            continue
+        low = s.lower()
+        if "http" in low or "www." in low or "/" in s or "\\" in s:
+            continue
+        if ":" in s and len(s) > 8:
+            continue
+        digit_count = sum(1 for ch in s if ch.isdigit())
+        if digit_count > 2:
+            continue
+        # Buttons/toggles are often short imperative tokens.
+        key = low
+        if key not in seen:
+            seen.add(key)
+            candidates.append(s)
+    return candidates[:8]
+
+
+def _detect_blocking_interrupt(ocr_text: str, active_title: str, target_title: str) -> dict:
+    text = str(ocr_text or "")
+    low_text = text.lower()
+    active = (active_title or "").lower()
+    target = (target_title or "").lower()
+    affordances = _extract_dialog_affordances(text)
+
+    # Generic dialog-like cues (not tied to specific button words).
+    line_count = len([ln for ln in text.splitlines() if ln.strip()])
+    short_panel = 1 <= line_count <= 22 and len(text) <= 1400
+    has_punctuation_prompt = ("?" in text) or ("!" in text)
+    title_dialogish = any(tok in active for tok in ("dialog", "message", "mensaje", "alert", "warning", "error", "confirm"))
+    title_deviation = bool(target) and bool(active) and (target not in active)
+
+    score = 0
+    if title_deviation:
+        score += 2
+    if title_dialogish:
+        score += 2
+    if short_panel:
+        score += 1
+    if has_punctuation_prompt:
+        score += 1
+    if len(affordances) >= 1:
+        score += 2
+    if len(affordances) >= 2:
+        score += 1
+
+    detected = score >= 4 or (title_deviation and len(affordances) >= 1)
+
+    # Conservative hint only; resolution does not depend on exact labels.
+    low_aff = " ".join(a.lower() for a in affordances)
+    has_accept_hint = any(t in low_aff for t in ("ok", "yes", "si", "accept", "aceptar", "continue", "continuar"))
+    has_dismiss_hint = any(t in low_aff for t in ("cancel", "cancelar", "no", "close", "cerrar"))
+
+    return {
+        "detected": bool(detected),
+        "has_accept": bool(has_accept_hint),
+        "has_dismiss": bool(has_dismiss_hint),
+        "title_deviation": bool(title_deviation),
+        "signal": f"structural_score={score}",
+        "affordances": affordances,
+    }
+
+
+def _resolve_blocking_interrupt(strategy: str, focus_handle: int | None, detect: dict) -> dict:
+    mode = (strategy or "accept_first").strip().lower()
+    if mode not in {"accept_first", "dismiss_first", "none"}:
+        mode = "accept_first"
+    if mode == "none":
+        return {"resolved": False, "method": "disabled"}
+
+    suffix = f"&focus_handle={int(focus_handle)}" if focus_handle is not None else ""
+    orders = []
+    if mode == "dismiss_first":
+        orders = ["esc", "enter", "space"]
+    else:
+        orders = ["enter", "space", "esc"]
+
+    # If we can infer no dismiss path, prioritize accept-like keys.
+    if detect.get("has_accept") and not detect.get("has_dismiss"):
+        orders = ["enter", "space", "esc"]
+    if detect.get("has_dismiss") and not detect.get("has_accept") and mode == "dismiss_first":
+        orders = ["esc", "enter", "space"]
+
+    for key in orders:
+        try:
+            res = _api_post(f"/action/hotkey?keys={urllib.parse.quote(key)}{suffix}")
+            if res.get("success"):
+                return {"resolved": True, "method": f"hotkey:{key}"}
+        except Exception:
+            continue
+    return {"resolved": False, "method": "no_hotkey_succeeded"}
 
 
 # ─── Token Mode (default: cheapest) ───
@@ -399,6 +836,41 @@ TOOLS = [
                 "pre_state": {"type": "object", "description": "Optional captured pre-state"},
             },
             "required": ["action"],
+        },
+    },
+    {
+        "name": "operate_cycle",
+        "description": (
+            "Global human-like operation cycle for any app/window: "
+            "orientation -> localization -> focus -> read -> action -> verification."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "goal": {"type": "string", "description": "Short objective description"},
+                "target_window": {"type": "string", "description": "Optional target window/app query"},
+                "monitor": {"type": "integer", "description": "Optional monitor bias (1..N)"},
+                "include_ocr": {"type": "boolean", "description": "Read OCR for comprehension step", "default": True},
+                "resolve_interrupts": {
+                    "type": "boolean",
+                    "description": "Auto-handle blocking dialogs/modals before action (default true).",
+                    "default": True,
+                },
+                "interrupt_strategy": {
+                    "type": "string",
+                    "enum": ["accept_first", "dismiss_first", "none"],
+                    "description": "How to resolve blocking dialogs when detected.",
+                    "default": "accept_first",
+                },
+                "action": {
+                    "type": "object",
+                    "description": (
+                        "Optional action descriptor. "
+                        "Supported kinds: click, type, hotkey, scroll, drag."
+                    ),
+                },
+                "verify_contains": {"type": "string", "description": "Optional text expected after action"},
+            },
         },
     },
     {
@@ -691,7 +1163,7 @@ TOOLS = [
     {
         "name": "focus_window",
         "description": (
-            "Switch to a window by title (partial match). Like a human clicking on a window. "
+            "Switch to a window by title/handle with contextual ranking (active monitor + best match). "
             "Example: focus_window('Chrome') switches to Chrome. "
             "Use list_windows first to see available windows."
         ),
@@ -700,19 +1172,42 @@ TOOLS = [
             "properties": {
                 "title": {"type": "string", "description": "Window title (partial match)"},
                 "handle": {"type": "integer", "description": "Exact window handle (preferred when available)"},
+                "prefer_active_monitor": {
+                    "type": "boolean",
+                    "description": "Bias match toward active monitor window when title is ambiguous (default true).",
+                    "default": True,
+                },
             },
         },
     },
     {
         "name": "browser_navigate",
         "description": (
-            "Navigate the browser to a URL. Opens the URL in the active browser window. "
-            "Example: browser_navigate('https://github.com')"
+            "Navigate to a URL using human-like context reasoning. "
+            "By default it preserves current user context: reuse existing browser window, "
+            "open a new tab, then navigate from the address bar. "
+            "Falls back to CDP/process launch only if needed."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "url": {"type": "string", "description": "URL to navigate to"},
+                "new_tab": {
+                    "type": "boolean",
+                    "description": "Open in a new tab (default true) to preserve current page context.",
+                    "default": True,
+                },
+                "preserve_context": {
+                    "type": "boolean",
+                    "description": "Prefer existing browser window/session before any fallback (default true).",
+                    "default": True,
+                },
+                "browser": {
+                    "type": "string",
+                    "enum": ["auto", "brave", "chrome", "edge", "firefox"],
+                    "description": "Preferred browser family when selecting/fallback launching.",
+                    "default": "auto",
+                },
             },
             "required": ["url"],
         },
@@ -745,6 +1240,8 @@ TOOLS = [
                     "description": "global=virtual desktop coordinates, monitor=coords relative to selected monitor",
                     "default": "global",
                 },
+                "focus_title": {"type": "string", "description": "Optional window title to focus before clicking."},
+                "focus_handle": {"type": "integer", "description": "Optional window handle to focus before clicking."},
             },
             "required": ["x", "y"],
         },
@@ -770,6 +1267,8 @@ TOOLS = [
                     "description": "global=virtual desktop coordinates, monitor=coords relative to selected monitor",
                     "default": "global",
                 },
+                "focus_title": {"type": "string", "description": "Optional window title to focus before dragging."},
+                "focus_handle": {"type": "integer", "description": "Optional window handle to focus before dragging."},
             },
             "required": ["start_x", "start_y", "end_x", "end_y"],
         },
@@ -785,6 +1284,8 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "keys": {"type": "string", "description": "Key or key combo (e.g. 'ctrl+s', 'enter', 'alt+tab')"},
+                "focus_title": {"type": "string", "description": "Optional window title to focus before keypress."},
+                "focus_handle": {"type": "integer", "description": "Optional window handle to focus before keypress."},
             },
             "required": ["keys"],
         },
@@ -808,6 +1309,8 @@ TOOLS = [
                     "description": "global=virtual desktop coordinates, monitor=coords relative to selected monitor",
                     "default": "global",
                 },
+                "focus_title": {"type": "string", "description": "Optional window title to focus before scroll."},
+                "focus_handle": {"type": "integer", "description": "Optional window handle to focus before scroll."},
             },
         },
     },
@@ -1481,6 +1984,225 @@ def handle_verify_action(args: dict) -> list:
     }]
 
 
+def handle_operate_cycle(args: dict) -> list:
+    goal = (args.get("goal") or "").strip()
+    target_window = (args.get("target_window") or "").strip()
+    monitor = args.get("monitor")
+    include_ocr = _as_bool(args.get("include_ocr"), True)
+    resolve_interrupts = _as_bool(args.get("resolve_interrupts"), True)
+    interrupt_strategy = str(args.get("interrupt_strategy", "accept_first")).strip().lower()
+    action = args.get("action") if isinstance(args.get("action"), dict) else None
+    verify_contains = (args.get("verify_contains") or "").strip()
+
+    # 1) ORIENTATION
+    spatial = {}
+    try:
+        spatial = _api_get("/spatial/state?include_windows=true")
+    except Exception:
+        spatial = {}
+    active = spatial.get("active_window", {}) or {}
+    active_monitor = spatial.get("active_monitor_id")
+    monitor_count = int(spatial.get("monitor_count", 0) or 0)
+
+    # 2) LOCALIZATION
+    target = None
+    locate_strategy = "active_window"
+    if target_window:
+        target = _resolve_window_by_query(target_window, prefer_active_monitor=True)
+        locate_strategy = "context_ranked_query"
+    elif active:
+        target = active
+    if target is None and monitor is not None:
+        for w in (spatial.get("windows") or []):
+            if int(w.get("monitor_id", 0) or 0) == int(monitor):
+                target = w
+                locate_strategy = "first_visible_on_monitor"
+                break
+
+    # 3) FOCUS
+    focus_ok = False
+    focus_handle = None
+    focus_error = ""
+    focus_strategy = "direct_focus_endpoint"
+    if target is not None:
+        try:
+            focus_handle = int(target.get("handle", 0) or 0) or None
+        except Exception:
+            focus_handle = None
+    if focus_handle is not None:
+        try:
+            fr = _api_post(f"/windows/focus?handle={focus_handle}")
+            focus_ok = bool(fr.get("success"))
+        except Exception as e:
+            focus_ok = False
+            focus_error = str(e)
+    # Fallback when focus endpoint is unavailable (e.g., restricted plan):
+    # click center of target window to emulate natural human focus acquisition.
+    if (not focus_ok) and isinstance(target, dict):
+        try:
+            tx = int(target.get("x", 0) or 0)
+            ty = int(target.get("y", 0) or 0)
+            tw = int(target.get("width", 0) or 0)
+            th = int(target.get("height", 0) or 0)
+            if tw > 4 and th > 4:
+                cx = tx + max(2, tw // 2)
+                cy = ty + max(2, th // 2)
+                fr2 = _api_post(f"/action/click?x={cx}&y={cy}&button=left")
+                if fr2.get("success"):
+                    focus_ok = True
+                    focus_strategy = "click_center_fallback"
+                    focus_error = ""
+        except Exception as e:
+            if not focus_error:
+                focus_error = str(e)
+
+    # 4) READING / COMPREHENSION
+    window_info = {}
+    try:
+        window_info = _api_get("/vision/window")
+    except Exception:
+        window_info = {}
+    ocr_data = {}
+    ocr_text = ""
+    ocr_monitor = monitor
+    if ocr_monitor is None and target is not None:
+        try:
+            ocr_monitor = int(target.get("monitor_id", 0) or 0) or None
+        except Exception:
+            ocr_monitor = None
+    if include_ocr:
+        try:
+            query = "/vision/ocr"
+            if ocr_monitor is not None:
+                query += f"?monitor_id={int(ocr_monitor)}"
+            ocr_data = _api_get(query)
+            ocr_text = str(ocr_data.get("text", "") or "")
+        except Exception:
+            ocr_data = {}
+            ocr_text = ""
+
+    # 4.5) INTERRUPT HANDLING
+    interrupt_detect = _detect_blocking_interrupt(
+        ocr_text=ocr_text,
+        active_title=str(window_info.get("title", "") or ""),
+        target_title=str(target.get("title", "") if isinstance(target, dict) else ""),
+    )
+    interrupt_resolution = {"resolved": False, "method": "not_attempted"}
+    if interrupt_detect.get("detected") and resolve_interrupts:
+        interrupt_resolution = _resolve_blocking_interrupt(
+            strategy=interrupt_strategy,
+            focus_handle=focus_handle,
+            detect=interrupt_detect,
+        )
+        if interrupt_resolution.get("resolved"):
+            # Re-read context after resolving modal.
+            time.sleep(0.16)
+            try:
+                window_info = _api_get("/vision/window")
+            except Exception:
+                pass
+            if include_ocr:
+                try:
+                    query = "/vision/ocr"
+                    if ocr_monitor is not None:
+                        query += f"?monitor_id={int(ocr_monitor)}"
+                    ocr_data = _api_get(query)
+                    ocr_text = str(ocr_data.get("text", "") or "")
+                except Exception:
+                    pass
+            # Re-localize intended target window after interrupt was handled.
+            if target_window:
+                target2 = _resolve_window_by_query(target_window, prefer_active_monitor=True)
+                if isinstance(target2, dict):
+                    target = target2
+                    try:
+                        focus_handle = int(target.get("handle", 0) or 0) or focus_handle
+                    except Exception:
+                        pass
+
+    # 5) ACTION
+    action_kind = "none"
+    action_result = None
+    if action is not None and (not interrupt_detect.get("detected") or interrupt_resolution.get("resolved") or (not resolve_interrupts)):
+        action_kind, action_result = _execute_cycle_action(action, focus_handle, monitor_hint=ocr_monitor)
+    elif action is not None and interrupt_detect.get("detected") and resolve_interrupts and (not interrupt_resolution.get("resolved")):
+        action_kind = str(action.get("kind") or action.get("type") or "none")
+        action_result = {"success": False, "message": "blocking_interrupt_unresolved"}
+
+    # 6) VERIFICATION
+    verified = None
+    verify_reason = "not_requested"
+    if verify_contains:
+        if not ocr_text:
+            try:
+                query = "/vision/ocr"
+                if ocr_monitor is not None:
+                    query += f"?monitor_id={int(ocr_monitor)}"
+                ocr_data = _api_get(query)
+                ocr_text = str(ocr_data.get("text", "") or "")
+            except Exception:
+                ocr_text = ""
+        verified = verify_contains.lower() in ocr_text.lower()
+        verify_reason = "ocr_contains"
+        if not verified:
+            # Fallback: verify against current target/visible window titles.
+            vc = verify_contains.lower()
+            try:
+                if isinstance(target, dict):
+                    ttitle = str(target.get("title", "")).lower()
+                    if vc in ttitle:
+                        verified = True
+                        verify_reason = "target_window_title_contains"
+                if not verified:
+                    windows_now = _api_get("/windows/list?visible_only=true&exclude_minimized=true").get("windows", [])
+                    for w in windows_now:
+                        if vc in str(w.get("title", "")).lower():
+                            verified = True
+                            verify_reason = "visible_window_title_contains"
+                            break
+            except Exception:
+                pass
+    elif action_result is not None:
+        verified = bool(action_result.get("success"))
+        verify_reason = "action_success_flag"
+
+    target_title = (target.get("title", "")[:90] if isinstance(target, dict) else "")
+    read_excerpt = (ocr_text or "").replace("\n", " ").strip()[:220]
+    lines = [
+        "## Operate Cycle",
+        f"Goal: {goal or 'n/a'}",
+        f"1) Orientation: monitors={monitor_count} active_monitor={active_monitor} active_window='{active.get('title', '')[:90]}'",
+        (
+            f"2) Localization: strategy={locate_strategy} "
+            f"target_handle={focus_handle if focus_handle is not None else '?'} "
+            f"target_monitor={target.get('monitor_id', '?') if isinstance(target, dict) else '?'} "
+            f"target_title='{target_title or 'n/a'}'"
+        ),
+        (
+            f"3) Focus: {'OK' if focus_ok else 'SKIPPED/FAILED'} "
+            f"(strategy={focus_strategy})"
+            f"{(' (' + focus_error + ')') if focus_error else ''}"
+        ),
+        (
+            f"4) Read: window='{window_info.get('title', '')[:90]}' "
+            f"ocr_chars={len(ocr_text)} excerpt='{read_excerpt}'"
+        ),
+        (
+            f"4.5) Interrupt: detected={interrupt_detect.get('detected')} "
+            f"resolved={interrupt_resolution.get('resolved')} "
+            f"method={interrupt_resolution.get('method', 'n/a')} "
+            f"strategy={interrupt_strategy if resolve_interrupts else 'disabled'}"
+        ),
+        (
+            f"5) Action: kind={action_kind} "
+            f"status={('OK' if (action_result and action_result.get('success')) else ('SKIPPED' if action_result is None else 'FAILED'))} "
+            f"msg='{(action_result or {}).get('message', '')[:120] if isinstance(action_result, dict) else ''}'"
+        ),
+        f"6) Verification: {verified if verified is not None else 'n/a'} via {verify_reason}",
+    ]
+    return [{"type": "text", "text": "\n".join(lines)}]
+
+
 def handle_set_operating_mode(args: dict) -> list:
     mode = args.get("mode", "SAFE")
     data = _api_post(f"/operating/mode?mode={urllib.parse.quote(str(mode))}")
@@ -1672,6 +2394,7 @@ def handle_agent_status(args: dict) -> list:
 def handle_focus_window(args: dict) -> list:
     handle = args.get("handle")
     title = (args.get("title") or "").strip()
+    prefer_active_monitor = _as_bool(args.get("prefer_active_monitor"), True)
     if handle is None and not title:
         return [{"type": "text", "text": "Error: handle or title is required"}]
 
@@ -1681,37 +2404,156 @@ def handle_focus_window(args: dict) -> list:
             return [{"type": "text", "text": f"Focused window handle={int(handle)}"}]
         return [{"type": "text", "text": f"Could not focus window handle={int(handle)}."}]
 
-    # Try exact/partial backend matching by title
+    # Global contextual ranking first (active monitor + fuzzy title).
+    resolved = _resolve_window_by_query(title, prefer_active_monitor=prefer_active_monitor)
+    if resolved is not None:
+        h = int(resolved.get("handle", 0) or 0)
+        if h:
+            data = _api_post(f"/windows/focus?handle={h}")
+            if data.get("success"):
+                return [{
+                    "type": "text",
+                    "text": (
+                        f"Focused window: '{resolved.get('title', title)}' "
+                        f"(handle={h}, monitor={resolved.get('monitor_id', '?')}, "
+                        f"strategy=context_ranked)"
+                    ),
+                }]
+
+    # Fallback: backend partial/exact match by title.
     data = _api_post(f"/windows/focus?title={urllib.parse.quote(title)}")
     if data.get("success"):
-        return [{"type": "text", "text": f"Focused window: '{title}'"}]
-    # Try partial match via windows list
-    windows = _api_get("/windows/list")
-    if windows and "windows" in windows:
-        for w in windows["windows"]:
-            if title.lower() in w.get("title", "").lower():
-                # Use hotkey approach - cycle alt+tab
-                # Or try direct focus by setting foreground
-                data2 = _api_post(f"/windows/focus?title={urllib.parse.quote(w['title'])}")
-                if data2.get("success"):
-                    return [{"type": "text", "text": f"Focused window: '{w['title']}'"}]
-    return [{"type": "text", "text": f"Could not focus window '{title}'. Use list_windows to see available windows."}]
+        return [{"type": "text", "text": f"Focused window: '{title}' (strategy=backend_match)"}]
+
+    return [{"type": "text", "text": f"Could not focus window '{title}'. Use list_windows to inspect candidates."}]
 
 
 def handle_browser_navigate(args: dict) -> list:
-    url = args.get("url", "")
+    raw_url = args.get("url", "")
+    url = _normalize_url(str(raw_url))
     if not url:
         return [{"type": "text", "text": "Error: url is required"}]
-    data = _api_post(f"/browser/navigate?url={urllib.parse.quote(url)}")
-    if data.get("success") or data.get("status") == "ok":
-        return [{"type": "text", "text": f"Navigated to: {url}"}]
-    # Fallback: use keyboard to navigate
-    _api_post("/action/hotkey?keys=ctrl%2Bl")
-    import time; time.sleep(0.3)
-    _api_post(f"/action/type?text={urllib.parse.quote(url)}")
-    time.sleep(0.2)
-    _api_post("/action/hotkey?keys=enter")
-    return [{"type": "text", "text": f"Navigated to: {url} (via keyboard)"}]
+
+    new_tab = _as_bool(args.get("new_tab"), True)
+    preserve_context = _as_bool(args.get("preserve_context"), True)
+    preferred_browser = str(args.get("browser", "auto")).strip().lower()
+    if preferred_browser not in {"auto", "brave", "chrome", "edge", "firefox"}:
+        preferred_browser = "auto"
+
+    started = time.time()
+    method = "none"
+    notes = []
+
+    # Path A: human-like path (minimal impact) using current desktop context.
+    if preserve_context:
+        active, windows = _get_windows_context()
+        target, reason = _select_browser_window(active, windows, preferred_browser)
+        notes.append(f"context={reason}")
+        if target is not None:
+            handle = int(target.get("handle", 0) or 0) or None
+            title = (target.get("title") or "?")[:80]
+            if handle is not None:
+                try:
+                    _api_post(f"/windows/focus?handle={handle}")
+                    time.sleep(0.08)
+                except Exception as e:
+                    notes.append(f"focus_warn={e}")
+            kb_ok, kb_method = _navigate_with_keyboard(url, handle, new_tab)
+            if kb_ok:
+                method = f"context_preserving_{kb_method}"
+                elapsed_ms = int((time.time() - started) * 1000)
+                return [{
+                    "type": "text",
+                    "text": (
+                        f"Navigated to: {url}\n"
+                        f"Method: {method}\n"
+                        f"Target window: h={handle if handle is not None else '?'} title='{title}'\n"
+                        f"Elapsed: {elapsed_ms}ms\n"
+                        f"Notes: {', '.join(notes)}"
+                    ),
+                }]
+            notes.append(kb_method)
+
+    # Path B: CDP direct tab creation/navigate.
+    if new_tab:
+        try:
+            data = _api_post(f"/browser/new_tab?url={urllib.parse.quote(url)}")
+            if data.get("success"):
+                method = "cdp_new_tab"
+                elapsed_ms = int((time.time() - started) * 1000)
+                return [{
+                    "type": "text",
+                    "text": (
+                        f"Navigated to: {url}\n"
+                        f"Method: {method}\n"
+                        f"Elapsed: {elapsed_ms}ms\n"
+                        f"Notes: {', '.join(notes) if notes else 'n/a'}"
+                    ),
+                }]
+            notes.append("cdp_new_tab_unsuccessful")
+        except Exception as e:
+            notes.append(f"cdp_new_tab_error={e}")
+
+    try:
+        data = _api_post(f"/browser/navigate?url={urllib.parse.quote(url)}")
+        if data.get("success") or data.get("status") == "ok":
+            method = "cdp_navigate"
+            elapsed_ms = int((time.time() - started) * 1000)
+            return [{
+                "type": "text",
+                "text": (
+                    f"Navigated to: {url}\n"
+                    f"Method: {method}\n"
+                    f"Elapsed: {elapsed_ms}ms\n"
+                    f"Notes: {', '.join(notes) if notes else 'n/a'}"
+                ),
+            }]
+        notes.append("cdp_navigate_unsuccessful")
+    except Exception as e:
+        notes.append(f"cdp_navigate_error={e}")
+
+    # Path C: launch browser/URL, then try keyboard fallback.
+    launched, launch_method = _launch_browser_or_url(url, preferred_browser)
+    notes.append(launch_method)
+    if launched:
+        time.sleep(1.2)
+        active2, windows2 = _get_windows_context()
+        target2, reason2 = _select_browser_window(active2, windows2, preferred_browser)
+        notes.append(f"post_launch_context={reason2}")
+        handle2 = None
+        if target2 is not None:
+            handle2 = int(target2.get("handle", 0) or 0) or None
+            if handle2 is not None:
+                try:
+                    _api_post(f"/windows/focus?handle={handle2}")
+                    time.sleep(0.10)
+                except Exception as e:
+                    notes.append(f"post_launch_focus_warn={e}")
+        kb_ok, kb_method = _navigate_with_keyboard(url, handle2, new_tab=False)
+        notes.append(kb_method)
+        if kb_ok:
+            method = "launch_then_keyboard"
+            elapsed_ms = int((time.time() - started) * 1000)
+            return [{
+                "type": "text",
+                "text": (
+                    f"Navigated to: {url}\n"
+                    f"Method: {method}\n"
+                    f"Elapsed: {elapsed_ms}ms\n"
+                    f"Notes: {', '.join(notes)}"
+                ),
+            }]
+
+    elapsed_ms = int((time.time() - started) * 1000)
+    return [{
+        "type": "text",
+        "text": (
+            f"Failed to navigate: {url}\n"
+            f"Method: all_fallbacks_exhausted\n"
+            f"Elapsed: {elapsed_ms}ms\n"
+            f"Notes: {', '.join(notes) if notes else 'n/a'}"
+        ),
+    }]
 
 
 def handle_browser_tabs(args: dict) -> list:
@@ -1735,11 +2577,17 @@ def handle_click_screen(args: dict) -> list:
     button = args.get("button", "left")
     monitor = args.get("monitor")
     coord_space = str(args.get("coord_space", "global")).strip().lower()
+    focus_title = (args.get("focus_title") or "").strip()
+    focus_handle = args.get("focus_handle")
     query = f"/action/click?x={x}&y={y}&button={urllib.parse.quote(str(button))}"
     if monitor is not None:
         query += f"&monitor_id={int(monitor)}"
     if coord_space in {"monitor", "local", "monitor_local"}:
         query += "&relative_to_monitor=true"
+    if focus_handle is not None:
+        query += f"&focus_handle={int(focus_handle)}"
+    elif focus_title:
+        query += f"&focus_title={urllib.parse.quote(focus_title)}"
     data = _api_post(query)
     rx = data.get("resolved_x", x)
     ry = data.get("resolved_y", y)
@@ -1747,7 +2595,8 @@ def handle_click_screen(args: dict) -> list:
         "type": "text",
         "text": (
             f"Clicked at ({x},{y}) {button}: {'SUCCESS' if data.get('success') else 'FAILED'} "
-            f"(resolved=({rx},{ry}), space={coord_space}, monitor={monitor if monitor is not None else 'auto'})"
+            f"(resolved=({rx},{ry}), space={coord_space}, monitor={monitor if monitor is not None else 'auto'}, "
+            f"focus={'handle='+str(focus_handle) if focus_handle is not None else (focus_title or 'none')})"
         ),
     }]
 
@@ -1760,6 +2609,8 @@ def handle_drag_screen(args: dict) -> list:
     duration = float(args.get("duration", 0.35))
     monitor = args.get("monitor")
     coord_space = str(args.get("coord_space", "global")).strip().lower()
+    focus_title = (args.get("focus_title") or "").strip()
+    focus_handle = args.get("focus_handle")
     query = (
         f"/action/drag?start_x={start_x}&start_y={start_y}"
         f"&end_x={end_x}&end_y={end_y}&duration={duration}"
@@ -1768,23 +2619,41 @@ def handle_drag_screen(args: dict) -> list:
         query += f"&monitor_id={int(monitor)}"
     if coord_space in {"monitor", "local", "monitor_local"}:
         query += "&relative_to_monitor=true"
+    if focus_handle is not None:
+        query += f"&focus_handle={int(focus_handle)}"
+    elif focus_title:
+        query += f"&focus_title={urllib.parse.quote(focus_title)}"
     data = _api_post(query)
     return [{
         "type": "text",
         "text": (
             f"Dragged ({start_x},{start_y}) -> ({end_x},{end_y}): "
             f"{'SUCCESS' if data.get('success') else 'FAILED'} "
-            f"(space={coord_space}, monitor={monitor if monitor is not None else 'auto'})"
+            f"(space={coord_space}, monitor={monitor if monitor is not None else 'auto'}, "
+            f"focus={'handle='+str(focus_handle) if focus_handle is not None else (focus_title or 'none')})"
         ),
     }]
 
 
 def handle_keyboard(args: dict) -> list:
     keys = args.get("keys", "")
+    focus_title = (args.get("focus_title") or "").strip()
+    focus_handle = args.get("focus_handle")
     if not keys:
         return [{"type": "text", "text": "Error: keys is required"}]
-    data = _api_post(f"/action/hotkey?keys={urllib.parse.quote(keys)}")
-    return [{"type": "text", "text": f"Pressed {keys}: {'SUCCESS' if data.get('success') else 'FAILED'}"}]
+    query = f"/action/hotkey?keys={urllib.parse.quote(keys)}"
+    if focus_handle is not None:
+        query += f"&focus_handle={int(focus_handle)}"
+    elif focus_title:
+        query += f"&focus_title={urllib.parse.quote(focus_title)}"
+    data = _api_post(query)
+    return [{
+        "type": "text",
+        "text": (
+            f"Pressed {keys}: {'SUCCESS' if data.get('success') else 'FAILED'} "
+            f"(focus={'handle='+str(focus_handle) if focus_handle is not None else (focus_title or 'none')})"
+        ),
+    }]
 
 
 def handle_scroll(args: dict) -> list:
@@ -1793,6 +2662,8 @@ def handle_scroll(args: dict) -> list:
     y = args.get("y")
     monitor = args.get("monitor")
     coord_space = str(args.get("coord_space", "global")).strip().lower()
+    focus_title = (args.get("focus_title") or "").strip()
+    focus_handle = args.get("focus_handle")
     query = f"/action/scroll?amount={amount}"
     if x is not None:
         query += f"&x={int(x)}"
@@ -1802,13 +2673,18 @@ def handle_scroll(args: dict) -> list:
         query += f"&monitor_id={int(monitor)}"
     if coord_space in {"monitor", "local", "monitor_local"}:
         query += "&relative_to_monitor=true"
+    if focus_handle is not None:
+        query += f"&focus_handle={int(focus_handle)}"
+    elif focus_title:
+        query += f"&focus_title={urllib.parse.quote(focus_title)}"
     data = _api_post(query)
     direction = "down" if amount > 0 else "up"
     return [{
         "type": "text",
         "text": (
             f"Scrolled {direction} ({abs(amount)}): {'SUCCESS' if data.get('success') else 'FAILED'} "
-            f"(space={coord_space}, monitor={monitor if monitor is not None else 'auto'})"
+            f"(space={coord_space}, monitor={monitor if monitor is not None else 'auto'}, "
+            f"focus={'handle='+str(focus_handle) if focus_handle is not None else (focus_title or 'none')})"
         ),
     }]
 
@@ -1914,6 +2790,7 @@ HANDLERS = {
     "raw_action": handle_raw_action,
     "action_precheck": handle_action_precheck,
     "verify_action": handle_verify_action,
+    "operate_cycle": handle_operate_cycle,
     "set_operating_mode": handle_set_operating_mode,
     "click_element": handle_click_element,
     "type_text": handle_type_text,

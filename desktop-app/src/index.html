@@ -129,7 +129,7 @@
       <div class="plan-banner" id="plan-banner">
         <div class="plan-banner-left">
           <span class="plan-banner-badge" id="plan-banner-badge">FREE</span>
-          <span class="plan-banner-text">7 actions &middot; 25 MCP tools</span>
+          <span class="plan-banner-text">7 actions &middot; 29 MCP tools</span>
         </div>
         <button class="plan-banner-btn" id="plan-banner-upgrade">Unlock all 42+ actions &rarr;</button>
       </div>
@@ -144,7 +144,7 @@
           <div class="stat-label">Endpoints</div>
         </div>
         <div class="stat-card">
-          <div class="stat-value" id="stat-mcp">44</div>
+          <div class="stat-value" id="stat-mcp">48</div>
           <div class="stat-label">MCP Tools</div>
         </div>
         <div class="stat-card">
@@ -214,10 +214,10 @@
           </div>
           <div class="apikey-plan-info" id="apikey-plan-info">
             <div class="plan-feature"><span class="plan-check">&#10003;</span> 7 actions</div>
-            <div class="plan-feature"><span class="plan-check">&#10003;</span> 25 MCP tools</div>
+            <div class="plan-feature"><span class="plan-check">&#10003;</span> 29 MCP tools</div>
             <div class="plan-feature"><span class="plan-check">&#10003;</span> Vision + OCR</div>
             <div class="plan-feature locked"><span class="plan-lock">&#128274;</span> 42+ actions</div>
-            <div class="plan-feature locked"><span class="plan-lock">&#128274;</span> 44 MCP tools</div>
+            <div class="plan-feature locked"><span class="plan-lock">&#128274;</span> 48 MCP tools</div>
             <div class="plan-feature locked"><span class="plan-lock">&#128274;</span> Browser + Terminal</div>
           </div>
           <button class="btn-upgrade-card" id="btn-upgrade-card">Upgrade to Pro</button>
@@ -462,7 +462,7 @@
           <div class="stat-label">Total Actions</div>
         </div>
         <div class="stat-card">
-          <div class="stat-value">44</div>
+          <div class="stat-value">48</div>
           <div class="stat-label">MCP Tools</div>
         </div>
       </div>
@@ -539,6 +539,97 @@
               <div class="setting-desc">Number of frames to keep in RAM ring buffer</div>
             </div>
             <input class="setting-input" id="set-buffer" type="number" value="30" min="5" max="120" />
+          </div>
+          <div class="setting-row">
+            <div>
+              <div class="setting-label">Fast Loop Hz</div>
+              <div class="setting-desc">Semantic loop frequency (target 8-12Hz)</div>
+            </div>
+            <input class="setting-input" id="set-fast-loop-hz" type="number" value="10" min="2" max="20" step="0.5" />
+          </div>
+          <div class="setting-row">
+            <div>
+              <div class="setting-label">Deep Loop Hz</div>
+              <div class="setting-desc">Visual inference scheduler frequency</div>
+            </div>
+            <input class="setting-input" id="set-deep-loop-hz" type="number" value="1.0" min="0.5" max="4.0" step="0.1" />
+          </div>
+          <div class="setting-row">
+            <div>
+              <div class="setting-label">Vision Profile</div>
+              <div class="setting-desc">core_ram (default) or vision_plus</div>
+            </div>
+            <select class="setting-input" id="set-vision-profile">
+              <option value="core_ram" selected>core_ram</option>
+              <option value="vision_plus">vision_plus</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="setting-group">
+          <div class="setting-group-title">Runtime + VLM</div>
+          <div class="setting-row">
+            <div>
+              <div class="setting-label">Enable Local VLM</div>
+              <div class="setting-desc">Turns on visual captioning in the deep loop</div>
+            </div>
+            <label class="toggle">
+              <input type="checkbox" id="set-vlm-enabled" />
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+          <div class="setting-row">
+            <div>
+              <div class="setting-label">VLM Backend</div>
+              <div class="setting-desc">smol (default) or blip</div>
+            </div>
+            <select class="setting-input" id="set-vlm-backend">
+              <option value="smol" selected>smol</option>
+              <option value="blip">blip</option>
+            </select>
+          </div>
+          <div class="setting-row">
+            <div>
+              <div class="setting-label">VLM Model</div>
+              <div class="setting-desc">HF repo id for local model cache</div>
+            </div>
+            <input class="setting-input" id="set-vlm-model" type="text" value="HuggingFaceTB/SmolVLM2-500M-Instruct" />
+          </div>
+          <div class="setting-row">
+            <div>
+              <div class="setting-label">INT8 (CPU)</div>
+              <div class="setting-desc">Lower RAM/CPU with small quality tradeoff</div>
+            </div>
+            <label class="toggle">
+              <input type="checkbox" id="set-vlm-int8" checked />
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+          <div class="setting-row">
+            <div>
+              <div class="setting-label">VLM Image Size</div>
+              <div class="setting-desc">Input resize for inference</div>
+            </div>
+            <input class="setting-input" id="set-vlm-image-size" type="number" value="384" min="224" max="768" step="32" />
+          </div>
+          <div class="setting-row">
+            <div>
+              <div class="setting-label">VLM Max Tokens</div>
+              <div class="setting-desc">Caption output token budget</div>
+            </div>
+            <input class="setting-input" id="set-vlm-max-tokens" type="number" value="64" min="16" max="256" step="8" />
+          </div>
+          <div class="setting-row">
+            <div>
+              <div class="setting-label">Runtime Status</div>
+              <div class="setting-desc">Python runtime + deps health</div>
+            </div>
+            <span id="runtime-status" style="color:var(--text-dim);font-family:var(--font-mono)">--</span>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;">
+            <button class="topbar-btn" id="btn-runtime-bootstrap">Bootstrap Runtime</button>
+            <button class="topbar-btn" id="btn-vlm-download">Download VLM Model</button>
+            <span id="vlm-download-status" style="color:var(--text-dim);font-size:11px;align-self:center;">idle</span>
           </div>
         </div>
 
