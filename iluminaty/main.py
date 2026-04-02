@@ -123,8 +123,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--llm",
         type=str,
         default="none",
-        choices=["none", "ollama", "claude", "openai", "kimi", "gemini"],
-        help="LLM provider for autonomous loop (default: none). Use 'ollama' for local.",
+        choices=["none", "ollama", "brain", "claude", "openai", "kimi", "gemini"],
+        help=(
+            "LLM provider for autonomous loop (default: none).\n"
+            "  brain  — direct GPU inference, no Ollama server needed\n"
+            "  ollama — via Ollama server (must be running)\n"
+            "  claude/openai/kimi — cloud API (requires --llm-key)"
+        ),
     )
     parser.add_argument(
         "--llm-model",
@@ -149,6 +154,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default="http://localhost:11434",
         help="Ollama server URL (default: http://localhost:11434).",
+    )
+    parser.add_argument(
+        "--checkpoint",
+        type=str,
+        default=None,
+        help="Path to fine-tuned IluminatyBrain checkpoint (--llm brain only).",
     )
     return parser
 
@@ -291,6 +302,7 @@ def main():
                 llm_key=args.llm_key or "",
                 ollama_url=args.ollama_url,
                 autonomy=args.autonomy,
+                checkpoint=args.checkpoint,
             )
             import time as _time
             _time.sleep(1.5)  # let server boot before first tick

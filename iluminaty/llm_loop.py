@@ -253,7 +253,52 @@ class LLMLoop:
         llm_key: str = "",
         ollama_url: str = "http://localhost:11434",
         autonomy: str = "confirm",
+        checkpoint: Optional[str] = None,
     ) -> "LLMLoop":
+        """
+        Factory that creates the right adapter based on provider.
+
+        Special providers:
+          'brain'  — uses BrainEngine directly (no Ollama, no API)
+                     model = Ollama model name OR HuggingFace model ID
+                     checkpoint = path to fine-tuned checkpoint
+        """
+        if provider == "brain":
+            from .brain_engine import BrainEngine
+
+            class _BrainAdapter:
+                """Thin wrapper so BrainEngine works as an adapter."""
+                def __init__(self, engine: BrainEngine):
+                    self._engine = engine
+                    self._model = model
+                    self._connected = True
+
+                def ask(self, prompt: str, system: str = "") -> str:
+                    # BrainEngine.decide() is called directly in the loop
+                    # This path is only used as fallback
+                    result = self._engine._infer_llamacpp(prompt) \
+                        if self._engine._backend == "llamacpp" \
+                        else self._engine._infer_transformers(prompt)
+                    return result
+
+                def send_frame(self, *args, **kwargs):
+                    return None
+
+            if checkpoint:
+                engine = BrainEngine.from_checkpoint(checkpoint)
+            elif "/" in model:
+                # HuggingFace model ID
+                engine = BrainEngine.from_huggingface(model)
+            else:
+                # Ollama model name → use existing blob, no Ollama server needed
+                engine = BrainEngine.from_ollama_blob(model)
+
+            adapter = _BrainAdapter(engine)
+            loop = cls(adapter=adapter, goal=goal, api_url=api_url,
+                       api_key=api_key, autonomy=autonomy)
+            loop._brain_engine = engine  # store for direct decide() calls
+            return loop
+
         from .adapters import ADAPTERS
         AdapterClass = ADAPTERS.get(provider)
         if not AdapterClass:
@@ -263,8 +308,10 @@ class LLMLoop:
         else:
             adapter = AdapterClass(api_key=llm_key or api_key, model=model)
         adapter.connect()
-        return cls(adapter=adapter, goal=goal, api_url=api_url,
+        loop = cls(adapter=adapter, goal=goal, api_url=api_url,
                    api_key=api_key, autonomy=autonomy)
+        loop._brain_engine = None
+        return loop
 
     def _get_world(self) -> Optional[dict]:
         try:
@@ -287,19 +334,25 @@ class LLMLoop:
             logger.warning("LLMLoop: no world state — is ILUMINATY running?")
             return True
 
-        prompt = _world_to_prompt(world, self._goal, self._history)
-        response = self._adapter.ask(prompt, system=SYSTEM_PROMPT)
-
-        if not response:
-            self._stats["errors"] += 1
-            logger.warning("LLMLoop: LLM returned empty response")
-            return True
-
-        action = _parse_action(response)
-        if not action:
-            self._stats["errors"] += 1
-            logger.warning("LLMLoop: could not parse action from: %s", response[:100])
-            return True
+        # Use BrainEngine.decide() directly if available (no Ollama needed)
+        brain = getattr(self, "_brain_engine", None)
+        if brain is not None:
+            action = brain.decide(world, goal=self._goal, history=self._history)
+            if action is None:
+                self._stats["errors"] += 1
+                return True
+        else:
+            prompt = _world_to_prompt(world, self._goal, self._history)
+            response = self._adapter.ask(prompt, system=SYSTEM_PROMPT)
+            if not response:
+                self._stats["errors"] += 1
+                logger.warning("LLMLoop: LLM returned empty response")
+                return True
+            action = _parse_action(response)
+            if not action:
+                self._stats["errors"] += 1
+                logger.warning("LLMLoop: could not parse action from: %s", response[:100])
+                return True
 
         logger.info("[IluminatyBrain] tick=%d action=%s", self._tick_count, json.dumps(action))
         self._last_action = action
