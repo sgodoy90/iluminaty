@@ -258,6 +258,59 @@ async def api_stream(stream_id: str):
     )
 
 
+@app.post("/api/execute")
+async def api_execute(req: Request):
+    """Execute an action via ILUMINATY. Called when model outputs a JSON action."""
+    import urllib.request as ureq
+    data = await req.json()
+    action = data.get("action", {})
+    act = action.get("action", "")
+
+    headers_bytes = {"Content-Type": "application/json"}
+
+    def post(path, body):
+        raw = json.dumps(body).encode()
+        r = ureq.Request(f"{ILUMINATY_URL}{path}", data=raw,
+                         headers=headers_bytes, method="POST")
+        with ureq.urlopen(r, timeout=10) as resp:
+            return json.loads(resp.read())
+
+    try:
+        if act == "wait":
+            await asyncio.sleep(min(int(action.get("ms", 500)), 5000) / 1000)
+            return JSONResponse({"success": True})
+        if act == "type_text":
+            result = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: post("/action/type", {"text": action.get("text", "")}))
+        elif act == "hotkey":
+            import urllib.parse
+            k = urllib.parse.quote(str(action.get("keys", "")))
+            result = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: post(f"/action/hotkey?keys={k}", {}))
+        elif act == "click":
+            result = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: post("/action/click", {"x": action.get("x", 0), "y": action.get("y", 0)}))
+        elif act == "scroll":
+            d = action.get("direction", "down")
+            a = int(action.get("amount", 3))
+            result = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: post("/action/scroll", {"amount": a if d == "up" else -a}))
+        elif act == "run_command":
+            result = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: post("/terminal/exec", {"command": action.get("cmd", "")}))
+        elif act == "browser_navigate":
+            result = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: post("/browser/navigate", {"url": action.get("url", "")}))
+        elif act in ("done", "ask"):
+            return JSONResponse({"success": True, "action": act})
+        else:
+            result = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: post("/action/execute", {"instruction": json.dumps(action)}))
+        return JSONResponse(result)
+    except Exception as e:
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
 @app.post("/api/rating")
 async def api_rating(req: Request):
     """Save a training sample (prompt + response + rating)."""
@@ -591,6 +644,9 @@ _HTML = r"""<!DOCTYPE html>
   <div class="topbar">
     <span class="topbar-title" id="chat-title">Nueva conversación</span>
     <div class="topbar-actions">
+      <button class="icon-btn" id="agent-toggle" onclick="toggleAgentMode()" title="Modo agente: el modelo ejecuta acciones en tu PC">
+        🤖 Agente: <span id="agent-label">OFF</span>
+      </button>
       <button class="icon-btn" onclick="saveSession()" title="Guardar sesión">💾 Guardar</button>
       <button class="icon-btn" onclick="clearChat()" title="Limpiar chat">🗑 Limpiar</button>
     </div>
@@ -629,6 +685,7 @@ _HTML = r"""<!DOCTYPE html>
 let messages = [];   // [{role, content}]
 let sessionName = genSessionName();
 let isStreaming = false;
+let agentMode = false;  // when true, JSON actions in responses get executed
 
 function genSessionName() {
   const now = new Date();
@@ -790,6 +847,25 @@ async function sendMessage() {
         messages[aiIdx].elapsed = elapsed;
         messages[aiIdx].tps = tps;
 
+        // Agent mode: try to execute any JSON action in the response
+        if (agentMode) {
+          const action = tryExtractAction(responseText);
+          if (action) {
+            messages[aiIdx].executedAction = action;
+            bubble.innerHTML = escHtml(responseText) +
+              `<div style="margin-top:8px;padding:8px;background:rgba(63,185,80,.1);border:1px solid var(--green);border-radius:8px;font-size:12px;font-family:monospace;color:var(--green)">` +
+              `⚡ Ejecutando: ${JSON.stringify(action)}</div>`;
+            executeAction(action).then(result => {
+              const ok = result.success !== false;
+              const statusColor = ok ? 'var(--green)' : 'var(--red)';
+              const statusIcon = ok ? '✓' : '✗';
+              bubble.querySelector('div').innerHTML =
+                `⚡ <span style="color:${statusColor}">${statusIcon}</span> ${JSON.stringify(action)}` +
+                (result.error ? ` — <span style="color:var(--red)">${result.error}</span>` : '');
+            });
+          }
+        }
+
         // Re-render to add rating buttons
         row.remove();
         c.appendChild(renderMessage(messages[aiIdx], aiIdx));
@@ -948,6 +1024,39 @@ async function updateStats() {
 
     document.getElementById('footer-samples').textContent = `Training: ${s.training_samples || 0} muestras`;
   } catch {}
+}
+
+// ── Agent mode ────────────────────────────────────────────────────────────
+function toggleAgentMode() {
+  agentMode = !agentMode;
+  const btn = document.getElementById('agent-toggle');
+  const lbl = document.getElementById('agent-label');
+  lbl.textContent = agentMode ? 'ON' : 'OFF';
+  btn.style.borderColor = agentMode ? 'var(--green)' : '';
+  btn.style.color = agentMode ? 'var(--green)' : '';
+  showToast(agentMode
+    ? '🤖 Modo agente ON — el modelo puede ejecutar acciones'
+    : '⏹ Modo agente OFF');
+}
+
+function tryExtractAction(text) {
+  // Find first JSON object in text that looks like an action
+  const match = text.match(/\{(?:[^{}]|\{[^{}]*\})*\}/);
+  if (!match) return null;
+  try {
+    const obj = JSON.parse(match[0]);
+    if (obj.action) return obj;
+  } catch {}
+  return null;
+}
+
+async function executeAction(action) {
+  const res = await fetch('/api/execute', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action }),
+  });
+  return await res.json();
 }
 
 // ── Init ────────────────────────────────────────────────────────────────
