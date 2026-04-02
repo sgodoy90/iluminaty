@@ -30,6 +30,7 @@ import uvicorn
 
 SESSIONS_DIR = pathlib.Path.home() / ".iluminaty" / "brain_sessions"
 TRAINING_FILE = pathlib.Path("brain_training_data.jsonl")
+ILUMINATY_URL = "http://127.0.0.1:8420"
 
 # ─── Global state ────────────────────────────────────────────────────────────
 
@@ -38,6 +39,75 @@ _model_name = "?"
 _backend = "?"
 _executor = ThreadPoolExecutor(max_workers=1)  # one inference at a time
 _streams: dict[str, asyncio.Queue] = {}        # stream_id -> token queue
+
+
+# ─── ILUMINATY API connection ─────────────────────────────────────────────────
+
+def _get_world() -> Optional[dict]:
+    """Fetch current WorldState from ILUMINATY API."""
+    try:
+        import urllib.request
+        req = urllib.request.Request(f"{ILUMINATY_URL}/perception/world")
+        with urllib.request.urlopen(req, timeout=2) as r:
+            return json.loads(r.read())
+    except Exception:
+        return None
+
+
+def _build_system_prompt(world: Optional[dict]) -> str:
+    """
+    Build a rich system prompt that tells the model exactly what it is,
+    what ILUMINATY is, and what the current screen state looks like.
+    """
+    base = (
+        "Eres IluminatyBrain — el cerebro de inteligencia artificial del sistema ILUMINATY.\n"
+        "ILUMINATY es un sistema que ve la pantalla del usuario en tiempo real (IPA — ILUMINATY Perception Algorithm) "
+        "y puede controlar el PC: clicks, teclado, comandos, browser, ventanas.\n"
+        "Tienes acceso a lo que el usuario tiene en pantalla ahora mismo.\n"
+        "Responde en español, de forma útil y directa.\n"
+        "Cuando el usuario te pida hacer algo en su PC, puedes proponer la acción concreta "
+        "o explicar cómo ILUMINATY lo ejecutaría.\n"
+    )
+
+    if not world:
+        return base + "\n[ILUMINATY no está corriendo — sin acceso a la pantalla ahora mismo.]"
+
+    # Extract world state info
+    surface    = world.get("active_surface", "?")
+    phase      = world.get("task_phase", "?")
+    ready      = world.get("readiness", False)
+    domain     = world.get("domain_pack", "general")
+    risk       = world.get("risk_mode", "safe")
+    affordances = world.get("affordances", [])[:8]
+    entities   = world.get("entities", [])[:6]
+    texts      = [
+        f.get("text", "") or f.get("content", "")
+        for f in (world.get("visual_facts") or [])[:5]
+        if f.get("text") or f.get("content")
+    ]
+    reasons    = world.get("readiness_reasons", [])[:3]
+    uncertainty = world.get("uncertainty", 0)
+    staleness  = world.get("staleness_ms", 0)
+
+    ctx = (
+        f"\n[ESTADO ACTUAL DE PANTALLA — hace {staleness}ms]\n"
+        f"  App activa   : {surface}\n"
+        f"  Fase         : {phase}\n"
+        f"  Dominio      : {domain}\n"
+        f"  Listo para actuar: {ready}"
+    )
+    if reasons:
+        ctx += f" ({', '.join(reasons)})"
+    if affordances:
+        ctx += f"\n  Acciones disponibles: {', '.join(affordances)}"
+    if entities:
+        ctx += f"\n  Elementos detectados: {', '.join(str(e) for e in entities)}"
+    if texts:
+        ctx += f"\n  Texto visible: {' | '.join(t[:60] for t in texts if t)}"
+    if uncertainty > 0.5:
+        ctx += f"\n  [contexto incierto: {uncertainty:.0%}]"
+
+    return base + ctx
 
 
 # ─── FastAPI app ─────────────────────────────────────────────────────────────
@@ -133,23 +203,24 @@ def _infer_stream(
 async def api_chat(req: Request):
     data = await req.json()
     messages: list[dict] = data.get("messages", [])
-    system: str = data.get("system", (
-        "Eres IluminatyBrain, un asistente de IA que corre completamente local. "
-        "Responde de forma util, clara y concisa. Puedes hablar en espanol."
-    ))
     max_tokens: int = int(data.get("max_tokens", 512))
 
     if not _brain:
         return JSONResponse({"error": "Modelo no cargado"}, status_code=503)
 
-    prompt = _build_chatml(messages[-16:], system)  # last 16 messages
+    # Fetch live screen context from ILUMINATY
+    world = await asyncio.get_event_loop().run_in_executor(None, _get_world)
+    system = _build_system_prompt(world)
+
+    prompt = _build_chatml(messages[-16:], system)
     stream_id = str(uuid.uuid4())
     _streams[stream_id] = asyncio.Queue()
 
     loop = asyncio.get_event_loop()
     _executor.submit(_infer_stream, stream_id, prompt, max_tokens, loop)
 
-    return JSONResponse({"stream_id": stream_id})
+    # Return stream_id + whether ILUMINATY is connected
+    return JSONResponse({"stream_id": stream_id, "iluminaty_connected": world is not None})
 
 
 @app.get("/api/stream/{stream_id}")
@@ -212,11 +283,15 @@ async def api_status():
     if TRAINING_FILE.exists():
         with open(TRAINING_FILE) as f:
             samples = sum(1 for _ in f)
+    world = await asyncio.get_event_loop().run_in_executor(None, _get_world)
     return JSONResponse({
         "model": _model_name,
         "backend": _backend,
         "loaded": _brain is not None,
         "training_samples": samples,
+        "iluminaty_connected": world is not None,
+        "screen_surface": world.get("active_surface") if world else None,
+        "screen_phase": world.get("task_phase") if world else None,
         **stats,
     })
 
@@ -505,7 +580,9 @@ _HTML = r"""<!DOCTYPE html>
   <div class="sidebar-footer">
     <div class="model-name" id="footer-model">Cargando...</div>
     <div class="stat" id="footer-backend"></div>
-    <div class="stat" id="footer-samples"></div>
+    <div class="stat" id="footer-ipa" style="margin-top:6px;padding-top:6px;border-top:1px solid var(--border)"></div>
+    <div class="stat" id="footer-screen"></div>
+    <div class="stat" id="footer-samples" style="margin-top:4px"></div>
   </div>
 </aside>
 
@@ -682,8 +759,11 @@ async function sendMessage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ messages: messages.slice(0, -1).concat({role:'user',content:text}), max_tokens: 512 }),
     });
-    const { stream_id, error } = await res.json();
+    const { stream_id, error, iluminaty_connected } = await res.json();
     if (error) throw new Error(error);
+    if (!iluminaty_connected) {
+      showToast('⚠ Sin pantalla — iniciá ILUMINATY para contexto completo', 3500);
+    }
 
     // Stream tokens via SSE
     const evtSource = new EventSource(`/api/stream/${stream_id}`);
@@ -855,6 +935,17 @@ async function updateStats() {
     dot.className = `dot ${s.loaded ? '' : 'off'}`;
     document.getElementById('footer-model').textContent = s.model || '?';
     document.getElementById('footer-backend').textContent = `Backend: ${s.backend || '?'}`;
+
+    const ipaEl = document.getElementById('footer-ipa');
+    const screenEl = document.getElementById('footer-screen');
+    if (s.iluminaty_connected) {
+      ipaEl.innerHTML = `<span style="color:var(--green)">● IPA conectado</span>`;
+      screenEl.textContent = `App: ${s.screen_surface || '?'} · ${s.screen_phase || '?'}`;
+    } else {
+      ipaEl.innerHTML = `<span style="color:var(--text2)">○ IPA offline</span> <span style="font-size:10px;color:var(--text2)">(sin pantalla)</span>`;
+      screenEl.textContent = 'Iniciá ILUMINATY para ver la pantalla';
+    }
+
     document.getElementById('footer-samples').textContent = `Training: ${s.training_samples || 0} muestras`;
   } catch {}
 }
