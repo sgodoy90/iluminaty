@@ -34,6 +34,15 @@ def __getattr__(name):
         "TaskPlanner": (".planner", "TaskPlanner"),
         "ActionVerifier": (".verifier", "ActionVerifier"),
         "ErrorRecovery": (".recovery", "ErrorRecovery"),
+        "DomainPackRegistry": (".domain_packs", "DomainPackRegistry"),
+        "DomainPack": (".domain_packs", "DomainPack"),
+        "DomainDecision": (".domain_packs", "DomainDecision"),
+        "WorkersSystem": (".workers", "WorkersSystem"),
+        "UISemanticsEngine": (".ui_semantics", "UISemanticsEngine"),
+        "CursorTracker": (".cursor_tracker", "CursorTracker"),
+        "ActionCompletionWatcher": (".action_watchers", "ActionCompletionWatcher"),
+        "AppBehaviorCache": (".app_behavior_cache", "AppBehaviorCache"),
+        "AudioInterruptDetector": (".audio", "AudioInterruptDetector"),
         # Capa 7: Safety
         "SafetySystem": (".safety", "SafetySystem"),
         "AutonomyManager": (".autonomy", "AutonomyManager"),
@@ -61,6 +70,8 @@ __all__ = [
     "FileSystemSandbox",
     # Capa 6
     "ActionResolver", "IntentClassifier", "TaskPlanner", "ActionVerifier", "ErrorRecovery",
+    "DomainPackRegistry", "DomainPack", "DomainDecision", "WorkersSystem", "UISemanticsEngine",
+    "CursorTracker", "ActionCompletionWatcher", "AppBehaviorCache", "AudioInterruptDetector",
     # Capa 7
     "SafetySystem", "AutonomyManager", "AuditLog",
     "__version__",

@@ -73,6 +73,7 @@ class ErrorRecovery:
     def __init__(self, max_retries: int = 2):
         self._max_retries = max_retries
         self._resolver = None  # ActionResolver (Capa 6)
+        self._reporter = None  # optional callback(result: RecoveryResult)
         self._recovery_chains: dict[str, list[RecoveryStrategy]] = {}
         self._stats_recovered = 0
         self._stats_escalated = 0
@@ -81,6 +82,10 @@ class ErrorRecovery:
     def set_resolver(self, resolver):
         """Conecta el ActionResolver para retries y alternatives."""
         self._resolver = resolver
+
+    def set_reporter(self, reporter) -> None:
+        """Optional callback invoked with each RecoveryResult."""
+        self._reporter = reporter
 
     def _register_defaults(self):
         """Cadenas de recovery por defecto."""
@@ -154,22 +159,34 @@ class ErrorRecovery:
 
             if attempt.success:
                 self._stats_recovered += 1
-                return RecoveryResult(
+                outcome = RecoveryResult(
                     original_action=action,
                     original_error=error,
                     recovered=True,
                     attempts=attempts,
                     final_message=f"Recovered via {strategy.value}: {attempt.message}",
                 )
+                if self._reporter:
+                    try:
+                        self._reporter(outcome)
+                    except Exception:
+                        pass
+                return outcome
 
         self._stats_escalated += 1
-        return RecoveryResult(
+        outcome = RecoveryResult(
             original_action=action,
             original_error=error,
             recovered=False,
             attempts=attempts,
             final_message=f"All recovery strategies failed for '{action}': {error}",
         )
+        if self._reporter:
+            try:
+                self._reporter(outcome)
+            except Exception:
+                pass
+        return outcome
 
     def _do_retry(self, action: str, params: dict) -> RecoveryAttempt:
         """Reintenta la misma accion via resolver."""

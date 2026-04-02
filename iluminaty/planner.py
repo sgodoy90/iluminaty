@@ -128,7 +128,25 @@ class TaskPlanner:
     def __init__(self):
         self._plans: dict[str, ExecutionPlan] = {}
         self._templates: dict[str, list[dict]] = {}
+        self._behavior_cache = None
         self._register_templates()
+
+    def set_behavior_cache(self, cache) -> None:
+        """Inject optional AppBehaviorCache for history-based planning hints."""
+        self._behavior_cache = cache
+
+    def suggest_step_hints(self, *, action: str, app_name: str, window_title: str) -> dict:
+        """Return per-step operational hints when behavior history exists."""
+        if not self._behavior_cache:
+            return {"found": False, "reason": "behavior_cache_unavailable"}
+        try:
+            return self._behavior_cache.suggest(
+                action=action,
+                app_name=app_name,
+                window_title=window_title,
+            )
+        except Exception as e:
+            return {"found": False, "reason": f"behavior_cache_error:{e}"}
 
     def _register_templates(self):
         """Templates para tareas comunes multi-paso."""
@@ -190,5 +208,6 @@ class TaskPlanner:
         return {
             "total_plans": len(self._plans),
             "active_plans": sum(1 for p in self._plans.values() if p.status == PlanStatus.RUNNING),
+            "behavior_cache": bool(self._behavior_cache is not None),
             "templates": list(self._templates.keys()),
         }

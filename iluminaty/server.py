@@ -21,6 +21,7 @@ import asyncio
 import base64
 import io
 import logging
+import os
 import time
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -34,7 +35,7 @@ from .capture import ScreenCapture, CaptureConfig
 from .vision import VisionIntelligence, Annotation
 from .dashboard import DASHBOARD_HTML
 from .smart_diff import SmartDiff
-from .audio import AudioRingBuffer, AudioCapture, TranscriptionEngine
+from .audio import AudioRingBuffer, AudioCapture, TranscriptionEngine, AudioInterruptDetector
 from .context import ContextEngine
 from .plugin_system import PluginManager
 from .monitors import MonitorManager
@@ -64,6 +65,10 @@ from .autonomy import AutonomyManager, AutonomyLevel
 from .audit import AuditLog
 from .licensing import LicenseManager, get_license, init_license
 from .grounding import GroundingEngine
+from .ui_semantics import UISemanticsEngine
+from .cursor_tracker import CursorTracker
+from .action_watchers import ActionCompletionWatcher
+from .app_behavior_cache import AppBehaviorCache
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as StarletteRequest
@@ -117,8 +122,14 @@ class _ServerState:
         self.license: Optional[LicenseManager] = None
         self.perception = None  # PerceptionEngine (lazy import)
         self.grounding: Optional[GroundingEngine] = None
+        self.ui_semantics: Optional[UISemanticsEngine] = None
+        self.behavior_cache: Optional[AppBehaviorCache] = None
+        self.audio_interrupt: Optional[AudioInterruptDetector] = None
         self.agent_coordinator = None  # IPA v2: Multi-Agent Workbench
+        self.cursor_tracker: Optional[CursorTracker] = None
+        self.action_watcher: Optional[ActionCompletionWatcher] = None
         self.operating_mode: str = "SAFE"  # SAFE | RAW | HYBRID
+        self.runtime_profile: str = os.environ.get("ILUMINATY_RUNTIME_PROFILE", "standard").strip().lower() or "standard"
         self.bootstrap_warnings: list[str] = []
 
 _state = _ServerState()
@@ -152,6 +163,18 @@ def _frame_to_json(slot: FrameSlot, include_base64: bool = False) -> dict:
 def _check_auth(api_key: Optional[str]):
     if _state.api_key and api_key != _state.api_key:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
+
+
+def _raise_no_frame_available(monitor_id: Optional[int] = None) -> None:
+    if monitor_id is not None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "monitor_frame_not_available",
+                "monitor_id": int(monitor_id),
+            },
+        )
+    raise HTTPException(status_code=404, detail={"error": "no_frames_in_buffer"})
 
 
 def _resolve_active_monitor_id() -> Optional[int]:
@@ -549,6 +572,515 @@ def _mode_requires_safety(mode: str, category: str) -> bool:
     return True
 
 
+def _normalize_runtime_profile(profile: Optional[str]) -> str:
+    value = str(profile or "standard").strip().lower()
+    if value not in {"standard", "enterprise", "lab"}:
+        return "standard"
+    return value
+
+
+def _runtime_profile_policy(profile: Optional[str]) -> dict:
+    p = _normalize_runtime_profile(profile)
+    if p == "enterprise":
+        return {
+            "profile": p,
+            "require_verify_destructive": True,
+            "raw_requires_explicit_ack": True,
+            "strict_audit": True,
+        }
+    if p == "lab":
+        return {
+            "profile": p,
+            "require_verify_destructive": False,
+            "raw_requires_explicit_ack": False,
+            "strict_audit": False,
+        }
+    return {
+        "profile": "standard",
+        "require_verify_destructive": False,
+        "raw_requires_explicit_ack": False,
+        "strict_audit": False,
+    }
+
+
+def _active_app_context() -> dict:
+    app_name = "unknown"
+    window_title = ""
+    active = _active_window_snapshot()
+    if active:
+        window_title = str(active.get("title", "") or "")[:220]
+    if _state.windows:
+        try:
+            win = _state.windows.get_active_window()
+            if win:
+                app_name = str(getattr(win, "app_name", "") or getattr(win, "process_name", "") or "").strip() or app_name
+                if not window_title:
+                    window_title = str(getattr(win, "title", "") or "")[:220]
+        except Exception:
+            pass
+    if _state.perception:
+        try:
+            world = _state.perception.get_world_state() or {}
+            active_surface = str(world.get("active_surface", "") or "")
+            if active_surface:
+                # Format is usually "app :: title".
+                if "::" in active_surface:
+                    left, right = active_surface.split("::", 1)
+                    if (not app_name) or app_name == "unknown":
+                        app_name = left.strip() or app_name
+                    if not window_title:
+                        window_title = right.strip()[:220]
+                elif (not app_name) or app_name == "unknown":
+                    app_name = active_surface[:96]
+        except Exception:
+            pass
+    return {
+        "app_name": str(app_name or "unknown")[:96],
+        "window_title": str(window_title or "")[:220],
+    }
+
+
+def _behavior_hint(intent: Intent) -> dict:
+    if not _state.behavior_cache:
+        return {
+            "found": False,
+            "reason": "behavior_cache_unavailable",
+            "action": str(intent.action or "unknown"),
+        }
+    context = _active_app_context()
+    try:
+        hint = _state.behavior_cache.suggest(
+            action=str(intent.action or "unknown"),
+            app_name=context.get("app_name", "unknown"),
+            window_title=context.get("window_title", ""),
+        )
+        hint["context"] = context
+        return hint
+    except Exception as e:
+        return {
+            "found": False,
+            "reason": f"behavior_cache_error:{e}",
+            "action": str(intent.action or "unknown"),
+            "context": context,
+        }
+
+
+def _audio_interrupt_check(intent: Intent, mode: str) -> dict:
+    mode_norm = _normalize_operating_mode(mode)
+    category = str(intent.category or "normal").strip().lower()
+    applies = mode_norm in {"SAFE", "HYBRID"} and category in {"normal", "destructive", "system"}
+    if not applies:
+        return {"allowed": True, "applies": False, "reason": "skipped"}
+    if not _state.audio_interrupt:
+        return {"allowed": True, "applies": True, "reason": "audio_guard_unavailable"}
+    status = _state.audio_interrupt.status()
+    if not bool(status.get("blocked", False)):
+        return {
+            "allowed": True,
+            "applies": True,
+            "reason": "audio_clear",
+            "status": status,
+        }
+    return {
+        "allowed": False,
+        "applies": True,
+        "reason": "audio_interrupt_blocked",
+        "status": status,
+    }
+
+
+def _runtime_profile_check(intent: Intent, mode: str) -> dict:
+    profile = _normalize_runtime_profile(_state.runtime_profile)
+    policy = _runtime_profile_policy(profile)
+    mode_norm = _normalize_operating_mode(mode)
+    category = str(intent.category or "normal").strip().lower()
+    if profile != "enterprise":
+        return {
+            "allowed": True,
+            "applies": False,
+            "reason": "standard_profile",
+            "profile": profile,
+            "policy": policy,
+        }
+    if (
+        mode_norm == "RAW"
+        and policy.get("raw_requires_explicit_ack", False)
+        and category in {"destructive", "system"}
+    ):
+        params = intent.params or {}
+        ack = bool(params.get("enterprise_raw_ack", False))
+        if not ack:
+            return {
+                "allowed": False,
+                "applies": True,
+                "reason": "enterprise_raw_requires_ack",
+                "profile": profile,
+                "policy": policy,
+            }
+    return {
+        "allowed": True,
+        "applies": True,
+        "reason": "enterprise_policy_ok",
+        "profile": profile,
+        "policy": policy,
+    }
+
+
+def _is_click_like_action(action: str) -> bool:
+    return str(action or "").strip().lower() in {
+        "click",
+        "double_click",
+        "right_click",
+        "click_screen",
+    }
+
+
+def _extract_target_xy(intent: Intent) -> tuple[Optional[int], Optional[int]]:
+    params = intent.params or {}
+    if "x" not in params or "y" not in params:
+        return None, None
+    try:
+        return int(params.get("x")), int(params.get("y"))
+    except Exception:
+        return None, None
+
+
+def _target_check(intent: Intent) -> dict:
+    action = (intent.action or "").strip().lower()
+    if not _is_click_like_action(action):
+        return {
+            "allowed": True,
+            "applies": False,
+            "reason": "not_click_like",
+            "x": None,
+            "y": None,
+        }
+    x, y = _extract_target_xy(intent)
+    if x is None or y is None:
+        return {
+            "allowed": True,
+            "applies": False,
+            "reason": "no_coordinates",
+            "x": None,
+            "y": None,
+        }
+    layout = _monitor_layout_snapshot()
+    if not layout:
+        return {
+            "allowed": True,
+            "applies": True,
+            "reason": "layout_unavailable",
+            "x": int(x),
+            "y": int(y),
+        }
+    for mon in layout:
+        left = int(mon.get("left", 0))
+        top = int(mon.get("top", 0))
+        right = int(mon.get("right", left + int(mon.get("width", 0))))
+        bottom = int(mon.get("bottom", top + int(mon.get("height", 0))))
+        if left <= int(x) < right and top <= int(y) < bottom:
+            return {
+                "allowed": True,
+                "applies": True,
+                "reason": "inside_monitor",
+                "x": int(x),
+                "y": int(y),
+                "monitor_id": int(mon.get("id", 0)),
+            }
+    return {
+        "allowed": False,
+        "applies": True,
+        "reason": "target_out_of_bounds",
+        "x": int(x),
+        "y": int(y),
+    }
+
+
+def _orientation_check(intent: Intent, mode: str, target_check: Optional[dict] = None) -> dict:
+    mode_norm = _normalize_operating_mode(mode)
+    category = (intent.category or "normal").strip().lower()
+    applies = mode_norm != "RAW" and category in {"destructive", "system"}
+    if not applies:
+        return {
+            "allowed": True,
+            "applies": False,
+            "reason": "skipped",
+            "mode": mode_norm,
+            "category": category,
+        }
+
+    active = _active_window_snapshot()
+    active_monitor = active.get("monitor_id")
+    if active_monitor is None:
+        active_monitor = _resolve_active_monitor_id()
+    if active.get("handle") is None and not str(active.get("title", "")).strip():
+        return {
+            "allowed": False,
+            "applies": True,
+            "reason": "orientation_active_window_unknown",
+            "mode": mode_norm,
+            "category": category,
+            "active_window": active,
+            "active_monitor_id": int(active_monitor) if active_monitor is not None else None,
+        }
+    if active_monitor is None:
+        return {
+            "allowed": False,
+            "applies": True,
+            "reason": "orientation_monitor_unknown",
+            "mode": mode_norm,
+            "category": category,
+            "active_window": active,
+            "active_monitor_id": None,
+        }
+
+    target_monitor = None
+    if isinstance(target_check, dict):
+        target_monitor = target_check.get("monitor_id")
+    if target_monitor is not None:
+        try:
+            if int(target_monitor) != int(active_monitor):
+                return {
+                    "allowed": False,
+                    "applies": True,
+                    "reason": "orientation_monitor_mismatch",
+                    "mode": mode_norm,
+                    "category": category,
+                    "active_window": active,
+                    "active_monitor_id": int(active_monitor),
+                    "target_monitor_id": int(target_monitor),
+                }
+        except Exception:
+            pass
+
+    return {
+        "allowed": True,
+        "applies": True,
+        "reason": "orientation_ok",
+        "mode": mode_norm,
+        "category": category,
+        "active_window": active,
+        "active_monitor_id": int(active_monitor),
+        "target_monitor_id": int(target_monitor) if target_monitor is not None else None,
+    }
+
+
+def _ui_semantics_check(intent: Intent, mode: str, task_phase: Optional[str] = None) -> dict:
+    action = (intent.action or "").strip().lower()
+    if not _is_click_like_action(action):
+        return {"allowed": True, "applies": False, "reason": "not_click_like"}
+    x, y = _extract_target_xy(intent)
+    if x is None or y is None:
+        return {"allowed": True, "applies": False, "reason": "no_coordinates"}
+    target_check = _target_check(intent)
+    monitor_id = target_check.get("monitor_id") if isinstance(target_check, dict) else None
+    if not _state.ui_semantics:
+        return {"allowed": True, "applies": True, "reason": "ui_semantics_unavailable"}
+    try:
+        return _state.ui_semantics.evaluate_target(
+            x=int(x),
+            y=int(y),
+            monitor_id=int(monitor_id) if monitor_id is not None else None,
+            action=action,
+            mode=mode,
+            task_phase=task_phase,
+        )
+    except Exception as e:
+        logger.debug("UI semantics check failed: %s", e)
+        return {"allowed": True, "applies": True, "reason": "ui_semantics_error"}
+
+
+def _ocr_policy(task_phase: Optional[str], criticality: Optional[str], action: Optional[str] = None) -> dict:
+    if not _state.ui_semantics:
+        return {"zoom_factor": 1.0, "native_preferred": False, "reason": "ui_semantics_unavailable"}
+    try:
+        policy = _state.ui_semantics.ocr_policy(
+            task_phase=task_phase,
+            criticality=criticality,
+            action=action,
+        )
+        if hasattr(policy, "to_dict"):
+            return policy.to_dict()
+        return dict(policy)
+    except Exception as e:
+        logger.debug("OCR policy resolve failed: %s", e)
+        return {"zoom_factor": 1.0, "native_preferred": False, "reason": f"policy_error:{e}"}
+
+
+def _cursor_drift_check(intent: Intent) -> dict:
+    action = (intent.action or "").strip().lower()
+    if not _is_click_like_action(action):
+        return {"allowed": True, "applies": False, "reason": "not_click_like"}
+    params = intent.params or {}
+    if "expected_cursor_x" not in params or "expected_cursor_y" not in params:
+        return {"allowed": True, "applies": False, "reason": "no_expected_cursor"}
+    try:
+        expected_x = int(params.get("expected_cursor_x"))
+        expected_y = int(params.get("expected_cursor_y"))
+    except Exception:
+        return {"allowed": False, "applies": True, "reason": "invalid_expected_cursor"}
+    try:
+        threshold = int(params.get("max_cursor_drift_px", 20))
+    except Exception:
+        threshold = 20
+    threshold = max(3, min(500, threshold))
+
+    cursor = _cursor_snapshot()
+    cursor_source = str(cursor.get("source", "none"))
+    if cursor_source == "none":
+        return {
+            "allowed": True,
+            "applies": True,
+            "reason": "cursor_unavailable",
+            "expected": {"x": expected_x, "y": expected_y},
+            "actual": None,
+            "distance_px": None,
+            "threshold_px": int(threshold),
+        }
+    dx = abs(int(cursor.get("x", 0)) - expected_x)
+    dy = abs(int(cursor.get("y", 0)) - expected_y)
+    distance = (dx * dx + dy * dy) ** 0.5
+    allowed = bool(distance <= threshold)
+    return {
+        "allowed": allowed,
+        "applies": True,
+        "reason": "cursor_drift_ok" if allowed else "cursor_drift_exceeded",
+        "expected": {"x": expected_x, "y": expected_y},
+        "actual": {"x": int(cursor.get("x", 0)), "y": int(cursor.get("y", 0))},
+        "distance_px": round(float(distance), 2),
+        "threshold_px": int(threshold),
+    }
+
+
+def _cursor_snapshot() -> dict:
+    if _state.cursor_tracker:
+        try:
+            snap = _state.cursor_tracker.sample_once()
+            if isinstance(snap, dict):
+                return {
+                    "x": int(snap.get("x", 0)),
+                    "y": int(snap.get("y", 0)),
+                    "timestamp_ms": int(snap.get("timestamp_ms", int(time.time() * 1000))),
+                    "source": "tracker",
+                }
+        except Exception:
+            pass
+    if _state.actions:
+        try:
+            pos = _state.actions.get_mouse_position()
+            return {
+                "x": int(pos.get("x", 0)),
+                "y": int(pos.get("y", 0)),
+                "timestamp_ms": int(time.time() * 1000),
+                "source": "actions",
+            }
+        except Exception:
+            pass
+    return {
+        "x": 0,
+        "y": 0,
+        "timestamp_ms": int(time.time() * 1000),
+        "source": "none",
+    }
+
+
+def _active_window_snapshot() -> dict:
+    if not _state.windows:
+        return {"handle": None, "title": "", "monitor_id": None}
+    try:
+        win = _state.windows.get_active_window()
+        if not win:
+            return {"handle": None, "title": "", "monitor_id": None}
+        mid = _monitor_id_for_rect(win.x, win.y, win.width, win.height)
+        return {
+            "handle": int(getattr(win, "handle", 0) or 0) or None,
+            "title": str(getattr(win, "title", "") or "")[:180],
+            "monitor_id": int(mid) if mid is not None else None,
+        }
+    except Exception:
+        return {"handle": None, "title": "", "monitor_id": None}
+
+
+def _runtime_pre_action_snapshot(intent: Intent) -> dict:
+    slot, slot_monitor = _latest_slot_for_monitor(None)
+    return {
+        "timestamp_ms": int(time.time() * 1000),
+        "action": str(intent.action or ""),
+        "target": {"x": _extract_target_xy(intent)[0], "y": _extract_target_xy(intent)[1]},
+        "cursor": _cursor_snapshot(),
+        "active_window": _active_window_snapshot(),
+        "frame_timestamp": float(getattr(slot, "timestamp", 0.0) or 0.0),
+        "frame_monitor_id": int(slot_monitor) if slot_monitor is not None else None,
+    }
+
+
+def _runtime_post_action_check(intent: Intent, pre_snapshot: dict) -> dict:
+    action = (intent.action or "").strip().lower()
+    if not _is_click_like_action(action):
+        return {
+            "applies": False,
+            "passed": True,
+            "reason": "not_click_like",
+        }
+    tx, ty = _extract_target_xy(intent)
+    if tx is None or ty is None:
+        return {
+            "applies": False,
+            "passed": True,
+            "reason": "no_coordinates",
+        }
+
+    cursor = _cursor_snapshot()
+    cursor_source = str(cursor.get("source", "none"))
+    cursor_available = cursor_source != "none"
+    if cursor_available:
+        dx = abs(int(cursor.get("x", 0)) - int(tx))
+        dy = abs(int(cursor.get("y", 0)) - int(ty))
+        distance = (dx * dx + dy * dy) ** 0.5
+    else:
+        distance = 0.0
+    try:
+        tolerance_px = int(float(os.environ.get("ILUMINATY_CLICK_POSTCHECK_TOLERANCE_PX", "28")))
+    except Exception:
+        tolerance_px = 28
+    tolerance_px = max(8, min(200, tolerance_px))
+    cursor_ok = bool(distance <= tolerance_px) if cursor_available else True
+
+    active_now = _active_window_snapshot()
+    active_before = pre_snapshot.get("active_window", {}) if isinstance(pre_snapshot, dict) else {}
+    foreground_known = active_now.get("handle") is not None
+    if foreground_known:
+        foreground_ok = True
+    else:
+        foreground_ok = active_before.get("handle") is None
+
+    passed = bool(cursor_ok and foreground_ok)
+    if passed:
+        reason = "ok"
+    elif not cursor_available:
+        reason = "cursor_unavailable"
+    elif not cursor_ok:
+        reason = "cursor_not_at_target"
+    else:
+        reason = "foreground_unknown"
+
+    return {
+        "applies": True,
+        "passed": passed,
+        "reason": reason,
+        "target": {"x": int(tx), "y": int(ty)},
+        "cursor": cursor,
+        "cursor_source": cursor_source,
+        "cursor_available": bool(cursor_available),
+        "distance_px": round(float(distance), 2),
+        "tolerance_px": int(tolerance_px),
+        "foreground_before": active_before,
+        "foreground_after": active_now,
+        "cursor_ok": bool(cursor_ok),
+        "foreground_ok": bool(foreground_ok),
+    }
+
+
 def _intent_from_payload(payload: dict) -> Intent:
     if _state.intent is None:
         raise HTTPException(status_code=503, detail="Brain not initialized")
@@ -628,6 +1160,109 @@ def _enrich_intent_with_grounding(intent: Intent, grounding_check: dict) -> Inte
         raw_input=intent.raw_input,
         category=intent.category,
     )
+
+
+def _build_navigation_cycle_precheck(precheck: dict) -> dict:
+    orientation_check = precheck.get("orientation_check", {}) if isinstance(precheck, dict) else {}
+    target_check = precheck.get("target_check", {}) if isinstance(precheck, dict) else {}
+    grounding_check = precheck.get("grounding_check", {}) if isinstance(precheck, dict) else {}
+    readiness_check = precheck.get("readiness_check", {}) if isinstance(precheck, dict) else {}
+    context_check = precheck.get("context_check", {}) if isinstance(precheck, dict) else {}
+
+    orient_allowed = bool(orientation_check.get("allowed", True))
+    locate_allowed = bool(target_check.get("allowed", True) and grounding_check.get("allowed", True))
+    read_allowed = bool(readiness_check.get("allowed", True) and context_check.get("allowed", True))
+    blocked = bool(precheck.get("blocked", False))
+
+    return {
+        "phase_order": ["orient", "locate", "focus", "read", "act", "verify"],
+        "orient": {
+            "state": "ok" if orient_allowed else "blocked",
+            "ok": orient_allowed,
+            "reason": orientation_check.get("reason", "skipped"),
+        },
+        "locate": {
+            "state": "ok" if locate_allowed else "blocked",
+            "ok": locate_allowed,
+            "reason": (
+                target_check.get("reason")
+                if not target_check.get("allowed", True)
+                else grounding_check.get("reason", "ok")
+            ),
+        },
+        "focus": {
+            "state": "pending",
+            "ok": None,
+            "reason": "awaiting_execution",
+        },
+        "read": {
+            "state": "ok" if read_allowed else "blocked",
+            "ok": read_allowed,
+            "reason": (
+                readiness_check.get("reason")
+                if not readiness_check.get("allowed", True)
+                else context_check.get("reason", "ok")
+            ),
+        },
+        "act": {
+            "state": "blocked" if blocked else "ready",
+            "ok": False if blocked else None,
+            "reason": "precheck_blocked" if blocked else "precheck_passed",
+        },
+        "verify": {
+            "state": "pending",
+            "ok": None,
+            "reason": "awaiting_execution",
+        },
+    }
+
+
+def _build_navigation_cycle_execution(
+    precheck: dict,
+    runtime_checks: Optional[dict],
+    result_payload: Optional[dict],
+    verification_payload: Optional[dict],
+) -> dict:
+    cycle = _build_navigation_cycle_precheck(precheck)
+    rt = runtime_checks or {}
+    result_payload = result_payload or {}
+    verification_payload = verification_payload or {}
+
+    active_window = ((rt.get("pre_action") or {}).get("active_window") or {})
+    focus_ok = bool(active_window.get("handle") is not None or str(active_window.get("title", "")).strip())
+    cycle["focus"] = {
+        "state": "ok" if focus_ok else "degraded",
+        "ok": focus_ok,
+        "reason": "focus_acquired" if focus_ok else "focus_unknown",
+    }
+
+    act_ok = bool(result_payload.get("success", False))
+    cycle["act"] = {
+        "state": "ok" if act_ok else "failed",
+        "ok": act_ok,
+        "reason": str(result_payload.get("message", "action_result_unknown")),
+    }
+
+    verify_ok = None
+    verify_reason = "verification_skipped"
+    if "success" in verification_payload:
+        verify_ok = bool(verification_payload.get("success"))
+        verify_reason = str(verification_payload.get("message", "verification_result"))
+    else:
+        post_check = rt.get("post_action") or {}
+        if post_check.get("applies"):
+            verify_ok = bool(post_check.get("passed", False))
+            verify_reason = str(post_check.get("reason", "post_action_check"))
+
+    if verify_ok is None:
+        cycle["verify"] = {"state": "skipped", "ok": None, "reason": verify_reason}
+    else:
+        cycle["verify"] = {
+            "state": "ok" if verify_ok else "failed",
+            "ok": verify_ok,
+            "reason": verify_reason,
+        }
+    return cycle
 
 
 def _build_precheck(
@@ -777,14 +1412,32 @@ def _build_precheck(
                     "candidates": [],
                 }
 
+    target_check = _target_check(intent)
+    behavior_hint = _behavior_hint(intent)
+    profile_check = _runtime_profile_check(intent, mode_norm)
+    audio_interrupt_check = _audio_interrupt_check(intent, mode_norm)
+    ui_semantics_check = _ui_semantics_check(
+        intent,
+        mode_norm,
+        task_phase=str(readiness.get("task_phase", "unknown")),
+    )
+    orientation_check = _orientation_check(intent, mode_norm, target_check=target_check)
+    cursor_drift_check = _cursor_drift_check(intent)
+
     blocked = (
         not kill_check["allowed"]
         or not safety_check["allowed"]
         or not readiness_check["allowed"]
         or not context_check["allowed"]
         or not grounding_check["allowed"]
+        or not profile_check["allowed"]
+        or not audio_interrupt_check["allowed"]
+        or not orientation_check["allowed"]
+        or not ui_semantics_check["allowed"]
+        or not target_check["allowed"]
+        or not cursor_drift_check["allowed"]
     )
-    return {
+    payload = {
         "mode": mode_norm,
         "intent": intent.to_dict(),
         "readiness": readiness,
@@ -800,8 +1453,17 @@ def _build_precheck(
         "context_check": context_check,
         "grounding_applies": grounding_applies,
         "grounding_check": grounding_check,
+        "profile_check": profile_check,
+        "audio_interrupt_check": audio_interrupt_check,
+        "behavior_hint": behavior_hint,
+        "orientation_check": orientation_check,
+        "ui_semantics_check": ui_semantics_check,
+        "target_check": target_check,
+        "cursor_drift_check": cursor_drift_check,
         "blocked": blocked,
     }
+    payload["navigation_cycle"] = _build_navigation_cycle_precheck(payload)
+    return payload
 
 
 def _execute_intent(
@@ -814,6 +1476,17 @@ def _execute_intent(
 ) -> dict:
     if not _state.resolver:
         raise HTTPException(status_code=503, detail="Resolver not initialized")
+
+    worker_intent_id = None
+    if _state.perception and hasattr(_state.perception, "register_worker_intent"):
+        try:
+            worker_intent = _state.perception.register_worker_intent(
+                intent.to_dict(),
+                source="action_execute",
+            )
+            worker_intent_id = worker_intent.get("intent_id")
+        except Exception as e:
+            logger.debug("Workers intent registration failed: %s", e)
 
     precheck = _build_precheck(
         intent,
@@ -829,6 +1502,12 @@ def _execute_intent(
             precheck["safety_check"]["reason"] if not precheck["safety_check"]["allowed"] else
             precheck.get("readiness_check", {}).get("reason") if not precheck.get("readiness_check", {}).get("allowed", True) else
             precheck.get("context_check", {}).get("reason") if not precheck.get("context_check", {}).get("allowed", True) else
+            precheck.get("profile_check", {}).get("reason") if not precheck.get("profile_check", {}).get("allowed", True) else
+            precheck.get("audio_interrupt_check", {}).get("reason") if not precheck.get("audio_interrupt_check", {}).get("allowed", True) else
+            precheck.get("orientation_check", {}).get("reason") if not precheck.get("orientation_check", {}).get("allowed", True) else
+            precheck.get("ui_semantics_check", {}).get("reason") if not precheck.get("ui_semantics_check", {}).get("allowed", True) else
+            precheck.get("cursor_drift_check", {}).get("reason") if not precheck.get("cursor_drift_check", {}).get("allowed", True) else
+            precheck.get("target_check", {}).get("reason") if not precheck.get("target_check", {}).get("allowed", True) else
             precheck.get("grounding_check", {}).get("reason", "grounding_blocked")
         )
         if _state.audit:
@@ -840,9 +1519,26 @@ def _execute_intent(
                 blocked_reason,
                 _state.autonomy.current_level if _state.autonomy else "unknown",
             )
+        if _state.perception and hasattr(_state.perception, "record_worker_verification"):
+            try:
+                _state.perception.record_worker_verification(
+                    intent_id=worker_intent_id,
+                    action=intent.action,
+                    success=False,
+                    reason=blocked_reason,
+                    monitor_id=None,
+                )
+            except Exception as e:
+                logger.debug("Workers verification record failed (blocked): %s", e)
         return {
             "precheck": precheck,
             "intent": intent.to_dict(),
+            "worker_intent_id": worker_intent_id,
+            "runtime_checks": {
+                "pre_action": None,
+                "completion": None,
+                "post_action": None,
+            },
             "result": {
                 "action": intent.action,
                 "success": False,
@@ -853,25 +1549,180 @@ def _execute_intent(
             },
             "verification": None,
             "recovery": None,
+            "navigation_cycle": _build_navigation_cycle_precheck(precheck),
+        }
+
+    profile_policy = _runtime_profile_policy(_state.runtime_profile)
+    if (
+        bool(profile_policy.get("require_verify_destructive", False))
+        and str(intent.category or "normal").strip().lower() in {"destructive", "system"}
+        and not bool(verify)
+    ):
+        reason = "enterprise_verify_required"
+        return {
+            "precheck": precheck,
+            "intent": intent.to_dict(),
+            "worker_intent_id": worker_intent_id,
+            "runtime_checks": {
+                "pre_action": None,
+                "completion": None,
+                "post_action": None,
+            },
+            "result": {
+                "action": intent.action,
+                "success": False,
+                "message": reason,
+                "method_used": "enterprise_policy",
+                "attempts": [],
+                "total_ms": 0.0,
+            },
+            "verification": None,
+            "recovery": None,
+            "navigation_cycle": _build_navigation_cycle_precheck(precheck),
         }
 
     if grounding_request and grounding_request.get("inject_coordinates", True):
         intent = _enrich_intent_with_grounding(intent, precheck.get("grounding_check", {}))
 
+    action_owner = "server-action-executor"
+    lease = None
+    if _state.perception and hasattr(_state.perception, "claim_action_lease"):
+        try:
+            lease = _state.perception.claim_action_lease(owner=action_owner, ttl_ms=2500, force=False)
+        except Exception as e:
+            lease = None
+            logger.debug("Workers action lease claim failed: %s", e)
+
+    if lease is not None and not lease.get("granted", False):
+        busy_reason = str(lease.get("reason") or "arbiter_busy")
+        if _state.perception and hasattr(_state.perception, "record_worker_verification"):
+            try:
+                _state.perception.record_worker_verification(
+                    intent_id=worker_intent_id,
+                    action=intent.action,
+                    success=False,
+                    reason=busy_reason,
+                    monitor_id=None,
+                )
+            except Exception as e:
+                logger.debug("Workers verification record failed (lease denied): %s", e)
+        return {
+            "precheck": precheck,
+            "intent": intent.to_dict(),
+            "worker_intent_id": worker_intent_id,
+            "lease": lease,
+            "runtime_checks": {
+                "pre_action": None,
+                "completion": None,
+                "post_action": None,
+            },
+            "result": {
+                "action": intent.action,
+                "success": False,
+                "message": busy_reason,
+                "method_used": "arbiter",
+                "attempts": [],
+                "total_ms": 0.0,
+            },
+            "verification": None,
+            "recovery": None,
+            "navigation_cycle": _build_navigation_cycle_precheck(precheck),
+        }
+
+    runtime_checks = {
+        "pre_action": _runtime_pre_action_snapshot(intent),
+        "completion": None,
+        "post_action": None,
+    }
+
     pre_state = _state.verifier.capture_pre_state(intent.action, intent.params) if (_state.verifier and verify) else None
-    result = _state.resolver.resolve(intent.action, intent.params)
-
+    result = None
     verification = None
-    if verify and _state.verifier and result.success:
-        verification = _state.verifier.verify(intent.action, intent.params, pre_state)
-
     recovery = None
-    if not result.success and _state.recovery:
-        recovery = _state.recovery.recover(intent.action, intent.params, result.message)
-        if recovery.recovered:
+    behavior_hint = dict(precheck.get("behavior_hint") or {})
+    behavior_context = dict(behavior_hint.get("context") or _active_app_context())
+    behavior_pre_delay_ms = int(max(0, min(5000, int(behavior_hint.get("recommended_pre_delay_ms", 0) or 0))))
+    behavior_retries = int(max(0, min(3, int(behavior_hint.get("recommended_retries", 0) or 0))))
+    recovery_used = False
+    recovery_strategy = ""
+    try:
+        if behavior_pre_delay_ms > 0:
+            time.sleep(float(behavior_pre_delay_ms) / 1000.0)
+        result = _state.resolver.resolve(intent.action, intent.params)
+        while result and (not result.success) and behavior_retries > 0:
+            behavior_retries -= 1
             result = _state.resolver.resolve(intent.action, intent.params)
-            if verify and _state.verifier and result.success:
-                verification = _state.verifier.verify(intent.action, intent.params, pre_state)
+
+        if result and result.success and _state.action_watcher:
+            try:
+                monitor_hint = runtime_checks.get("pre_action", {}).get("frame_monitor_id")
+                if monitor_hint is None:
+                    monitor_hint = _resolve_active_monitor_id()
+                since_ts = float(runtime_checks.get("pre_action", {}).get("frame_timestamp", 0.0) or 0.0)
+                runtime_checks["completion"] = _state.action_watcher.wait_for_settle(
+                    monitor_id=int(monitor_hint) if monitor_hint is not None else None,
+                    since_timestamp=since_ts,
+                    timeout_ms=int(float(os.environ.get("ILUMINATY_ACTION_WATCH_TIMEOUT_MS", "1200"))),
+                    settle_ms=int(float(os.environ.get("ILUMINATY_ACTION_WATCH_SETTLE_MS", "180"))),
+                    poll_ms=int(float(os.environ.get("ILUMINATY_ACTION_WATCH_POLL_MS", "30"))),
+                )
+            except Exception as e:
+                runtime_checks["completion"] = {
+                    "completed": False,
+                    "reason": f"watcher_error:{e}",
+                }
+
+        if verify and _state.verifier and result.success:
+            verification = _state.verifier.verify(intent.action, intent.params, pre_state)
+
+        if result and result.success:
+            post_check = _runtime_post_action_check(intent, runtime_checks.get("pre_action") or {})
+            runtime_checks["post_action"] = post_check
+            strict_postcheck = os.environ.get("ILUMINATY_STRICT_CLICK_POSTCHECK", "0") == "1"
+            mode_norm = _normalize_operating_mode(mode)
+            if (
+                post_check.get("applies")
+                and not post_check.get("passed", True)
+                and strict_postcheck
+                and mode_norm != "RAW"
+            ):
+                result.success = False
+                result.message = f"post_click_check_failed:{post_check.get('reason', 'unknown')}"
+                result.method_used = f"{result.method_used}+postcheck"
+
+        if not result.success and _state.recovery:
+            recovery = _state.recovery.recover(intent.action, intent.params, result.message)
+            if recovery.recovered:
+                recovery_used = True
+                attempts = getattr(recovery, "attempts", None)
+                if attempts:
+                    try:
+                        recovery_strategy = str(attempts[-1].strategy.value)
+                    except Exception:
+                        recovery_strategy = "unknown"
+                result = _state.resolver.resolve(intent.action, intent.params)
+                if verify and _state.verifier and result.success:
+                    verification = _state.verifier.verify(intent.action, intent.params, pre_state)
+            else:
+                attempts = getattr(recovery, "attempts", None)
+                if attempts:
+                    try:
+                        recovery_strategy = str(attempts[-1].strategy.value)
+                    except Exception:
+                        recovery_strategy = "unknown"
+    finally:
+        if lease is not None and _state.perception and hasattr(_state.perception, "release_action_lease"):
+            try:
+                _state.perception.release_action_lease(
+                    owner=action_owner,
+                    success=bool(getattr(result, "success", False)),
+                    message=str(getattr(result, "message", "resolver_exception")),
+                )
+            except Exception as e:
+                logger.debug("Workers action lease release failed: %s", e)
+
+    if result is None:
+        raise HTTPException(status_code=500, detail="Resolver returned no result")
 
     if _state.audit:
         _state.audit.log(
@@ -893,13 +1744,64 @@ def _execute_intent(
             )
         except Exception as e:
             logger.debug("Failed to record action feedback into perception trace: %s", e)
+        if hasattr(_state.perception, "record_worker_verification"):
+            try:
+                verify_reason = result.message
+                verify_success = bool(result.success)
+                if verification and hasattr(verification, "success"):
+                    verify_success = bool(verification.success)
+                    verify_reason = str(getattr(verification, "message", verify_reason))
+                _state.perception.record_worker_verification(
+                    intent_id=worker_intent_id,
+                    action=intent.action,
+                    success=verify_success,
+                    reason=verify_reason,
+                    monitor_id=None,
+                )
+            except Exception as e:
+                logger.debug("Workers verification record failed: %s", e)
+
+    if _state.behavior_cache:
+        try:
+            _state.behavior_cache.record_outcome(
+                app_name=str(behavior_context.get("app_name", "unknown")),
+                window_title=str(behavior_context.get("window_title", "")),
+                action=str(intent.action or "unknown"),
+                params=intent.params or {},
+                success=bool(result.success),
+                reason=str(result.message or ""),
+                method_used=str(getattr(result, "method_used", "") or ""),
+                recovery_used=bool(recovery_used),
+                recovery_strategy=str(recovery_strategy or ""),
+                duration_ms=float(getattr(result, "total_ms", 0.0) or 0.0),
+            )
+        except Exception as e:
+            logger.debug("Failed to persist app behavior outcome: %s", e)
+
+    result_payload = result.to_dict()
+    verification_payload = verification.to_dict() if verification else None
+    navigation_cycle = _build_navigation_cycle_execution(
+        precheck=precheck,
+        runtime_checks=runtime_checks,
+        result_payload=result_payload,
+        verification_payload=verification_payload,
+    )
 
     return {
         "precheck": precheck,
         "intent": intent.to_dict(),
-        "result": result.to_dict(),
-        "verification": verification.to_dict() if verification else None,
+        "worker_intent_id": worker_intent_id,
+        "lease": lease,
+        "runtime_checks": runtime_checks,
+        "result": result_payload,
+        "verification": verification_payload,
         "recovery": recovery.to_dict() if recovery else None,
+        "behavior": {
+            "hint": behavior_hint,
+            "context": behavior_context,
+            "pre_delay_ms_applied": behavior_pre_delay_ms,
+        },
+        "navigation_cycle": navigation_cycle,
     }
 
 
@@ -909,10 +1811,20 @@ async def lifespan(app: FastAPI):
     # Ya se inicializa desde main.py
     yield
     # Cleanup
+    if _state.cursor_tracker:
+        try:
+            _state.cursor_tracker.stop()
+        except Exception:
+            pass
     if _state.capture and _state.capture.is_running:
         _state.capture.stop()
     if _state.buffer:
         _state.buffer.flush()
+    if _state.behavior_cache:
+        try:
+            _state.behavior_cache.close()
+        except Exception:
+            pass
 
 
 # ─── App ───
@@ -1294,6 +2206,14 @@ def init_server(
                 loop.run_until_complete(_state.license.validate())
         except RuntimeError:
             asyncio.run(_state.license.validate())
+        try:
+            plan_value = str(_state.license.plan.value if _state.license else "free")
+            if plan_value == "enterprise":
+                _state.runtime_profile = "enterprise"
+            else:
+                _state.runtime_profile = _normalize_runtime_profile(_state.runtime_profile)
+        except Exception:
+            _state.runtime_profile = _normalize_runtime_profile(_state.runtime_profile)
         # ─── Core (v0.5) ───
         _state.buffer = buffer
         _state.capture = capture
@@ -1302,7 +2222,26 @@ def init_server(
         _state.diff = SmartDiff(grid_cols=8, grid_rows=6)
         _state.audio_buffer = audio_buffer
         _state.audio_capture = audio_capture
+        if _state.behavior_cache:
+            try:
+                _state.behavior_cache.close()
+            except Exception:
+                pass
         _state.transcriber = TranscriptionEngine()
+        try:
+            _state.audio_interrupt = AudioInterruptDetector(
+                hold_ms=int(float(os.environ.get("ILUMINATY_AUDIO_INTERRUPT_HOLD_MS", "12000"))),
+                alert_level_threshold=float(os.environ.get("ILUMINATY_AUDIO_ALERT_THRESHOLD", "0.55")),
+            )
+        except Exception as e:
+            _state.audio_interrupt = None
+            _state.bootstrap_warnings.append(f"audio_interrupt_init_failed: {e}")
+        try:
+            cache_path = os.environ.get("ILUMINATY_APP_BEHAVIOR_DB", "").strip() or None
+            _state.behavior_cache = AppBehaviorCache(db_path=cache_path)
+        except Exception as e:
+            _state.behavior_cache = None
+            _state.bootstrap_warnings.append(f"app_behavior_cache_init_failed: {e}")
         _state.context = ContextEngine()
 
         _state.plugin_mgr = PluginManager()
@@ -1357,6 +2296,23 @@ def init_server(
         _state.windows = WindowManager()
         _state.clipboard = ClipboardManager()
         _state.process_mgr = ProcessManager()
+        try:
+            if _state.cursor_tracker:
+                _state.cursor_tracker.stop()
+            cursor_poll_ms = int(float(os.environ.get("ILUMINATY_CURSOR_POLL_MS", "20")))
+            _state.cursor_tracker = CursorTracker(
+                actions=_state.actions,
+                poll_ms=max(5, min(1000, cursor_poll_ms)),
+            )
+            _state.cursor_tracker.start()
+        except Exception as e:
+            _state.cursor_tracker = None
+            _state.bootstrap_warnings.append(f"cursor_tracker_init_failed: {e}")
+        try:
+            _state.action_watcher = ActionCompletionWatcher(buffer=_state.buffer)
+        except Exception as e:
+            _state.action_watcher = None
+            _state.bootstrap_warnings.append(f"action_watcher_init_failed: {e}")
 
         # Capa 2: UI Intelligence
         _state.ui_tree = UITree()
@@ -1388,6 +2344,11 @@ def init_server(
         )
         _state.intent = IntentClassifier()
         _state.planner = TaskPlanner()
+        if _state.behavior_cache and hasattr(_state.planner, "set_behavior_cache"):
+            try:
+                _state.planner.set_behavior_cache(_state.behavior_cache)
+            except Exception as e:
+                _state.bootstrap_warnings.append(f"planner_behavior_cache_set_failed: {e}")
         _state.verifier = ActionVerifier()
         _state.verifier.set_layers(
             filesystem=_state.filesystem,
@@ -1397,12 +2358,30 @@ def init_server(
         )
         _state.recovery = ErrorRecovery()
         _state.recovery.set_resolver(_state.resolver)
+        if hasattr(_state.recovery, "set_reporter"):
+            def _recovery_reporter(result):
+                try:
+                    if _state.perception:
+                        _state.perception.record_action_feedback(
+                            action=f"recovery:{result.original_action}",
+                            success=bool(result.recovered),
+                            message=str(result.final_message),
+                        )
+                except Exception:
+                    pass
+            _state.recovery.set_reporter(_recovery_reporter)
         _state.grounding = GroundingEngine()
         _state.grounding.set_layers(
             ui_tree=_state.ui_tree,
             vision=_state.vision,
             perception=_state.perception,
             buffer=_state.buffer,
+        )
+        _state.ui_semantics = UISemanticsEngine()
+        _state.ui_semantics.set_layers(
+            ui_tree=_state.ui_tree,
+            vision=_state.vision,
+            monitor_mgr=_state.monitor_mgr,
         )
 
 
@@ -1431,7 +2410,7 @@ async def vision_snapshot(
 
     slot, resolved_mid = _latest_slot_for_monitor(monitor_id)
     if not slot:
-        raise HTTPException(404, "No frames in buffer")
+        _raise_no_frame_available(monitor_id)
 
     enriched = _state.vision.enrich_frame(slot, run_ocr=ocr)
     payload = enriched.to_dict(include_image=include_image)
@@ -1448,6 +2427,9 @@ async def vision_ocr(
     monitor_id: Optional[int] = Query(None, description="Optional monitor id. Defaults to active monitor."),
     native: bool = Query(False, description="Use native-resolution capture for OCR when possible."),
     native_window: bool = Query(False, description="With native=true and no region, OCR active window at native resolution."),
+    adaptive_zoom: bool = Query(True, description="Apply OCR zoom policy based on phase/criticality."),
+    task_phase: Optional[str] = Query(None, description="Optional task phase override for OCR policy."),
+    criticality: Optional[str] = Query(None, description="Optional OCR criticality: low|normal|high|critical."),
     x_api_key: Optional[str] = Header(None),
 ):
     """
@@ -1460,15 +2442,25 @@ async def vision_ocr(
 
     slot, resolved_mid = _latest_slot_for_monitor(monitor_id)
     if not slot:
-        if monitor_id is not None:
-            raise HTTPException(404, f"No frames in buffer for monitor {int(monitor_id)}")
-        raise HTTPException(404, "No frames in buffer")
+        _raise_no_frame_available(monitor_id)
 
     has_region = all(v is not None for v in [region_x, region_y, region_w, region_h])
     native_used = False
     source = "buffer_frame"
     region_mapping = None
     ocr_bytes = slot.frame_bytes
+    resolved_task_phase = str(task_phase or "")
+    if not resolved_task_phase and _state.perception:
+        try:
+            world = _state.perception.get_world_state()
+            resolved_task_phase = str(world.get("task_phase", "unknown"))
+        except Exception:
+            resolved_task_phase = "unknown"
+    if not resolved_task_phase:
+        resolved_task_phase = "unknown"
+    resolved_criticality = str(criticality or "normal")
+    ocr_policy = _ocr_policy(resolved_task_phase, resolved_criticality, action="read_screen_text")
+    zoom_factor = float(ocr_policy.get("zoom_factor", 1.0) or 1.0) if adaptive_zoom else 1.0
 
     if native:
         try:
@@ -1503,6 +2495,24 @@ async def vision_ocr(
         except Exception as e:
             logger.debug("Native OCR capture path failed: %s", e)
 
+    if (not native) and has_region and adaptive_zoom and bool(ocr_policy.get("native_preferred", False)):
+        try:
+            payload, mapping = _native_capture_region_from_slot(
+                slot=slot,
+                monitor_id=resolved_mid,
+                region_x=int(region_x or 0),
+                region_y=int(region_y or 0),
+                region_w=int(region_w or 0),
+                region_h=int(region_h or 0),
+            )
+            if payload:
+                ocr_bytes = payload
+                native_used = True
+                source = "native_region_policy"
+                region_mapping = mapping
+        except Exception as e:
+            logger.debug("Native OCR policy path failed: %s", e)
+
     if has_region and not native_used:
         # Legacy behavior: region over buffered frame.
         result = _state.vision.ocr.extract_region(
@@ -1511,6 +2521,7 @@ async def vision_ocr(
             int(region_y or 0),
             int(region_w or 0),
             int(region_h or 0),
+            zoom_factor=zoom_factor,
         )
         source = "buffer_region"
     else:
@@ -1524,6 +2535,10 @@ async def vision_ocr(
         result["native_requested"] = bool(native)
         result["native_used"] = bool(native_used)
         result["ocr_source"] = source
+        result["ocr_task_phase"] = resolved_task_phase
+        result["ocr_criticality"] = resolved_criticality
+        result["ocr_zoom_factor"] = round(float(zoom_factor), 2)
+        result["ocr_policy"] = dict(ocr_policy)
         if region_mapping is not None:
             result["region_mapping"] = region_mapping
     return result
@@ -1565,7 +2580,7 @@ async def vision_diff(
 
     slot, resolved_mid = _latest_slot_for_monitor(monitor_id)
     if not slot:
-        raise HTTPException(404, "No frames in buffer")
+        _raise_no_frame_available(monitor_id)
 
     diff = _state.diff.compare(slot.frame_bytes)
 
@@ -1608,6 +2623,8 @@ async def audio_stats(x_api_key: Optional[str] = Header(None)):
     stats["capture_running"] = _state.audio_capture.is_running if _state.audio_capture else False
     stats["mode"] = _state.audio_capture.mode if _state.audio_capture else "off"
     stats["transcription_engine"] = _state.transcriber.engine if _state.transcriber else "none"
+    if _state.audio_interrupt:
+        stats["interrupt"] = _state.audio_interrupt.status()
     return stats
 
 
@@ -1621,6 +2638,15 @@ async def audio_level(x_api_key: Optional[str] = Header(None)):
     if not chunks:
         return {"level": 0.0, "is_speech": False}
     latest = chunks[-1]
+    if _state.audio_interrupt:
+        try:
+            _state.audio_interrupt.ingest_level(
+                float(latest.rms_level),
+                is_speech=bool(latest.is_speech),
+                source="audio_level",
+            )
+        except Exception as e:
+            logger.debug("Audio interrupt level ingest failed: %s", e)
     return {"level": latest.rms_level, "is_speech": latest.is_speech}
 
 
@@ -1647,6 +2673,16 @@ async def audio_transcribe(
         return {"text": "", "note": "No speech detected in last " + str(seconds) + "s"}
 
     result = _state.transcriber.transcribe_chunks(speech_chunks)
+    if _state.audio_interrupt:
+        try:
+            text = str(result.get("text", "") or "")
+            if text.strip():
+                result["interrupt_signal"] = _state.audio_interrupt.ingest_transcript(
+                    text=text,
+                    source="audio_transcribe",
+                )
+        except Exception as e:
+            logger.debug("Audio interrupt transcript ingest failed: %s", e)
     return result
 
 
@@ -1674,6 +2710,54 @@ async def audio_devices(x_api_key: Optional[str] = Header(None)):
     if not _state.audio_capture:
         return {"devices": []}
     return {"devices": _state.audio_capture.get_devices()}
+
+
+@app.get("/audio/interrupt/status")
+async def audio_interrupt_status(x_api_key: Optional[str] = Header(None)):
+    _check_auth(x_api_key)
+    if not _state.audio_interrupt:
+        return {"enabled": False, "blocked": False, "reason": "audio_interrupt_unavailable"}
+    status = _state.audio_interrupt.status()
+    status["enabled"] = True
+    status["recent_events"] = _state.audio_interrupt.recent_events(limit=12)
+    return status
+
+
+@app.post("/audio/interrupt/ack")
+async def audio_interrupt_ack(x_api_key: Optional[str] = Header(None)):
+    _check_auth(x_api_key)
+    if not _state.audio_interrupt:
+        return {"acknowledged": False, "reason": "audio_interrupt_unavailable"}
+    return _state.audio_interrupt.acknowledge()
+
+
+@app.post("/audio/interrupt/feed")
+async def audio_interrupt_feed(
+    request_body: dict,
+    x_api_key: Optional[str] = Header(None),
+):
+    """
+    Manual interrupt feed for testing/integration.
+    Body: {text, confidence?, source?}
+    """
+    _check_auth(x_api_key)
+    if not _state.audio_interrupt:
+        raise HTTPException(503, "Audio interrupt detector not initialized")
+    text = str(request_body.get("text") or "").strip()
+    if not text:
+        raise HTTPException(400, "text is required")
+    confidence = float(request_body.get("confidence", 0.8))
+    source = str(request_body.get("source") or "manual")
+    result = _state.audio_interrupt.ingest_transcript(
+        text=text,
+        confidence=confidence,
+        source=source,
+    )
+    return {
+        "ok": True,
+        "result": result,
+        "status": _state.audio_interrupt.status(),
+    }
 
 
 # ─── Context Engine (F08) ───
@@ -2325,6 +3409,200 @@ async def spatial_state(
         "windows": windows,
         "windows_by_monitor": grouped,
     }
+
+
+# ─── Workers System (v1) ───
+
+@app.get("/workers/status")
+async def workers_status(x_api_key: Optional[str] = Header(None)):
+    _check_auth(x_api_key)
+    if not _state.perception or not hasattr(_state.perception, "get_workers_status"):
+        raise HTTPException(503, "Workers system not initialized")
+    return _state.perception.get_workers_status()
+
+
+@app.get("/workers/monitor/{monitor_id}")
+async def workers_monitor(monitor_id: int, x_api_key: Optional[str] = Header(None)):
+    _check_auth(x_api_key)
+    if not _state.perception or not hasattr(_state.perception, "get_worker_monitor"):
+        raise HTTPException(503, "Workers system not initialized")
+    payload = _state.perception.get_worker_monitor(int(monitor_id))
+    if not payload:
+        raise HTTPException(404, f"Monitor {int(monitor_id)} has no worker digest yet")
+    return payload
+
+
+@app.post("/workers/action/claim")
+async def workers_action_claim(request_body: dict, x_api_key: Optional[str] = Header(None)):
+    _check_auth(x_api_key)
+    if not _state.perception or not hasattr(_state.perception, "claim_action_lease"):
+        raise HTTPException(503, "Workers system not initialized")
+    owner = str(request_body.get("owner") or "external-executor")
+    ttl_ms = request_body.get("ttl_ms")
+    force = bool(request_body.get("force", False))
+    return _state.perception.claim_action_lease(owner=owner, ttl_ms=ttl_ms, force=force)
+
+
+@app.post("/workers/action/release")
+async def workers_action_release(request_body: dict, x_api_key: Optional[str] = Header(None)):
+    _check_auth(x_api_key)
+    if not _state.perception or not hasattr(_state.perception, "release_action_lease"):
+        raise HTTPException(503, "Workers system not initialized")
+    owner = str(request_body.get("owner") or "external-executor")
+    success = bool(request_body.get("success", True))
+    message = str(request_body.get("message") or "")
+    return _state.perception.release_action_lease(owner=owner, success=success, message=message)
+
+
+@app.get("/workers/schedule")
+async def workers_schedule(x_api_key: Optional[str] = Header(None)):
+    _check_auth(x_api_key)
+    if not _state.perception or not hasattr(_state.perception, "get_workers_schedule"):
+        raise HTTPException(503, "Workers scheduler not initialized")
+    return _state.perception.get_workers_schedule()
+
+
+@app.get("/workers/subgoals")
+async def workers_subgoals(
+    include_completed: bool = Query(False),
+    x_api_key: Optional[str] = Header(None),
+):
+    _check_auth(x_api_key)
+    if not _state.perception or not hasattr(_state.perception, "list_worker_subgoals"):
+        raise HTTPException(503, "Workers scheduler not initialized")
+    items = _state.perception.list_worker_subgoals(include_completed=include_completed)
+    return {"subgoals": items, "count": len(items)}
+
+
+@app.post("/workers/subgoals")
+async def workers_set_subgoal(
+    request_body: dict,
+    x_api_key: Optional[str] = Header(None),
+):
+    _check_auth(x_api_key)
+    if not _state.perception or not hasattr(_state.perception, "set_worker_subgoal"):
+        raise HTTPException(503, "Workers scheduler not initialized")
+    monitor_id = request_body.get("monitor_id")
+    goal = str(request_body.get("goal") or "").strip()
+    if monitor_id is None:
+        raise HTTPException(400, "monitor_id is required")
+    if not goal:
+        raise HTTPException(400, "goal is required")
+    return _state.perception.set_worker_subgoal(
+        monitor_id=int(monitor_id),
+        goal=goal,
+        priority=float(request_body.get("priority", 0.5)),
+        risk=str(request_body.get("risk", "normal")),
+        deadline_ms=request_body.get("deadline_ms"),
+        metadata=request_body.get("metadata") or {},
+    )
+
+
+@app.delete("/workers/subgoals/{subgoal_id}")
+async def workers_clear_subgoal(
+    subgoal_id: str,
+    completed: bool = Query(True),
+    x_api_key: Optional[str] = Header(None),
+):
+    _check_auth(x_api_key)
+    if not _state.perception or not hasattr(_state.perception, "clear_worker_subgoal"):
+        raise HTTPException(503, "Workers scheduler not initialized")
+    result = _state.perception.clear_worker_subgoal(subgoal_id, completed=completed)
+    if not bool(result.get("ok", False)):
+        raise HTTPException(404, result.get("reason", "subgoal_not_found"))
+    return result
+
+
+@app.post("/workers/route")
+async def workers_route(request_body: dict, x_api_key: Optional[str] = Header(None)):
+    _check_auth(x_api_key)
+    if not _state.perception or not hasattr(_state.perception, "route_worker_query"):
+        raise HTTPException(503, "Workers scheduler not initialized")
+    query = str(request_body.get("query") or "").strip()
+    if not query:
+        raise HTTPException(400, "query is required")
+    preferred_monitor_id = request_body.get("preferred_monitor_id")
+    return _state.perception.route_worker_query(query, preferred_monitor_id=preferred_monitor_id)
+
+
+@app.get("/behavior/stats")
+async def behavior_stats(x_api_key: Optional[str] = Header(None)):
+    _check_auth(x_api_key)
+    if not _state.behavior_cache:
+        return {"enabled": False, "reason": "behavior_cache_unavailable"}
+    payload = _state.behavior_cache.stats()
+    payload["enabled"] = True
+    return payload
+
+
+@app.get("/behavior/recent")
+async def behavior_recent(
+    limit: int = Query(20, ge=1, le=200),
+    x_api_key: Optional[str] = Header(None),
+):
+    _check_auth(x_api_key)
+    if not _state.behavior_cache:
+        return {"enabled": False, "entries": []}
+    return {
+        "enabled": True,
+        "entries": _state.behavior_cache.recent(limit=limit),
+    }
+
+
+@app.post("/behavior/suggest")
+async def behavior_suggest(request_body: dict, x_api_key: Optional[str] = Header(None)):
+    _check_auth(x_api_key)
+    if not _state.behavior_cache:
+        raise HTTPException(503, "Behavior cache not initialized")
+    action = str(request_body.get("action") or "").strip()
+    if not action:
+        raise HTTPException(400, "action is required")
+    app_name = str(request_body.get("app_name") or "unknown")
+    window_title = str(request_body.get("window_title") or "")
+    return _state.behavior_cache.suggest(
+        action=action,
+        app_name=app_name,
+        window_title=window_title,
+    )
+
+
+@app.get("/runtime/profile")
+async def runtime_profile_status(x_api_key: Optional[str] = Header(None)):
+    _check_auth(x_api_key)
+    profile = _normalize_runtime_profile(_state.runtime_profile)
+    return {
+        "profile": profile,
+        "policy": _runtime_profile_policy(profile),
+    }
+
+
+@app.post("/runtime/profile")
+async def runtime_profile_set(request_body: dict, x_api_key: Optional[str] = Header(None)):
+    _check_auth(x_api_key)
+    requested = request_body.get("profile")
+    profile = _normalize_runtime_profile(requested)
+    _state.runtime_profile = profile
+    return {
+        "ok": True,
+        "profile": profile,
+        "policy": _runtime_profile_policy(profile),
+    }
+
+
+@app.get("/runtime/cursor")
+async def runtime_cursor_status(x_api_key: Optional[str] = Header(None)):
+    _check_auth(x_api_key)
+    if not _state.cursor_tracker:
+        raise HTTPException(503, "Cursor tracker not initialized")
+    return _state.cursor_tracker.status()
+
+
+@app.get("/runtime/action-watcher")
+async def runtime_action_watcher_status(x_api_key: Optional[str] = Header(None)):
+    _check_auth(x_api_key)
+    if not _state.action_watcher:
+        raise HTTPException(503, "Action watcher not initialized")
+    return _state.action_watcher.stats()
 
 
 # ─── Plugins (F09) ───
@@ -3567,6 +4845,10 @@ async def agent_status(x_api_key: Optional[str] = Header(None)):
     _check_auth(x_api_key)
     return {
         "operating_mode": {"mode": _state.operating_mode},
+        "runtime_profile": {
+            "profile": _normalize_runtime_profile(_state.runtime_profile),
+            "policy": _runtime_profile_policy(_state.runtime_profile),
+        },
         "actions": _state.actions.stats if _state.actions else {},
         "safety": _state.safety.stats if _state.safety else {},
         "autonomy": _state.autonomy.stats if _state.autonomy else {},
@@ -3575,6 +4857,9 @@ async def agent_status(x_api_key: Optional[str] = Header(None)):
         "planner": _state.planner.stats if _state.planner else {},
         "recovery": _state.recovery.stats if _state.recovery else {},
         "grounding": _state.grounding.status() if _state.grounding else {},
+        "behavior_cache": _state.behavior_cache.stats() if _state.behavior_cache else {"enabled": False},
+        "audio_interrupt": _state.audio_interrupt.status() if _state.audio_interrupt else {"enabled": False},
+        "workers_schedule": _state.perception.get_workers_schedule() if (_state.perception and hasattr(_state.perception, "get_workers_schedule")) else {},
         "perception_readiness": _state.perception.get_readiness() if _state.perception else {},
         "bootstrap_warnings": list(_state.bootstrap_warnings),
     }
@@ -3589,6 +4874,10 @@ async def system_overview(x_api_key: Optional[str] = Header(None)):
     overview = {
         "version": "1.0.0",
         "operating_mode": _state.operating_mode,
+        "runtime_profile": {
+            "profile": _normalize_runtime_profile(_state.runtime_profile),
+            "policy": _runtime_profile_policy(_state.runtime_profile),
+        },
         "capture": {
             "running": _state.capture.is_running if _state.capture else False,
             "fps": _state.capture.current_fps if _state.capture else 0,
@@ -3597,6 +4886,7 @@ async def system_overview(x_api_key: Optional[str] = Header(None)):
         "audio": {
             "enabled": _state.audio_capture is not None and _state.audio_capture.is_running if _state.audio_capture else False,
             "stats": _state.audio_buffer.stats if _state.audio_buffer else {},
+            "interrupt": _state.audio_interrupt.status() if _state.audio_interrupt else {"enabled": False},
         },
         "ocr": {
             "engine": _state.vision.ocr.engine if _state.vision else "none",
@@ -3628,9 +4918,11 @@ async def system_overview(x_api_key: Optional[str] = Header(None)):
             "is_pro": _state.license.is_pro if _state.license else False,
             "user": _state.license.user if _state.license else {},
         },
+        "behavior_cache": _state.behavior_cache.stats() if _state.behavior_cache else {"enabled": False},
         "perception": {
             "readiness": _state.perception.get_readiness() if _state.perception else {},
             "world": _state.perception.get_world_state() if _state.perception else {},
+            "workers_schedule": _state.perception.get_workers_schedule() if (_state.perception and hasattr(_state.perception, "get_workers_schedule")) else {},
         },
         "bootstrap_warnings": list(_state.bootstrap_warnings),
     }
@@ -3782,7 +5074,7 @@ async def vision_smart(
 
     slot, resolved_mid = _latest_slot_for_monitor(monitor_id)
     if not slot:
-        raise HTTPException(404, "No frames in buffer")
+        _raise_no_frame_available(monitor_id)
 
     result = {}
 

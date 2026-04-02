@@ -24,6 +24,7 @@ import base64
 import time
 import urllib.request
 import urllib.parse
+import http.client
 
 import os
 
@@ -40,35 +41,48 @@ API_TIMEOUT_S = max(3.0, min(60.0, API_TIMEOUT_S))
 # ILUMINATY license key - gates MCP tools to free/pro plan
 ILUMINATY_KEY = os.environ.get("ILUMINATY_KEY", "")
 
-# Free tier tools (29) — available without license
+# Free tier tools — available without license
 FREE_MCP_TOOLS = {
     "see_screen", "see_changes", "read_screen_text", "perception",
     "screen_status", "get_context", "do_action", "raw_action",
     "action_precheck", "verify_action",
     "operate_cycle",
     "perception_world", "perception_trace", "set_operating_mode",
+    "domain_pack_list", "domain_pack_override",
     "vision_query",
     "grounding_status", "grounding_resolve", "click_grounded", "type_grounded",
     "window_minimize", "window_maximize", "window_close",
     "move_window", "drag_screen", "spatial_state",
+    "workers_status", "workers_monitor",
+    "workers_claim_action", "workers_release_action",
+    "workers_schedule", "workers_set_subgoal", "workers_clear_subgoal", "workers_route",
+    "behavior_stats", "behavior_recent", "behavior_suggest",
+    "runtime_profile",
+    "audio_interrupt_status", "audio_interrupt_ack",
     "get_audio_level",
     "token_status", "set_token_mode", "set_token_budget",
 }
 
-# All tools (48) — available with Pro license
+# All tools — available with Pro license
 ALL_MCP_TOOLS = {
     "see_screen", "see_changes", "annotate_screen", "read_screen_text", "perception",
     "perception_world", "perception_trace",
     "screen_status", "get_context", "get_audio_level",
     "do_action", "raw_action", "action_precheck", "verify_action",
     "operate_cycle",
-    "set_operating_mode",
+    "set_operating_mode", "domain_pack_list", "domain_pack_override",
     "vision_query",
     "grounding_status", "grounding_resolve", "click_grounded", "type_grounded",
     "click_element", "type_text", "run_command",
     "list_windows", "find_ui_element", "read_file", "write_file",
     "window_minimize", "window_maximize", "window_close",
     "move_window", "drag_screen", "spatial_state",
+    "workers_status", "workers_monitor",
+    "workers_claim_action", "workers_release_action",
+    "workers_schedule", "workers_set_subgoal", "workers_clear_subgoal", "workers_route",
+    "behavior_stats", "behavior_recent", "behavior_suggest",
+    "runtime_profile",
+    "audio_interrupt_status", "audio_interrupt_ack",
     "get_clipboard", "agent_status",
     # Human-like navigation
     "watch_screen", "focus_window", "browser_navigate", "browser_tabs",
@@ -104,31 +118,76 @@ def _get_allowed_tools() -> set:
     return FREE_MCP_TOOLS
 
 
-def _api_get(path: str) -> dict:
-    """GET request to ILUMINATY API."""
-    url = API_BASE + path
-    headers = {}
+# ─── Persistent HTTP connection pool (keep-alive, no new TCP per call) ─────
+# urllib.request creates a new socket per call. We use http.client directly
+# so we reuse the same TCP connection across all MCP tool calls in a session.
+# This removes ~1-3ms of TCP + TLS handshake overhead per MCP round-trip.
+
+_HOST = None
+_PORT = 8420
+_CONN: dict = {"conn": None, "ts": 0.0}  # {conn: http.client.HTTPConnection, ts: last_used}
+_CONN_TTL_S = 30.0  # recycle connection after 30s idle
+
+def _parse_api_base() -> tuple[str, int]:
+    """Extract host and port from API_BASE."""
+    url = API_BASE.rstrip("/")
+    if "://" in url:
+        url = url.split("://", 1)[1]
+    if ":" in url:
+        h, p = url.rsplit(":", 1)
+        try:
+            return h, int(p)
+        except ValueError:
+            return h, 8420
+    return url, 8420
+
+def _get_conn() -> http.client.HTTPConnection:
+    """Return a live HTTPConnection, recycling if still warm."""
+    global _HOST, _PORT
+    if _HOST is None:
+        _HOST, _PORT = _parse_api_base()
+    now = time.monotonic()
+    c = _CONN.get("conn")
+    if c is not None and (now - _CONN["ts"]) < _CONN_TTL_S:
+        return c
+    # Create fresh connection (or reconnect after TTL/error)
+    conn = http.client.HTTPConnection(_HOST, _PORT, timeout=API_TIMEOUT_S)
+    _CONN["conn"] = conn
+    _CONN["ts"] = now
+    return conn
+
+def _api_request(method: str, path: str, body: dict | None = None) -> dict:
+    """Single keep-alive request. Falls back to new connection on error."""
+    headers: dict[str, str] = {"Accept": "application/json"}
     if API_KEY:
         headers["x-api-key"] = API_KEY
-    req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req, timeout=API_TIMEOUT_S) as resp:
-        return json.loads(resp.read().decode())
+    raw_body: bytes | None = None
+    if body is not None:
+        raw_body = json.dumps(body).encode()
+        headers["Content-Type"] = "application/json"
+        headers["Content-Length"] = str(len(raw_body))
+    for attempt in range(2):
+        try:
+            conn = _get_conn()
+            conn.request(method, path, body=raw_body, headers=headers)
+            resp = conn.getresponse()
+            data = resp.read()
+            _CONN["ts"] = time.monotonic()
+            return json.loads(data.decode())
+        except Exception:
+            # Force connection reset on next call
+            _CONN["conn"] = None
+            _CONN["ts"] = 0.0
+            if attempt == 1:
+                raise
 
+def _api_get(path: str) -> dict:
+    """GET request to ILUMINATY API (keep-alive)."""
+    return _api_request("GET", path)
 
 def _api_post(path: str, body: dict | None = None) -> dict:
-    """POST request to ILUMINATY API."""
-    url = API_BASE + path
-    headers = {}
-    if API_KEY:
-        headers["x-api-key"] = API_KEY
-    if body is not None:
-        data = json.dumps(body).encode("utf-8")
-        headers["Content-Type"] = "application/json"
-        req = urllib.request.Request(url, method="POST", data=data, headers=headers)
-    else:
-        req = urllib.request.Request(url, method="POST", data=b"", headers=headers)
-    with urllib.request.urlopen(req, timeout=API_TIMEOUT_S) as resp:
-        return json.loads(resp.read().decode())
+    """POST request to ILUMINATY API (keep-alive)."""
+    return _api_request("POST", path, body)
 
 
 # ─── Human-like Operation Helpers ───
@@ -1359,6 +1418,29 @@ TOOLS = [
         },
     },
     {
+        "name": "domain_pack_list",
+        "description": (
+            "List built-in and custom Domain Packs, including active selection and override state."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "domain_pack_override",
+        "description": (
+            "Force a specific Domain Pack (e.g. trading, coding) or set name=auto to return to automatic selection."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Pack name or auto",
+                    "default": "auto",
+                },
+            },
+        },
+    },
+    {
         "name": "watch_screen",
         "description": (
             "See the last N frames as a sequence — like watching a video replay. "
@@ -1420,6 +1502,148 @@ TOOLS = [
                 "include_windows": {"type": "boolean", "description": "Include full windows list", "default": True},
             },
         },
+    },
+    {
+        "name": "workers_status",
+        "description": (
+            "Get Workers Sys v1 status: monitor digests, spatial/fusion state, action arbiter lease, "
+            "intent timeline, and verification timeline."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "workers_monitor",
+        "description": (
+            "Get a single monitor worker digest (scene, readiness, staleness, attention, visual facts)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "monitor": {"type": "integer", "description": "Monitor id (1..N)"},
+            },
+            "required": ["monitor"],
+        },
+    },
+    {
+        "name": "workers_claim_action",
+        "description": (
+            "Claim the single-writer action lease from Workers Arbiter. "
+            "Use before multi-step execution loops when coordinating multiple agents."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "owner": {"type": "string", "description": "Lease owner id/name", "default": "mcp-executor"},
+                "ttl_ms": {"type": "integer", "description": "Optional lease TTL in ms", "default": 2500},
+                "force": {"type": "boolean", "description": "Force lease takeover", "default": False},
+            },
+        },
+    },
+    {
+        "name": "workers_release_action",
+        "description": (
+            "Release the single-writer action lease back to the arbiter."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "owner": {"type": "string", "description": "Lease owner id/name", "default": "mcp-executor"},
+                "success": {"type": "boolean", "description": "Whether last action succeeded", "default": True},
+                "message": {"type": "string", "description": "Optional result message"},
+            },
+        },
+    },
+    {
+        "name": "workers_schedule",
+        "description": "Get Workers v2 attention schedule (budget share per monitor + recommended monitor).",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "workers_set_subgoal",
+        "description": "Set a monitor-local subgoal with priority/risk/deadline for Workers scheduler.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "monitor_id": {"type": "integer", "description": "Monitor id (1..N)"},
+                "goal": {"type": "string", "description": "Subgoal summary"},
+                "priority": {"type": "number", "description": "0.0..1.0", "default": 0.5},
+                "risk": {"type": "string", "description": "low|normal|high|critical", "default": "normal"},
+                "deadline_ms": {"type": "integer", "description": "Optional unix epoch ms deadline"},
+            },
+            "required": ["monitor_id", "goal"],
+        },
+    },
+    {
+        "name": "workers_clear_subgoal",
+        "description": "Clear/complete a workers subgoal by id.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "subgoal_id": {"type": "string", "description": "Subgoal id"},
+                "completed": {"type": "boolean", "description": "Mark as completed", "default": True},
+            },
+            "required": ["subgoal_id"],
+        },
+    },
+    {
+        "name": "workers_route",
+        "description": "Route a query/objective to the best monitor using scheduler + digest context.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Intent/query to route"},
+                "preferred_monitor_id": {"type": "integer", "description": "Optional preferred monitor"},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "behavior_stats",
+        "description": "Get persistent app behavior cache stats (Phase C).",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "behavior_recent",
+        "description": "Get recent behavior outcomes from persistent cache.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "Entries to return (1-200)", "default": 20},
+            },
+        },
+    },
+    {
+        "name": "behavior_suggest",
+        "description": "Ask behavior cache for execution hints on action/app/window.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string"},
+                "app_name": {"type": "string"},
+                "window_title": {"type": "string"},
+            },
+            "required": ["action"],
+        },
+    },
+    {
+        "name": "runtime_profile",
+        "description": "Get or set runtime profile (standard|enterprise|lab).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "set": {"type": "string", "description": "Optional target profile"},
+            },
+        },
+    },
+    {
+        "name": "audio_interrupt_status",
+        "description": "Get operational audio interrupt status and recent interrupt events.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "audio_interrupt_ack",
+        "description": "Acknowledge/clear current audio interrupt guard.",
+        "inputSchema": {"type": "object", "properties": {}},
     },
 ]
 
@@ -1487,6 +1711,7 @@ def handle_perception_world(args: dict) -> list:
             f"- Tick: {world.get('tick_id', 0)}",
             f"- Phase: {world.get('task_phase', 'unknown')}",
             f"- Surface: {world.get('active_surface', 'unknown')}",
+            f"- Domain: {world.get('domain_pack', 'general')} (conf={world.get('domain_confidence', 0)})",
             f"- Readiness: {world.get('readiness', False)}",
             f"- Uncertainty: {world.get('uncertainty', 1.0)}",
             f"- Staleness: {world.get('staleness_ms', 0)}ms",
@@ -1524,6 +1749,45 @@ def handle_perception_trace(args: dict) -> list:
         return [{"type": "text", "text": "\n".join(lines)}]
     except Exception as e:
         return [{"type": "text", "text": f"Trace not available: {e}"}]
+
+
+def handle_domain_pack_list(args: dict) -> list:
+    try:
+        data = _api_get("/domain-packs")
+    except Exception as e:
+        return [{"type": "text", "text": f"Domain packs unavailable: {e}"}]
+
+    packs = data.get("packs", [])
+    active = data.get("active", {}) or {}
+    override = data.get("override")
+    lines = [
+        "## Domain Packs",
+        f"- Active: {active.get('domain_pack', 'general')} (conf={active.get('domain_confidence', 0)})",
+        f"- Override: {override if override else 'auto'}",
+        f"- Available: {len(packs)}",
+    ]
+    for pack in packs[:12]:
+        lines.append(
+            f"- {pack.get('name')} [{pack.get('source', 'builtin')}] "
+            f"priority={pack.get('priority', '?')} "
+            f"stale={((pack.get('staleness_policy') or {}).get('safe', '?'))}ms safe"
+        )
+    return [{"type": "text", "text": "\n".join(lines)}]
+
+
+def handle_domain_pack_override(args: dict) -> list:
+    name = (args.get("name") or "auto").strip()
+    try:
+        data = _api_post("/domain-packs/override", body={"name": name})
+    except Exception as e:
+        return [{"type": "text", "text": f"Domain pack override failed: {e}"}]
+    return [{
+        "type": "text",
+        "text": (
+            f"Domain override: {'OK' if data.get('ok') else 'FAILED'} | "
+            f"override={data.get('override')} | reason={data.get('reason', 'n/a')}"
+        ),
+    }]
 
 
 def handle_vision_query(args: dict) -> list:
@@ -2768,11 +3032,273 @@ def handle_spatial_state(args: dict) -> list:
     return [{"type": "text", "text": "\n".join(lines)}]
 
 
+def handle_workers_status(args: dict) -> list:
+    _ = args
+    try:
+        data = _api_get("/workers/status")
+    except Exception as e:
+        return [{"type": "text", "text": f"Workers status unavailable: {e}"}]
+
+    workers = data.get("workers", {}) or {}
+    arbiter = data.get("arbiter", {}) or {}
+    lines = [
+        "## Workers Status",
+        f"- Enabled: {data.get('enabled', False)}",
+        f"- Active monitor: {data.get('active_monitor_id', 0)}",
+        f"- Monitor count: {data.get('monitor_count', 0)}",
+        f"- Arbiter owner: {arbiter.get('owner')}",
+        f"- Arbiter denied: {arbiter.get('denied_count', 0)}",
+        f"- Arbiter lease remaining: {arbiter.get('lease_remaining_ms', 0)}ms",
+    ]
+    for name, info in workers.items():
+        lines.append(
+            f"- Worker[{name}]: processed={info.get('processed', 0)} "
+            f"errors={info.get('errors', 0)} "
+            f"avg_ms={info.get('avg_latency_ms', 0)} "
+            f"staleness_ms={info.get('staleness_ms', 0)}"
+        )
+    monitors = data.get("monitors", []) or []
+    if monitors:
+        lines.append("### Monitor Digests")
+        for mon in monitors[:8]:
+            lines.append(
+                f"- m{mon.get('monitor_id')}: scene={mon.get('scene_state')} "
+                f"phase={mon.get('task_phase')} ready={mon.get('readiness')} "
+                f"stale={mon.get('staleness_ms')}ms"
+            )
+    return [{"type": "text", "text": "\n".join(lines)}]
+
+
+def handle_workers_monitor(args: dict) -> list:
+    monitor = args.get("monitor")
+    if monitor is None:
+        return [{"type": "text", "text": "Error: monitor is required"}]
+    try:
+        mid = int(monitor)
+    except Exception:
+        return [{"type": "text", "text": "Error: monitor must be an integer"}]
+
+    try:
+        data = _api_get(f"/workers/monitor/{mid}")
+    except Exception as e:
+        return [{"type": "text", "text": f"Worker monitor {mid} unavailable: {e}"}]
+
+    lines = [
+        f"## Worker Monitor {mid}",
+        f"- Tick: {data.get('tick_id', 0)}",
+        f"- Scene: {data.get('scene_state', 'unknown')} (conf={data.get('scene_confidence', 0)})",
+        f"- Change: {data.get('change_score', 0)}",
+        f"- Direction: {data.get('dominant_direction', 'none')}",
+        f"- Phase: {data.get('task_phase', 'unknown')}",
+        f"- Surface: {data.get('active_surface', 'unknown')}",
+        f"- Readiness: {data.get('readiness', False)} | uncertainty={data.get('uncertainty', 1.0)}",
+        f"- Staleness: {data.get('staleness_ms', 0)}ms",
+    ]
+    targets = data.get("attention_targets", []) or []
+    if targets:
+        lines.append(f"- Attention: {', '.join([str(t) for t in targets[:6]])}")
+    vf = data.get("visual_facts", []) or []
+    if vf:
+        lines.append(f"- Visual facts: {len(vf)}")
+    return [{"type": "text", "text": "\n".join(lines)}]
+
+
+def handle_workers_claim_action(args: dict) -> list:
+    owner = str(args.get("owner") or "mcp-executor").strip() or "mcp-executor"
+    body = {
+        "owner": owner,
+        "ttl_ms": args.get("ttl_ms"),
+        "force": bool(args.get("force", False)),
+    }
+    try:
+        data = _api_post("/workers/action/claim", body=body)
+    except Exception as e:
+        return [{"type": "text", "text": f"Workers claim failed: {e}"}]
+    return [{
+        "type": "text",
+        "text": (
+            f"Workers claim owner={owner}: {'GRANTED' if data.get('granted') else 'DENIED'} "
+            f"(held_by={data.get('held_by')}, ttl_ms={data.get('ttl_ms')}, reason={data.get('reason')})"
+        ),
+    }]
+
+
+def handle_workers_release_action(args: dict) -> list:
+    owner = str(args.get("owner") or "mcp-executor").strip() or "mcp-executor"
+    body = {
+        "owner": owner,
+        "success": bool(args.get("success", True)),
+        "message": str(args.get("message") or ""),
+    }
+    try:
+        data = _api_post("/workers/action/release", body=body)
+    except Exception as e:
+        return [{"type": "text", "text": f"Workers release failed: {e}"}]
+    return [{
+        "type": "text",
+        "text": (
+            f"Workers release owner={owner}: {'OK' if data.get('released') else 'FAILED'} "
+            f"(success={data.get('success')}, msg={data.get('message', '')})"
+        ),
+    }]
+
+
+def handle_workers_schedule(args: dict) -> list:
+    _ = args
+    try:
+        data = _api_get("/workers/schedule")
+    except Exception as e:
+        return [{"type": "text", "text": f"Workers schedule unavailable: {e}"}]
+
+    lines = [
+        "## Workers Schedule",
+        f"- Active monitor: {data.get('active_monitor_id', 0)}",
+        f"- Recommended monitor: {data.get('recommended_monitor_id', 0)}",
+        f"- Reason: {data.get('reason', 'n/a')}",
+    ]
+    for row in (data.get("budgets") or [])[:8]:
+        lines.append(
+            f"- m{row.get('monitor_id')}: share={row.get('share')} score={row.get('score')}"
+        )
+    return [{"type": "text", "text": "\n".join(lines)}]
+
+
+def handle_workers_set_subgoal(args: dict) -> list:
+    monitor_id = args.get("monitor_id")
+    goal = str(args.get("goal") or "").strip()
+    if monitor_id is None or not goal:
+        return [{"type": "text", "text": "Error: monitor_id and goal are required"}]
+    body = {
+        "monitor_id": int(monitor_id),
+        "goal": goal,
+        "priority": float(args.get("priority", 0.5)),
+        "risk": str(args.get("risk", "normal")),
+    }
+    if args.get("deadline_ms") is not None:
+        body["deadline_ms"] = int(args.get("deadline_ms"))
+    try:
+        data = _api_post("/workers/subgoals", body=body)
+    except Exception as e:
+        return [{"type": "text", "text": f"Set workers subgoal failed: {e}"}]
+    return [{"type": "text", "text": f"Workers subgoal set: {data.get('subgoal_id', 'unknown')} monitor={data.get('monitor_id')} goal={data.get('goal', '')}"}]
+
+
+def handle_workers_clear_subgoal(args: dict) -> list:
+    subgoal_id = str(args.get("subgoal_id") or "").strip()
+    if not subgoal_id:
+        return [{"type": "text", "text": "Error: subgoal_id is required"}]
+    completed = _as_bool(args.get("completed"), True)
+    try:
+        data = _api_request("DELETE", f"/workers/subgoals/{urllib.parse.quote(subgoal_id)}?completed={'true' if completed else 'false'}")
+    except Exception as e:
+        return [{"type": "text", "text": f"Clear workers subgoal failed: {e}"}]
+    return [{"type": "text", "text": f"Workers subgoal cleared: {subgoal_id} (completed={completed})"}]
+
+
+def handle_workers_route(args: dict) -> list:
+    query = str(args.get("query") or "").strip()
+    if not query:
+        return [{"type": "text", "text": "Error: query is required"}]
+    body = {"query": query}
+    if args.get("preferred_monitor_id") is not None:
+        body["preferred_monitor_id"] = int(args.get("preferred_monitor_id"))
+    try:
+        data = _api_post("/workers/route", body=body)
+    except Exception as e:
+        return [{"type": "text", "text": f"Workers route failed: {e}"}]
+    return [{"type": "text", "text": f"Workers route => monitor {data.get('monitor_id')} (score={data.get('score')})"}]
+
+
+def handle_behavior_stats(args: dict) -> list:
+    _ = args
+    try:
+        data = _api_get("/behavior/stats")
+    except Exception as e:
+        return [{"type": "text", "text": f"Behavior stats unavailable: {e}"}]
+    return [{
+        "type": "text",
+        "text": (
+            "## Behavior Cache\n"
+            f"- Enabled: {data.get('enabled', False)}\n"
+            f"- Entries: {data.get('entries', 0)}\n"
+            f"- Success rate: {data.get('success_rate', 0)}\n"
+            f"- Recovery rate: {data.get('recovery_rate', 0)}\n"
+            f"- Distinct apps: {data.get('distinct_apps', 0)}"
+        ),
+    }]
+
+
+def handle_behavior_recent(args: dict) -> list:
+    limit = int(args.get("limit", 20))
+    try:
+        data = _api_get(f"/behavior/recent?limit={max(1, min(200, limit))}")
+    except Exception as e:
+        return [{"type": "text", "text": f"Behavior recent unavailable: {e}"}]
+    entries = data.get("entries", []) if isinstance(data, dict) else []
+    lines = ["## Behavior Recent"]
+    for row in entries[:12]:
+        lines.append(
+            f"- {row.get('action')} | {row.get('app_name')} | success={row.get('success')} "
+            f"| method={row.get('method_used')} | reason={str(row.get('reason', ''))[:90]}"
+        )
+    if len(lines) == 1:
+        lines.append("- No entries")
+    return [{"type": "text", "text": "\n".join(lines)}]
+
+
+def handle_behavior_suggest(args: dict) -> list:
+    action = str(args.get("action") or "").strip()
+    if not action:
+        return [{"type": "text", "text": "Error: action is required"}]
+    body = {
+        "action": action,
+        "app_name": str(args.get("app_name") or "unknown"),
+        "window_title": str(args.get("window_title") or ""),
+    }
+    try:
+        data = _api_post("/behavior/suggest", body=body)
+    except Exception as e:
+        return [{"type": "text", "text": f"Behavior suggest failed: {e}"}]
+    return [{"type": "text", "text": f"Behavior suggest: found={data.get('found')} success_rate={data.get('success_rate')} retries={data.get('recommended_retries')} pre_delay_ms={data.get('recommended_pre_delay_ms')} focus_before_action={data.get('focus_before_action')}"}]
+
+
+def handle_runtime_profile(args: dict) -> list:
+    target = args.get("set")
+    try:
+        if target is None:
+            data = _api_get("/runtime/profile")
+        else:
+            data = _api_post("/runtime/profile", body={"profile": str(target)})
+    except Exception as e:
+        return [{"type": "text", "text": f"Runtime profile API failed: {e}"}]
+    return [{"type": "text", "text": f"Runtime profile: {data.get('profile')} | policy={data.get('policy')}"}]
+
+
+def handle_audio_interrupt_status(args: dict) -> list:
+    _ = args
+    try:
+        data = _api_get("/audio/interrupt/status")
+    except Exception as e:
+        return [{"type": "text", "text": f"Audio interrupt status unavailable: {e}"}]
+    return [{"type": "text", "text": f"Audio interrupt: blocked={data.get('blocked')} reason={data.get('reason')} remaining_ms={data.get('remaining_ms', 0)} events={data.get('events_count', 0)}"}]
+
+
+def handle_audio_interrupt_ack(args: dict) -> list:
+    _ = args
+    try:
+        data = _api_post("/audio/interrupt/ack", body={})
+    except Exception as e:
+        return [{"type": "text", "text": f"Audio interrupt ack failed: {e}"}]
+    return [{"type": "text", "text": f"Audio interrupt acknowledged={data.get('acknowledged', False)}"}]
+
+
 HANDLERS = {
     "see_screen": handle_see_screen,
     "perception": handle_perception,
     "perception_world": handle_perception_world,
     "perception_trace": handle_perception_trace,
+    "domain_pack_list": handle_domain_pack_list,
+    "domain_pack_override": handle_domain_pack_override,
     "vision_query": handle_vision_query,
     "grounding_status": handle_grounding_status,
     "grounding_resolve": handle_grounding_resolve,
@@ -2816,6 +3342,20 @@ HANDLERS = {
     "monitor_info": handle_monitor_info,
     "see_monitor": handle_see_monitor,
     "spatial_state": handle_spatial_state,
+    "workers_status": handle_workers_status,
+    "workers_monitor": handle_workers_monitor,
+    "workers_claim_action": handle_workers_claim_action,
+    "workers_release_action": handle_workers_release_action,
+    "workers_schedule": handle_workers_schedule,
+    "workers_set_subgoal": handle_workers_set_subgoal,
+    "workers_clear_subgoal": handle_workers_clear_subgoal,
+    "workers_route": handle_workers_route,
+    "behavior_stats": handle_behavior_stats,
+    "behavior_recent": handle_behavior_recent,
+    "behavior_suggest": handle_behavior_suggest,
+    "runtime_profile": handle_runtime_profile,
+    "audio_interrupt_status": handle_audio_interrupt_status,
+    "audio_interrupt_ack": handle_audio_interrupt_ack,
     # Token management
     "token_status": handle_token_status,
     "set_token_mode": handle_set_token_mode,

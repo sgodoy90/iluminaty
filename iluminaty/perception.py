@@ -45,6 +45,7 @@ import numpy as np
 from .world_state import WorldStateEngine
 from .temporal_store import TemporalVisualStore
 from .visual_engine import VisualEngine, VisualTask
+from .workers import WorkersSystem
 
 logger = logging.getLogger(__name__)
 
@@ -774,6 +775,8 @@ class PerceptionEngine:
             sample_interval_ms=1200,
         )
         self._visual = VisualEngine(max_queue=24, max_history=900)
+        workers_enabled = os.environ.get("ILUMINATY_WORKERS_ENABLED", "1") != "0"
+        self._workers = WorkersSystem(enabled=workers_enabled)
 
         # Semantic pacing
         self._last_world_update = 0.0
@@ -1610,6 +1613,30 @@ class PerceptionEngine:
             )
         except Exception as e:
             logger.debug("Temporal semantic transition failed: %s", e)
+
+        try:
+            self._workers.update_monitor_digest(
+                monitor_id=monitor_id,
+                tick_id=int(snapshot.get("tick_id", predicted_tick)),
+                scene_state=mon_state.scene.state.value,
+                scene_confidence=float(mon_state.scene.confidence),
+                change_score=float(getattr(slot, "change_score", 0.0) if slot is not None else 0.0),
+                dominant_direction=motion.get("dominant_direction", "none"),
+                window_info=info,
+                attention_targets=hot,
+                world_snapshot=snapshot,
+                visual_facts=visual_facts,
+                evidence_count=len(evidence),
+                is_active=bool(mon_state.is_active),
+            )
+            self._workers.update_spatial_state(
+                active_monitor_id=int(self._last_active_monitor_id or monitor_id),
+                monitor_ids=sorted(self._monitor_states.keys()),
+            )
+            self._workers.update_fusion_world(snapshot)
+        except Exception as e:
+            logger.debug("Workers update failed: %s", e)
+
         self._last_world_update = now
 
     # ─── Public API ───
@@ -1718,6 +1745,7 @@ class PerceptionEngine:
             },
             "world": self.get_world_state(),
             "visual": self._visual.stats(),
+            "workers": self.get_workers_status(),
             "deep_loop": deep_stats,
             "temporal": self._temporal.stats(),
             "event_count": len(self._events),
@@ -1752,6 +1780,15 @@ class PerceptionEngine:
     def get_readiness(self) -> dict:
         return self._world.get_readiness()
 
+    def list_domain_packs(self) -> dict:
+        return self._world.list_domain_packs()
+
+    def reload_domain_packs(self) -> dict:
+        return self._world.reload_domain_packs()
+
+    def set_domain_override(self, name: Optional[str]) -> dict:
+        return self._world.set_domain_override(name)
+
     def get_world_trace_bundle(self, seconds: float = 90) -> dict:
         return {
             "trace": self.get_world_trace(seconds=seconds),
@@ -1771,6 +1808,16 @@ class PerceptionEngine:
                 confidence=1.0 if success else 0.3,
                 monitor=0,
                 evidence_refs=[],
+            )
+        except Exception:
+            pass
+        try:
+            self._workers.record_verification(
+                intent_id=None,
+                action=action,
+                success=success,
+                reason=message or ("ok" if success else "failed"),
+                monitor_id=int(self._last_active_monitor_id or 0),
             )
         except Exception:
             pass
@@ -1809,6 +1856,90 @@ class PerceptionEngine:
         if primary:
             return primary.attention.grid.tolist()
         return self._attention.grid.tolist()
+
+    def get_workers_status(self) -> dict:
+        return self._workers.status()
+
+    def get_worker_monitor(self, monitor_id: int) -> Optional[dict]:
+        return self._workers.get_monitor(monitor_id)
+
+    def register_worker_intent(self, intent: dict, source: str = "api") -> dict:
+        return self._workers.register_intent(intent, source=source)
+
+    def claim_action_lease(self, owner: str, ttl_ms: Optional[int] = None, force: bool = False) -> dict:
+        return self._workers.claim_action(owner=owner, ttl_ms=ttl_ms, force=force)
+
+    def release_action_lease(self, owner: str, success: bool, message: str = "") -> dict:
+        return self._workers.release_action(owner=owner, success=success, message=message)
+
+    def get_workers_schedule(self) -> dict:
+        if not hasattr(self._workers, "get_schedule"):
+            return {
+                "timestamp_ms": int(time.time() * 1000),
+                "active_monitor_id": int(self._last_active_monitor_id or 0),
+                "recommended_monitor_id": int(self._last_active_monitor_id or 0),
+                "budgets": [],
+                "reason": "scheduler_unavailable",
+            }
+        return self._workers.get_schedule()
+
+    def set_worker_subgoal(
+        self,
+        *,
+        monitor_id: int,
+        goal: str,
+        priority: float = 0.5,
+        risk: str = "normal",
+        deadline_ms: Optional[int] = None,
+        metadata: Optional[dict] = None,
+    ) -> dict:
+        if not hasattr(self._workers, "set_subgoal"):
+            return {"ok": False, "reason": "scheduler_unavailable"}
+        return self._workers.set_subgoal(
+            monitor_id=monitor_id,
+            goal=goal,
+            priority=priority,
+            risk=risk,
+            deadline_ms=deadline_ms,
+            metadata=metadata,
+        )
+
+    def clear_worker_subgoal(self, subgoal_id: str, *, completed: bool = True) -> dict:
+        if not hasattr(self._workers, "clear_subgoal"):
+            return {"ok": False, "reason": "scheduler_unavailable"}
+        return self._workers.clear_subgoal(subgoal_id, completed=completed)
+
+    def list_worker_subgoals(self, include_completed: bool = False) -> list[dict]:
+        if not hasattr(self._workers, "list_subgoals"):
+            return []
+        return self._workers.list_subgoals(include_completed=include_completed)
+
+    def route_worker_query(self, query: str, preferred_monitor_id: Optional[int] = None) -> dict:
+        if not hasattr(self._workers, "route_query"):
+            return {
+                "query": query,
+                "monitor_id": int(self._last_active_monitor_id or 0),
+                "score": 0.0,
+                "reason": "scheduler_unavailable",
+            }
+        return self._workers.route_query(query, preferred_monitor_id=preferred_monitor_id)
+
+    def record_worker_verification(
+        self,
+        *,
+        intent_id: Optional[str],
+        action: str,
+        success: bool,
+        reason: str,
+        monitor_id: Optional[int] = None,
+    ) -> None:
+        self._workers.record_verification(
+            intent_id=intent_id,
+            action=action,
+            success=success,
+            reason=reason,
+            monitor_id=monitor_id,
+        )
 
     @property
     def is_running(self) -> bool:

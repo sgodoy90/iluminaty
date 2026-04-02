@@ -398,3 +398,172 @@ class TranscriptionEngine:
             wf.writeframes(pcm_data)
 
         return self.transcribe_wav(buf.getvalue())
+
+
+@dataclass(slots=True)
+class AudioInterruptEvent:
+    timestamp_ms: int
+    kind: str
+    text: str
+    confidence: float
+    source: str
+
+    def to_dict(self) -> dict:
+        return {
+            "timestamp_ms": int(self.timestamp_ms),
+            "kind": str(self.kind),
+            "text": str(self.text),
+            "confidence": round(float(self.confidence), 3),
+            "source": str(self.source),
+        }
+
+
+class AudioInterruptDetector:
+    """
+    Lightweight operational audio guard for SAFE/HYBRID loops.
+
+    It does not require constant transcription. Any available transcript/feed can
+    be ingested and converted into short-lived interrupt states.
+    """
+
+    STOP_KEYWORDS = {
+        "stop",
+        "detente",
+        "deten",
+        "para",
+        "pare",
+        "pause",
+        "pausa",
+        "espera",
+        "wait",
+        "alto",
+        "cancel",
+        "cancelar",
+        "abort",
+        "abortar",
+        "no continues",
+        "no continuar",
+    }
+    ALERT_KEYWORDS = {
+        "error",
+        "alert",
+        "alerta",
+        "warning",
+        "peligro",
+        "danger",
+    }
+
+    def __init__(
+        self,
+        *,
+        hold_ms: int = 12000,
+        max_events: int = 120,
+        alert_level_threshold: float = 0.55,
+    ):
+        self._hold_ms = max(1000, int(hold_ms))
+        self._alert_level_threshold = float(max(0.1, min(1.0, alert_level_threshold)))
+        self._events: deque[AudioInterruptEvent] = deque(maxlen=max(10, int(max_events)))
+        self._lock = threading.Lock()
+        self._blocked_until_ms: int = 0
+        self._last_reason: str = "idle"
+        self._acked_at_ms: int = 0
+
+    def _record_event(
+        self,
+        *,
+        kind: str,
+        text: str,
+        confidence: float,
+        source: str,
+        extend_hold_ms: int,
+    ) -> dict:
+        now_ms = int(time.time() * 1000)
+        evt = AudioInterruptEvent(
+            timestamp_ms=now_ms,
+            kind=str(kind),
+            text=str(text or "")[:240],
+            confidence=float(max(0.0, min(1.0, confidence))),
+            source=str(source or "unknown")[:48],
+        )
+        with self._lock:
+            self._events.append(evt)
+            self._blocked_until_ms = max(int(self._blocked_until_ms), int(now_ms + max(200, int(extend_hold_ms))))
+            self._last_reason = f"{evt.kind}:{evt.source}"
+        return evt.to_dict()
+
+    def ingest_transcript(self, text: str, *, confidence: float = 0.8, source: str = "transcript") -> dict:
+        content = str(text or "").strip().lower()
+        if not content:
+            return {"triggered": False, "reason": "empty_text"}
+
+        for marker in self.STOP_KEYWORDS:
+            if marker in content:
+                event = self._record_event(
+                    kind="stop",
+                    text=text,
+                    confidence=confidence,
+                    source=source,
+                    extend_hold_ms=self._hold_ms,
+                )
+                return {"triggered": True, "kind": "stop", "event": event}
+
+        for marker in self.ALERT_KEYWORDS:
+            if marker in content:
+                event = self._record_event(
+                    kind="alert",
+                    text=text,
+                    confidence=max(confidence, 0.65),
+                    source=source,
+                    extend_hold_ms=int(self._hold_ms * 0.6),
+                )
+                return {"triggered": True, "kind": "alert", "event": event}
+        return {"triggered": False, "reason": "no_keywords"}
+
+    def ingest_level(self, level: float, *, is_speech: bool = False, source: str = "audio_level") -> dict:
+        lv = float(max(0.0, min(1.0, level)))
+        if bool(is_speech):
+            return {"triggered": False, "reason": "speech_detected"}
+        if lv < self._alert_level_threshold:
+            return {"triggered": False, "reason": "below_threshold", "level": round(lv, 3)}
+        event = self._record_event(
+            kind="signal_peak",
+            text=f"rms={lv:.3f}",
+            confidence=min(1.0, lv),
+            source=source,
+            extend_hold_ms=int(self._hold_ms * 0.35),
+        )
+        return {"triggered": True, "kind": "signal_peak", "event": event}
+
+    def acknowledge(self) -> dict:
+        now_ms = int(time.time() * 1000)
+        with self._lock:
+            self._blocked_until_ms = now_ms
+            self._last_reason = "acknowledged"
+            self._acked_at_ms = now_ms
+            latest = self._events[-1].to_dict() if self._events else None
+        return {
+            "acknowledged": True,
+            "timestamp_ms": now_ms,
+            "latest_event": latest,
+        }
+
+    def status(self) -> dict:
+        now_ms = int(time.time() * 1000)
+        with self._lock:
+            blocked = now_ms < int(self._blocked_until_ms)
+            latest = self._events[-1].to_dict() if self._events else None
+            remaining = max(0, int(self._blocked_until_ms - now_ms))
+            return {
+                "blocked": bool(blocked),
+                "reason": str(self._last_reason),
+                "blocked_until_ms": int(self._blocked_until_ms),
+                "remaining_ms": int(remaining),
+                "events_count": len(self._events),
+                "latest_event": latest,
+                "acknowledged_at_ms": int(self._acked_at_ms or 0),
+            }
+
+    def recent_events(self, limit: int = 20) -> list[dict]:
+        with self._lock:
+            items = list(self._events)[-max(1, min(200, int(limit))):]
+        return [item.to_dict() for item in items]
