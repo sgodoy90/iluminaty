@@ -801,7 +801,7 @@ fn spawn_server(python: &Path, settings: &DesktopSettings) -> Result<Child, Stri
     let key = std::env::var("ILUMINATY_KEY")
         .ok()
         .filter(|v| !v.trim().is_empty())
-        .unwrap_or_else(|| "ILUM-dev-godo-master-key-2026".to_string());
+        .unwrap_or_else(|| "".to_string());
     cmd.env("ILUMINATY_KEY", key);
 
     cmd.spawn()

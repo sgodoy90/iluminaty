@@ -611,6 +611,22 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
         <span>FPS</span>
         <input type="number" id="cfgFps" value="1" min="0.2" max="10" step="0.5" onchange="updateConfig()">
       </div>
+      <div class="config-row" style="border-top:1px solid var(--border);margin-top:6px;padding-top:6px">
+        <span>VLM Device</span>
+        <select id="cfgVlmDevice" onchange="updateVlmConfig()">
+          <option value="auto">Auto (GPU si hay)</option>
+          <option value="cuda">GPU (CUDA)</option>
+          <option value="cpu">CPU (sin GPU)</option>
+        </select>
+      </div>
+      <div class="config-row">
+        <span>VLM</span>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input type="checkbox" id="cfgVlmEnabled" onchange="updateVlmConfig()" checked>
+          Activado
+        </label>
+        <span id="vlmRestartHint" style="font-size:10px;color:#f0a;display:none">Reiniciar para aplicar</span>
+      </div>
     </div>
 
     <!-- Controls -->
@@ -809,6 +825,27 @@ async function updateConfig() {
   });
   await fetch(API+'/config?'+p, {method:'POST'});
 }
+
+async function updateVlmConfig() {
+  const device = document.getElementById('cfgVlmDevice').value;
+  const enabled = document.getElementById('cfgVlmEnabled').checked;
+  const p = new URLSearchParams({ vlm_device: device, vlm_enabled: enabled });
+  const res = await fetch(API+'/config/vlm?'+p, {method:'POST'});
+  const d = await res.json();
+  if (d.ok) {
+    document.getElementById('vlmRestartHint').style.display = 'inline';
+  }
+}
+
+async function loadVlmConfig() {
+  try {
+    const res = await fetch(API+'/config/vlm');
+    const d = await res.json();
+    if (d.vlm_device) document.getElementById('cfgVlmDevice').value = d.vlm_device;
+    if (d.vlm_enabled !== undefined) document.getElementById('cfgVlmEnabled').checked = d.vlm_enabled;
+  } catch {}
+}
+loadVlmConfig();
 
 async function toggleCapture() {
   const ep = captureRunning ? '/capture/stop' : '/capture/start';

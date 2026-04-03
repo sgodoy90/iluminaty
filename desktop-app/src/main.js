@@ -1073,9 +1073,7 @@ const ACTION_PARAMS = {
   browser_fill: { prompt: "Enter selector and value (selector: value):", param: "input" },
   browser_eval: { prompt: "Enter JavaScript to evaluate:", param: "code" },
   vision_query: { prompt: "Ask a visual question:", param: "question" },
-  grounding_resolve: { prompt: "Enter target query (optional: query|role):", param: "target" },
-  grounded_click: { prompt: "Enter target query (optional: query|role):", param: "target" },
-  grounded_type: { prompt: "Enter target and text (query: text):", param: "input" },
+  describe_screen: { prompt: "Describe screen (optional: monitor id):", param: "monitor" },
   file_read: { prompt: "Enter file path:", param: "path" },
   file_write: { prompt: "Enter file path:", param: "path" },
   file_list: { prompt: "Enter directory path:", param: "path" },
@@ -1137,49 +1135,12 @@ function initActionButtons() {
           data = await apiPost(`/clipboard/write?text=${encodeURIComponent(body.text || "")}`);
         } else if (action === "click_element") {
           data = await apiPost(`/ui/click?name=${encodeURIComponent(body.selector || "")}`);
-        } else if (action === "grounding_resolve") {
-          const { query, role } = parseTargetAndRole(body.target);
-          data = await apiPost("/grounding/resolve", {
-            query,
-            role,
-            mode: getPreferredMode(),
-            top_k: 5,
-          });
-          if (data && data.success !== undefined) {
-            data.message = data.success
-              ? `Resolved: ${data.target?.name || query} (${Math.round((data.target?.confidence || 0) * 100)}%)`
-              : `Resolve blocked: ${data.reason || "unknown"}`;
-          }
-        } else if (action === "grounded_click") {
-          const { query, role } = parseTargetAndRole(body.target);
-          data = await apiPost("/grounding/click", {
-            query,
-            role,
-            mode: getPreferredMode(),
-            verify: true,
-          });
-          if (data && data.success !== undefined) {
-            data.message = data.success
-              ? "Grounded click executed"
-              : `Grounded click blocked: ${data.message || data.grounding?.reason || "unknown"}`;
-          }
-        } else if (action === "grounded_type") {
-          const raw = String(body.input || "");
-          const sep = raw.indexOf(":");
-          const left = sep >= 0 ? raw.slice(0, sep) : raw;
-          const text = sep >= 0 ? raw.slice(sep + 1).trim() : "";
-          const { query, role } = parseTargetAndRole(left);
-          data = await apiPost("/grounding/type", {
-            query,
-            text,
-            role: role || "textfield",
-            mode: getPreferredMode(),
-            verify: true,
-          });
-          if (data && data.success !== undefined) {
-            data.message = data.success
-              ? "Grounded type executed"
-              : `Grounded type blocked: ${data.message || data.grounding?.reason || "unknown"}`;
+        } else if (action === "describe_screen") {
+          const monId = body.monitor ? `?monitor_id=${body.monitor}` : "";
+          data = await apiPost(`/vision/describe${monId}`);
+          if (data?.facts) {
+            const vlm = data.facts.find(f => f.kind === "image_caption");
+            data.message = vlm ? vlm.text : (data.summary || "No VLM description");
           }
         } else if (action === "find_element") {
           data = await apiGet(`/ui/find?name=${encodeURIComponent(body.query || "")}`);
