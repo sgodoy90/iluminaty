@@ -761,6 +761,7 @@ fn spawn_server(python: &Path, settings: &DesktopSettings) -> Result<Child, Stri
         "--port",
         &port,
     ])
+    .env("ILUMINATY_OPERATING_MODE", settings.operating_mode.clone())
     .current_dir(&root)
     .stdout(Stdio::null())
     .stderr(Stdio::null());
@@ -772,6 +773,7 @@ fn spawn_server(python: &Path, settings: &DesktopSettings) -> Result<Child, Stri
         cmd.env("ILUMINATY_VLM_INT8", if settings.vlm_int8 { "1" } else { "0" });
         cmd.env("ILUMINATY_VLM_DEVICE", settings.vlm_device.clone());
         cmd.env("ILUMINATY_VLM_MODE", "on_demand");
+        cmd.env("ILUMINATY_VLM_DTYPE", "auto");
         cmd.env("ILUMINATY_VLM_IMAGE_SIZE", settings.vlm_image_size.to_string());
         cmd.env("ILUMINATY_VLM_MAX_TOKENS", settings.vlm_max_tokens.to_string());
         cmd.env(

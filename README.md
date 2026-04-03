@@ -6,15 +6,15 @@
 
 <p align="center">
   <strong>Real-time eyes + hands for AI on desktop systems.</strong><br/>
-  <strong>IPA v2.1: semantic streaming, temporal memory, and closed-loop control.</strong>
+  <strong>Pure MCP — the external AI decides, ILUMINATY observes and executes.</strong>
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/version-1.0.0-00ff88?style=flat-square&labelColor=0a0a12" alt="Version"/>
   <img src="https://img.shields.io/badge/IPA-v2.1-00ff88?style=flat-square&labelColor=0a0a12" alt="IPA v2.1"/>
   <img src="https://img.shields.io/badge/python-3.10+-00ff88?style=flat-square&labelColor=0a0a12&logo=python&logoColor=00ff88" alt="Python"/>
-  <img src="https://img.shields.io/badge/routes-139-00ff88?style=flat-square&labelColor=0a0a12" alt="Routes"/>
-  <img src="https://img.shields.io/badge/MCP_tools-40-00ff88?style=flat-square&labelColor=0a0a12" alt="MCP Tools"/>
+  <img src="https://img.shields.io/badge/MCP_tools-35-00ff88?style=flat-square&labelColor=0a0a12" alt="MCP Tools"/>
+  <img src="https://img.shields.io/badge/VLM-SmolVLM2_CUDA-00ff88?style=flat-square&labelColor=0a0a12" alt="VLM"/>
   <img src="https://img.shields.io/badge/license-MIT-00ff88?style=flat-square&labelColor=0a0a12" alt="License"/>
 </p>
 
@@ -22,156 +22,81 @@
 
 ## What Is ILUMINATY?
 
-ILUMINATY is a local runtime that gives any external AI:
+ILUMINATY is a local runtime that gives any external AI (Claude, GPT, etc.):
 
-- **Eyes**: continuous screen perception and semantic world state.
-- **Hands**: real desktop actions (mouse, keyboard, windows, terminal, browser, files).
-- **Loop**: `precheck -> execute -> verify -> recover`.
+- **Eyes**: continuous screen perception, OCR, multi-monitor, scene understanding.
+- **Hands**: direct desktop actions via `act` tool (click, type, key, scroll, focus, move, drag).
+- **VLM**: on-demand SmolVLM2-500M visual descriptions (GPU/CPU, idle until called).
 
 The external AI decides. ILUMINATY observes, structures context, and executes.
 
 ---
 
-## What Changed (IPA v2.1)
-
-This repo now includes the full IPA v2.1 runtime:
-
-- **Dual perception loop**
-  - `Fast Loop` (8-12Hz target): low-latency semantic updates.
-  - `Deep Loop` (0.5-2Hz): local visual analysis worker (non-blocking).
-- **WorldState contract upgrade**
-  - `tick_id`, `staleness_ms`, `visual_facts`, `evidence`.
-- **Temporal visual memory**
-  - `90s` semantic+frame references in RAM.
-  - Optional `vision_plus` profile with encrypted rotating disk spool (TTL).
-- **Context freshness gates for actions**
-  - `context_tick_id` and `max_staleness_ms` in SAFE/HYBRID flows.
-- **New API capability**
-  - `POST /perception/query` for temporal visual questions.
-- **New MCP capability**
-  - `vision_query`, `window_minimize`, `window_maximize`, `window_close`.
-- **Desktop app sync**
-  - Updated to real backend contracts + `x-api-key` propagation.
-
----
-
-## Architecture (Current)
+## Architecture
 
 ```text
-Screen(s) -> Capture -> RingBuffer -> Perception Fast Loop -> WorldState -> MCP/HTTP -> External AI
-                                 \-> Perception Deep Loop -> VisualEngine -> Visual Facts -> Temporal Store
-
-External AI -> action_precheck -> action_execute -> verify -> recover
+Screen(s) -> Per-Monitor Capture -> RingBuffer -> Perception Pipeline -> WorldState -> MCP -> AI
+                                                                                        |
+                                                          act(click/type/key/scroll) <--+
+                                                          describe_screen (VLM on-demand) <--+
 ```
 
-### Perception Layers
+### Core Flow
 
-1. **Signal Layer**
-   - Capture, change score, pHash, optical flow, OCR diff, active window/context.
-2. **Semantic Layer**
-   - `WorldState`: phase, surface, readiness, uncertainty, affordances, evidence.
-3. **Control Layer**
-   - Safety and readiness checks, execution, verification, recovery.
+```
+1. AI calls spatial_state    -> knows where everything is
+2. AI calls see_screen       -> sees what's on screen (OCR, ~200 tokens)
+3. AI calls act(action, ...) -> executes directly (click, type, key, scroll, focus)
+4. AI calls describe_screen  -> VLM describes what it sees (on-demand, ~7s GPU)
+```
 
----
-
-## Operating Modes
-
-- `SAFE` (default): safety + readiness + freshness checks.
-- `HYBRID`: guardrails focused on critical/destructive actions.
-- `RAW`: minimal path (kill switch still available).
+No grounding. No intent classifier. No middleware. The AI is the brain.
 
 ---
 
-## API Highlights
+## Key Features
 
-### Perception / Temporal Context
-
-- `GET /perception/world`
-- `GET /perception/trace?seconds=90`
-- `GET /perception/readiness`
-- `POST /perception/query` `{question, at_ms|window_seconds, monitor_id}`
-- `WS /perception/stream` (`tick_id`, `world`, `readiness`, `events`, `visual_facts_delta`)
-
-### Action Loop
-
-- `POST /action/precheck`
-- `POST /action/execute`
-- `POST /action/raw`
-- `POST /action/verify`
-
-`/action/precheck` and `/action/execute` support:
-
-- `context_tick_id`
-- `max_staleness_ms`
-
-for stale-context rejection in SAFE/HYBRID.
-
-### System Control
-
-- `GET /system/overview`
-- `GET /health`
-- `GET /operating/mode`
-- `POST /operating/mode`
-
----
-
-## MCP Tools (40 total)
-
-Key perception/control tools:
-
-- `perception_world`
-- `perception_trace`
-- `vision_query`
-- `do_action`
-- `action_precheck`
-- `raw_action`
-- `verify_action`
-- `set_operating_mode`
-- `window_minimize`
-- `window_maximize`
-- `window_close`
-
-Plus vision/UI/browser/terminal/filesystem tools for full desktop operation.
+| Feature | Detail |
+|---|---|
+| **Multi-monitor** | Independent per-monitor capture, attention, scene state |
+| **act tool** | Direct action executor — 7 actions, ~150ms each, zero middleware |
+| **VLM on-demand** | SmolVLM2-500M loaded in VRAM idle, fires only when asked |
+| **GPU auto-detect** | CUDA fp16 if available, CPU INT8 fallback |
+| **4-gate perception** | Window change → histogram → pHash → optical flow → OCR |
+| **Scene state machine** | IDLE, TYPING, SCROLLING, LOADING, VIDEO, TRANSITION, INTERACTION |
+| **WorldState** | phase, readiness, uncertainty, affordances, visual facts |
+| **Safety** | Kill switch, rate limiting, SAFE/HYBRID/RAW modes |
+| **Zero-disk** | All frames in RAM ring buffer, encrypted optional disk spool |
+| **~200 tokens/snapshot** | OCR text + metadata, no image tokens needed |
 
 ---
 
 ## Quick Start
 
-### 1) From source
+### Terminal
 
 ```bash
+# Clone and install
 git clone https://github.com/sgodoy90/iluminaty.git
 cd iluminaty
 pip install -e ".[ocr]"
-python main.py start --actions --autonomy confirm --monitor 0
+
+# Start with actions enabled
+python -m iluminaty.main --actions --monitor 0 --fps 2
+
+# With VLM (requires torch + transformers)
+set ILUMINATY_VLM_CAPTION=1
+set ILUMINATY_VLM_MODE=on_demand
+python -m iluminaty.main --actions --monitor 0 --fps 2
 ```
 
-Open: `http://127.0.0.1:8420`
-
-### 2) IPA v2.1 tuned runtime
+### Batch Launcher (Windows)
 
 ```bash
-python main.py start \
-  --actions \
-  --autonomy confirm \
-  --monitor 0 \
-  --fps 5 \
-  --fast-loop-hz 10 \
-  --deep-loop-hz 1.0 \
-  --vision-profile core_ram
+start_vlm.bat    # Full setup with VLM + GPU auto-detect
 ```
 
-### 3) Optional temporal disk spool (`vision_plus`)
-
-```bash
-python main.py start \
-  --actions \
-  --vision-profile vision_plus \
-  --vision-plus-disk
-```
-
-### 4) MCP with external AI
+### MCP Integration
 
 ```bash
 claude mcp add iluminaty -- python /path/to/iluminaty/iluminaty/mcp_server.py
@@ -179,62 +104,101 @@ claude mcp add iluminaty -- python /path/to/iluminaty/iluminaty/mcp_server.py
 
 ---
 
-## CLI (Current Main Flags)
+## MCP Tools (35)
 
-```text
-python main.py start [options]
+### Eyes (Perception)
+| Tool | Purpose |
+|---|---|
+| `spatial_state` | Monitors, active window, cursor position |
+| `see_screen` | OCR text or screenshot of any monitor |
+| `see_changes` | Recent screen changes with frames |
+| `read_screen_text` | Full OCR of a monitor |
+| `perception` | Events, scene state, attention |
+| `perception_world` | WorldState: phase, readiness, uncertainty |
+| `perception_trace` | Semantic transition history |
+| `vision_query` | Query visual memory |
+| `describe_screen` | On-demand VLM description |
+| `get_context` | Workflow, focus, session info |
 
-Core:
-  --port, --host, --fps, --buffer-seconds
-  --quality, --format, --max-width, --monitor
-  --api-key, --no-adaptive, --no-smart-quality
+### Hands (Actions)
+| Tool | Purpose |
+|---|---|
+| `act` | Direct executor: click, double_click, type, key, scroll, focus, move_mouse |
+| `drag_screen` | Drag from A to B |
+| `window_minimize/maximize/close` | Window control |
+| `move_window` | Reposition windows |
 
-Computer use:
-  --actions
-  --autonomy suggest|confirm|auto
-  --browser-debug-port
-  --file-sandbox PATH...
+### System
+| Tool | Purpose |
+|---|---|
+| `screen_status` | Capture stats, FPS, RAM |
+| `host_telemetry` | CPU, RAM, GPU, disk |
+| `token_status` | Vision token usage |
+| `set_operating_mode` | SAFE / HYBRID / RAW |
+| `workers_*` | Multi-monitor worker system |
+| `domain_pack_*` | Context-aware domain detection |
 
-IPA v2.1:
-  --vision-profile core_ram|vision_plus
-  --vision-plus-disk
-  --deep-loop-hz
-  --fast-loop-hz
+---
 
-Audio:
-  --audio off|mic|system|all
-  --audio-buffer
+## VLM (Visual Language Model)
+
+SmolVLM2-500M-Instruct runs locally:
+
+- **On-demand mode** (default): model loaded in VRAM, 0% usage until `describe_screen` is called
+- **Continuous mode**: deep loop triggers VLM every ~2s (set `ILUMINATY_VLM_MODE=continuous`)
+- **GPU**: auto-detects CUDA, uses fp16 (~1.2GB VRAM, ~2s inference)
+- **CPU fallback**: INT8 quantization (~600MB RAM, ~8-22s inference)
+
+### Environment Variables
+
+```
+ILUMINATY_VLM_CAPTION=1              # Enable VLM
+ILUMINATY_VLM_MODE=on_demand         # on_demand (default) or continuous
+ILUMINATY_VLM_DEVICE=auto            # auto, cuda, cpu
+ILUMINATY_VLM_MODEL=HuggingFaceTB/SmolVLM2-500M-Instruct
+ILUMINATY_VLM_INT8=1                 # CPU INT8 quantization
+ILUMINATY_VLM_IMAGE_SIZE=384         # Input image size
+ILUMINATY_VLM_MAX_TOKENS=64          # Max generation tokens
 ```
 
 ---
 
-## Repo Status
+## Operating Modes
 
-- Core platform: **v1.0.0**
-- IPA runtime: **v2.1 integrated**
-- Regression suite: **11 tests passing**
-- Desktop app: **API contract aligned with backend**
-
----
-
-## Privacy & Security Notes
-
-- Visual context is RAM-first by default (`core_ram`).
-- `vision_plus` disk spool is optional and encrypted/rotated.
-- Kill switch and operational mode controls are available.
-- Auth headers (`x-api-key`) are supported in API + MCP + desktop bridge.
+- `SAFE` (default): safety + readiness + freshness checks on all actions.
+- `HYBRID`: only blocks destructive actions.
+- `RAW`: minimal path (kill switch still available).
 
 ---
 
-## Main Source Areas
+## Privacy & Security
 
-- `iluminaty/perception.py` — IPA loops and semantic integration.
-- `iluminaty/world_state.py` — semantic contract + freshness gate.
-- `iluminaty/temporal_store.py` — temporal memory store.
-- `iluminaty/visual_engine.py` — local deep visual worker.
-- `iluminaty/server.py` — HTTP/WS API.
-- `iluminaty/mcp_server.py` — MCP tools/handlers.
-- `desktop-app/` — Tauri desktop control plane.
+- All visual data is RAM-first by default (zero disk).
+- VLM runs 100% local (no API calls, no data sent anywhere).
+- Kill switch available in all modes.
+- CORS restricted to specific methods/headers.
+- Auth headers (`x-api-key`) supported across API + MCP + desktop.
+
+---
+
+## Source Structure
+
+```
+iluminaty/
+  perception.py      — 4-gate perception pipeline + scene state
+  visual_engine.py   — VLM provider (SmolVLM2 + on-demand describe)
+  server.py          — FastAPI HTTP/WS server
+  mcp_server.py      — MCP tools for Claude Code / Cursor
+  capture.py         — Screen capture (mss)
+  multi_capture.py   — Per-monitor capture orchestration
+  ring_buffer.py     — Zero-disk RAM frame buffer
+  world_state.py     — Semantic world state engine
+  actions.py         — Action bridge (pyautogui)
+  safety.py          — Kill switch + rate limiting
+  monitors.py        — Multi-monitor detection
+desktop-app/         — Tauri v2 desktop app
+start_vlm.bat        — Windows launcher with VLM + GPU
+```
 
 ---
 

@@ -134,7 +134,7 @@ class _ServerState:
         self.agent_coordinator = None  # IPA v2: Multi-Agent Workbench
         self.cursor_tracker: Optional[CursorTracker] = None
         self.action_watcher: Optional[ActionCompletionWatcher] = None
-        self.operating_mode: str = "SAFE"  # SAFE | RAW | HYBRID
+        self.operating_mode: str = _normalize_operating_mode(os.environ.get("ILUMINATY_OPERATING_MODE"))  # SAFE | RAW | HYBRID
         self.runtime_profile: str = os.environ.get("ILUMINATY_RUNTIME_PROFILE", "standard").strip().lower() or "standard"
         self.bootstrap_warnings: list[str] = []
 
