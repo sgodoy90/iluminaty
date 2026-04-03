@@ -129,23 +129,23 @@
       <div class="plan-banner" id="plan-banner">
         <div class="plan-banner-left">
           <span class="plan-banner-badge" id="plan-banner-badge">FREE</span>
-          <span class="plan-banner-text">7 actions &middot; 29 MCP tools</span>
+          <span class="plan-banner-text">35 MCP tools &middot; 150x token efficient</span>
         </div>
-        <button class="plan-banner-btn" id="plan-banner-upgrade">Unlock all 42+ actions &rarr;</button>
+        <button class="plan-banner-btn" id="plan-banner-upgrade">Register for full access &rarr;</button>
       </div>
       <!-- Stats Row -->
       <div class="grid-4" style="margin-bottom:16px;">
         <div class="stat-card">
-          <div class="stat-value" id="stat-actions">42+</div>
-          <div class="stat-label">Actions</div>
+          <div class="stat-value" id="stat-actions">7</div>
+          <div class="stat-label">act() Actions</div>
         </div>
         <div class="stat-card">
-          <div class="stat-value" id="stat-endpoints">80+</div>
-          <div class="stat-label">Endpoints</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-value" id="stat-mcp">48</div>
+          <div class="stat-value" id="stat-mcp">35</div>
           <div class="stat-label">MCP Tools</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="stat-monitors">--</div>
+          <div class="stat-label">Monitors</div>
         </div>
         <div class="stat-card">
           <div class="stat-value" id="stat-uptime">--</div>
@@ -198,31 +198,19 @@
 
         <div class="card" id="apikey-card">
           <div class="card-header">
-            <span class="card-title">Your API Key</span>
-            <span class="card-badge" id="plan-badge">FREE</span>
-          </div>
-          <div class="apikey-display">
-            <code class="apikey-value" id="apikey-value">No key — sign in to get one</code>
-            <div class="apikey-actions">
-              <button class="apikey-btn" id="apikey-reveal" title="Show/hide key">Reveal</button>
-              <button class="apikey-btn" id="apikey-copy" title="Copy to clipboard">Copy</button>
-            </div>
-          </div>
-          <div class="apikey-usage">
-            <label class="token-mode-label">Quick Setup</label>
-            <code class="apikey-cli">export ILUMINATY_KEY=<span id="apikey-cli-val">your-key</span></code>
+            <span class="card-title">Your Plan</span>
+            <span class="card-badge" id="plan-badge">UNREGISTERED</span>
           </div>
           <div class="apikey-plan-info" id="apikey-plan-info">
-            <div class="plan-feature"><span class="plan-check">&#10003;</span> 7 actions</div>
-            <div class="plan-feature"><span class="plan-check">&#10003;</span> 29 MCP tools</div>
-            <div class="plan-feature"><span class="plan-check">&#10003;</span> Vision + OCR</div>
-            <div class="plan-feature locked"><span class="plan-lock">&#128274;</span> 42+ actions</div>
-            <div class="plan-feature locked"><span class="plan-lock">&#128274;</span> 48 MCP tools</div>
-            <div class="plan-feature locked"><span class="plan-lock">&#128274;</span> Browser + Terminal</div>
-          </div>
-          <button class="btn-upgrade-card" id="btn-upgrade-card">Upgrade to Pro</button>
-          <div class="apikey-refresh" id="apikey-refresh-msg" style="display:none;">
-            <span style="color:var(--green);font-size:11px;">Plan upgraded! Key auto-updated.</span>
+            <div class="plan-feature"><span class="plan-check">&#10003;</span> act() — 7 direct actions (~150ms)</div>
+            <div class="plan-feature"><span class="plan-check">&#10003;</span> IPA v2.1 perception (multi-monitor)</div>
+            <div class="plan-feature"><span class="plan-check">&#10003;</span> OCR + scene state + WorldState</div>
+            <div class="plan-feature"><span class="plan-check">&#10003;</span> VLM on-demand (SmolVLM2, GPU/CPU)</div>
+            <div class="plan-feature"><span class="plan-check">&#10003;</span> 35 MCP tools — 150x token efficient</div>
+            <div class="plan-feature" style="margin-top:8px;color:var(--text-dim);font-size:11px;">
+              Register at <a href="https://iluminaty.dev" target="_blank" style="color:var(--green)">iluminaty.dev</a> for full access.
+              Custom plans: <a href="mailto:custom@iluminaty.dev" style="color:var(--purple)">custom@iluminaty.dev</a>
+            </div>
           </div>
         </div>
       </div>
@@ -303,87 +291,48 @@
         <div id="agent-result" style="margin-top:10px;font-family:var(--font-mono);font-size:12px;color:var(--text-dim);display:none;"></div>
       </div>
 
-      <!-- Layer 1: OS Control -->
+      <!-- act() Tool — Primary Action Interface -->
       <div class="card">
         <div class="card-header">
-          <span class="card-title">Layer 1 — OS Control</span>
-          <span class="card-badge">16 Actions</span>
+          <span class="card-title">act() — Direct Actions</span>
+          <span class="card-badge">~150ms each</span>
         </div>
         <div class="action-grid">
           <button class="action-btn" data-action="click"><span class="action-icon">🖱</span><span class="action-name">Click</span></button>
           <button class="action-btn" data-action="double_click"><span class="action-icon">🖱</span><span class="action-name">Double Click</span></button>
-          <button class="action-btn" data-action="right_click"><span class="action-icon">🖱</span><span class="action-name">Right Click</span></button>
-          <button class="action-btn" data-action="drag_drop"><span class="action-icon">↕</span><span class="action-name">Drag & Drop</span></button>
-          <button class="action-btn" data-action="move_mouse"><span class="action-icon">➤</span><span class="action-name">Move Mouse</span></button>
-          <button class="action-btn" data-action="scroll"><span class="action-icon">↕</span><span class="action-name">Scroll</span></button>
           <button class="action-btn" data-action="typewrite"><span class="action-icon">⌨</span><span class="action-name">Type Text</span></button>
-          <button class="action-btn" data-action="press_key"><span class="action-icon">⌨</span><span class="action-name">Press Key</span></button>
-          <button class="action-btn" data-action="hotkey"><span class="action-icon">⌨</span><span class="action-name">Hotkey</span></button>
-          <button class="action-btn" data-action="screenshot"><span class="action-icon">📸</span><span class="action-name">Screenshot</span></button>
+          <button class="action-btn" data-action="hotkey"><span class="action-icon">⌨</span><span class="action-name">Hotkey / Key</span></button>
+          <button class="action-btn" data-action="scroll"><span class="action-icon">↕</span><span class="action-name">Scroll</span></button>
+          <button class="action-btn" data-action="move_mouse"><span class="action-icon">➤</span><span class="action-name">Move Mouse</span></button>
+          <button class="action-btn" data-action="drag_drop"><span class="action-icon">↔</span><span class="action-name">Drag & Drop</span></button>
+        </div>
+      </div>
+
+      <!-- Perception — Eyes -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Perception — Eyes</span>
+          <span class="card-badge">IPA v2.1</span>
+        </div>
+        <div class="action-grid">
           <button class="action-btn" data-action="vision_query"><span class="action-icon">👁</span><span class="action-name">Vision Query</span></button>
-          <button class="action-btn" data-action="get_clipboard"><span class="action-icon">📋</span><span class="action-name">Get Clipboard</span></button>
-          <button class="action-btn" data-action="set_clipboard"><span class="action-icon">📋</span><span class="action-name">Set Clipboard</span></button>
-        </div>
-      </div>
-
-      <!-- Layer 2: UI Intelligence -->
-      <div class="card">
-        <div class="card-header">
-          <span class="card-title">Layer 2 — UI Intelligence</span>
-          <span class="card-badge">Accessibility Tree</span>
-        </div>
-        <div class="action-grid">
-          <button class="action-btn" data-action="click_element"><span class="action-icon">🎯</span><span class="action-name">Click Element</span></button>
-          <button class="action-btn" data-action="describe_screen"><span class="action-icon">👁</span><span class="action-name">Describe Screen (VLM)</span></button>
-          <button class="action-btn" data-action="type_in_field"><span class="action-icon">📝</span><span class="action-name">Type in Field</span></button>
-          <button class="action-btn" data-action="select_option"><span class="action-icon">☰</span><span class="action-name">Select Option</span></button>
+          <button class="action-btn" data-action="describe_screen"><span class="action-icon">🧠</span><span class="action-name">Describe (VLM)</span></button>
+          <button class="action-btn" data-action="screenshot"><span class="action-icon">📸</span><span class="action-name">Screenshot</span></button>
           <button class="action-btn" data-action="find_element"><span class="action-icon">🔍</span><span class="action-name">Find Element</span></button>
-          <button class="action-btn" data-action="list_elements"><span class="action-icon">📃</span><span class="action-name">List UI Elements</span></button>
         </div>
       </div>
 
-      <!-- Layer 3: App Control -->
+      <!-- System Control -->
       <div class="card">
         <div class="card-header">
-          <span class="card-title">Layer 3 — App Control</span>
-          <span class="card-badge">VS Code + Terminal + Git</span>
+          <span class="card-title">System Control</span>
+          <span class="card-badge">Windows + Terminal + Files</span>
         </div>
         <div class="action-grid">
-          <button class="action-btn" data-action="vscode_open"><span class="action-icon">💻</span><span class="action-name">VS Code Open</span></button>
           <button class="action-btn" data-action="terminal_run"><span class="action-icon">▶</span><span class="action-name">Run Command</span></button>
-          <button class="action-btn" data-action="git_status"><span class="action-icon">⑂</span><span class="action-name">Git Status</span></button>
-          <button class="action-btn" data-action="git_commit"><span class="action-icon">⑂</span><span class="action-name">Git Commit</span></button>
-          <button class="action-btn" data-action="git_push"><span class="action-icon">⑂</span><span class="action-name">Git Push</span></button>
-        </div>
-      </div>
-
-      <!-- Layer 4: Web -->
-      <div class="card">
-        <div class="card-header">
-          <span class="card-title">Layer 4 — Web Automation</span>
-          <span class="card-badge">Chrome DevTools</span>
-        </div>
-        <div class="action-grid">
-          <button class="action-btn" data-action="browser_navigate"><span class="action-icon">🌐</span><span class="action-name">Navigate</span></button>
-          <button class="action-btn" data-action="browser_click"><span class="action-icon">🌐</span><span class="action-name">Click Selector</span></button>
-          <button class="action-btn" data-action="browser_fill"><span class="action-icon">🌐</span><span class="action-name">Fill Input</span></button>
-          <button class="action-btn" data-action="browser_eval"><span class="action-icon">🌐</span><span class="action-name">Evaluate JS</span></button>
-          <button class="action-btn" data-action="browser_text"><span class="action-icon">🌐</span><span class="action-name">Get Page Text</span></button>
-        </div>
-      </div>
-
-      <!-- Layer 5: File System -->
-      <div class="card">
-        <div class="card-header">
-          <span class="card-title">Layer 5 — File System</span>
-          <span class="card-badge">Sandboxed</span>
-        </div>
-        <div class="action-grid">
           <button class="action-btn" data-action="file_read"><span class="action-icon">📄</span><span class="action-name">Read File</span></button>
           <button class="action-btn" data-action="file_write"><span class="action-icon">📄</span><span class="action-name">Write File</span></button>
-          <button class="action-btn" data-action="file_list"><span class="action-icon">📁</span><span class="action-name">List Directory</span></button>
-          <button class="action-btn" data-action="file_search"><span class="action-icon">🔍</span><span class="action-name">Search Files</span></button>
-          <button class="action-btn" data-action="file_copy"><span class="action-icon">📄</span><span class="action-name">Copy File</span></button>
+          <button class="action-btn" data-action="browser_navigate"><span class="action-icon">🌐</span><span class="action-name">Navigate URL</span></button>
         </div>
       </div>
     </div>
@@ -456,12 +405,12 @@
           <div class="stat-label">Active Layers</div>
         </div>
         <div class="stat-card">
-          <div class="stat-value">42+</div>
-          <div class="stat-label">Total Actions</div>
+          <div class="stat-value">35</div>
+          <div class="stat-label">MCP Tools</div>
         </div>
         <div class="stat-card">
-          <div class="stat-value">48</div>
-          <div class="stat-label">MCP Tools</div>
+          <div class="stat-value" id="stat-vlm-mode">on_demand</div>
+          <div class="stat-label">VLM Mode</div>
         </div>
       </div>
     </div>

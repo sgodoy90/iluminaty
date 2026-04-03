@@ -906,9 +906,17 @@ fn spawn_server(python: &Path, settings: &DesktopSettings) -> Result<Child, Stri
         &port,
     ])
     .env("ILUMINATY_OPERATING_MODE", settings.operating_mode.clone())
-    .current_dir(&root)
-    .stdout(Stdio::null())
-    .stderr(Stdio::null());
+    .current_dir(&root);
+
+    // Log server output for debugging (instead of null)
+    let log_dir = runtime_root();
+    let log_path = log_dir.join("server.log");
+    if let Ok(log_file) = std::fs::File::create(&log_path) {
+        let log_err = log_file.try_clone().unwrap_or_else(|_| std::fs::File::create(&log_path).unwrap());
+        cmd.stdout(log_file).stderr(log_err);
+    } else {
+        cmd.stdout(Stdio::null()).stderr(Stdio::null());
+    }
 
     if settings.vlm_enabled {
         cmd.env("ILUMINATY_VLM_CAPTION", "1");

@@ -42,56 +42,13 @@ API_TIMEOUT_S = max(3.0, min(60.0, API_TIMEOUT_S))
 ILUMINATY_KEY = os.environ.get("ILUMINATY_KEY", "")
 
 # Free tier tools — available without license
-FREE_MCP_TOOLS = {
-    "act",
-    "see_screen", "see_changes", "read_screen_text", "perception",
-    "screen_status", "get_context",
-    "action_precheck", "verify_action",
-    "perception_world", "perception_trace", "set_operating_mode",
-    "domain_pack_list", "domain_pack_override",
-    "vision_query", "describe_screen",
-    "window_minimize", "window_maximize", "window_close",
-    "move_window", "drag_screen", "spatial_state",
-    "workers_status", "workers_monitor",
-    "workers_claim_action", "workers_release_action",
-    "workers_schedule", "workers_set_subgoal", "workers_clear_subgoal", "workers_route",
-    "behavior_stats", "behavior_recent", "behavior_suggest",
-    "runtime_profile",
-    "host_telemetry",
-    "os_notifications", "os_tray", "os_dialog_status", "os_dialog_resolve",
-    "audio_interrupt_status", "audio_interrupt_ack",
-    "get_audio_level",
-    "token_status", "set_token_mode", "set_token_budget",
-}
-
-# All tools — available with Pro license
-ALL_MCP_TOOLS = {
-    "see_screen", "see_changes", "annotate_screen", "read_screen_text", "perception",
-    "perception_world", "perception_trace",
-    "screen_status", "get_context", "get_audio_level",
-    "action_precheck", "verify_action",
-    "set_operating_mode", "domain_pack_list", "domain_pack_override",
-    "vision_query", "describe_screen",
-    "click_element", "type_text", "run_command",
-    "list_windows", "find_ui_element", "read_file", "write_file",
-    "window_minimize", "window_maximize", "window_close",
-    "move_window", "drag_screen", "spatial_state",
-    "workers_status", "workers_monitor",
-    "workers_claim_action", "workers_release_action",
-    "workers_schedule", "workers_set_subgoal", "workers_clear_subgoal", "workers_route",
-    "behavior_stats", "behavior_recent", "behavior_suggest",
-    "runtime_profile",
-    "host_telemetry",
-    "os_notifications", "os_tray", "os_dialog_status", "os_dialog_resolve",
-    "audio_interrupt_status", "audio_interrupt_ack",
-    "get_clipboard", "agent_status",
-    # Human-like navigation
-    "watch_screen", "focus_window", "browser_navigate", "browser_tabs",
-    "act", "click_screen", "keyboard", "scroll",
-    "monitor_info", "see_monitor",
-    # Token management
-    "token_status", "set_token_mode", "set_token_budget",
-}
+# Import tier definitions from licensing module
+from .licensing import (
+    UNREGISTERED_MCP_TOOLS,
+    FREE_MCP_TOOLS,
+    PRO_MCP_TOOLS,
+    ALL_MCP_TOOLS,
+)
 
 
 def _get_plan() -> str:
