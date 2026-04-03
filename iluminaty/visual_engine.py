@@ -703,6 +703,34 @@ class VisualEngine:
                 out.extend(asdict(f) for f in inf.facts)
             return out[-40:]
 
+    def describe(
+        self,
+        frame_bytes: bytes,
+        monitor_id: int = 0,
+        app_name: str = "",
+        window_title: str = "",
+        ocr_text: str = "",
+    ) -> dict:
+        """On-demand VLM inference. Bypasses queue/worker — direct call."""
+        task = VisualTask(
+            ref_id=f"ondemand_{int(time.time() * 1000)}",
+            tick_id=0,
+            timestamp_ms=int(time.time() * 1000),
+            monitor=monitor_id,
+            frame_bytes=frame_bytes,
+            mime_type="image/webp",
+            app_name=app_name or "unknown",
+            window_title=window_title or "unknown",
+            ocr_text=ocr_text,
+            priority=1.0,
+        )
+        inference = self._provider.analyze(task)
+        with self._lock:
+            self._latest_by_monitor[inference.monitor] = inference
+            self._history.append(inference)
+            self._processed += 1
+        return inference.to_dict()
+
     def query(
         self,
         question: str,

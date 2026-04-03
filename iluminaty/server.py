@@ -2566,6 +2566,28 @@ async def vision_snapshot(
     return JSONResponse(payload)
 
 
+@app.post("/vision/describe")
+async def vision_describe(
+    monitor_id: Optional[int] = Query(None, description="Monitor to describe. Defaults to active."),
+    x_api_key: Optional[str] = Header(None),
+):
+    """On-demand VLM description. Model stays idle until this is called."""
+    _check_auth(x_api_key)
+    if not _state.perception or not _state.perception._visual:
+        raise HTTPException(503, "Visual engine not initialized")
+    slot, mid = _latest_slot_for_monitor(monitor_id)
+    if not slot:
+        raise HTTPException(404, "No frames in buffer")
+    win = _active_window_snapshot()
+    result = _state.perception._visual.describe(
+        frame_bytes=slot.frame_bytes,
+        monitor_id=int(mid or 0),
+        app_name=str(win.get("app_name") or win.get("name") or ""),
+        window_title=str(win.get("title") or win.get("window_title") or ""),
+    )
+    return result
+
+
 @app.get("/vision/ocr")
 async def vision_ocr(
     region_x: Optional[int] = Query(None),

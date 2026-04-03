@@ -29,6 +29,7 @@ set ILUMINATY_VLM_MIN_INTERVAL_MS=900
 set ILUMINATY_VLM_KEEPALIVE_MS=7000
 set ILUMINATY_VLM_PRIORITY_THRESHOLD=0.55
 set ILUMINATY_VLM_SECONDARY_HEARTBEAT_S=8
+set ILUMINATY_VLM_MODE=on_demand
 
-py -3.13 -m iluminaty.main --monitor 0 --fps 2 --fast-loop-hz 8 --deep-loop-hz 0.6
+py -3.13 -m iluminaty.main --monitor 0 --fps 2 --fast-loop-hz 8 --deep-loop-hz 0.6 --actions
 pause

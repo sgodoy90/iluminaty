@@ -49,7 +49,7 @@ FREE_MCP_TOOLS = {
     "action_precheck", "verify_action",
     "perception_world", "perception_trace", "set_operating_mode",
     "domain_pack_list", "domain_pack_override",
-    "vision_query",
+    "vision_query", "describe_screen",
     "window_minimize", "window_maximize", "window_close",
     "move_window", "drag_screen", "spatial_state",
     "workers_status", "workers_monitor",
@@ -71,7 +71,7 @@ ALL_MCP_TOOLS = {
     "screen_status", "get_context", "get_audio_level",
     "action_precheck", "verify_action",
     "set_operating_mode", "domain_pack_list", "domain_pack_override",
-    "vision_query",
+    "vision_query", "describe_screen",
     "click_element", "type_text", "run_command",
     "list_windows", "find_ui_element", "read_file", "write_file",
     "window_minimize", "window_maximize", "window_close",
@@ -994,6 +994,20 @@ TOOLS = [
         },
     },
     {
+        "name": "describe_screen",
+        "description": (
+            "On-demand VLM description of current screen. Triggers fresh SmolVLM2 inference. "
+            "Model stays idle in VRAM until this is called — zero background cost. "
+            "Use when you need to understand WHAT is on screen (not just text/OCR)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "monitor": {"type": "integer", "description": "Monitor id to describe. Defaults to active."},
+            },
+        },
+    },
+    {
         "name": "grounding_status",
         "description": (
             "Get hybrid grounding engine status and performance metrics."
@@ -1889,6 +1903,21 @@ def handle_domain_pack_override(args: dict) -> list:
             f"override={data.get('override')} | reason={data.get('reason', 'n/a')}"
         ),
     }]
+
+
+def handle_describe_screen(args: dict) -> list:
+    monitor = args.get("monitor")
+    path = "/vision/describe"
+    if monitor is not None:
+        path += f"?monitor_id={int(monitor)}"
+    try:
+        data = _api_post(path)
+    except Exception as e:
+        return [{"type": "text", "text": f"Describe failed: {e}"}]
+    facts = data.get("facts", [])
+    vlm_fact = next((f for f in facts if f.get("kind") == "image_caption"), None)
+    caption = vlm_fact["text"] if vlm_fact else data.get("summary", "No VLM description available")
+    return [{"type": "text", "text": f"## Screen Description\n{caption}\n\nConfidence: {data.get('confidence', 0)}\nMonitor: {data.get('monitor', '?')}\nLatency: {data.get('latency_ms', '?')}ms"}]
 
 
 def handle_vision_query(args: dict) -> list:
@@ -3628,6 +3657,7 @@ HANDLERS = {
     "domain_pack_list": handle_domain_pack_list,
     "domain_pack_override": handle_domain_pack_override,
     "vision_query": handle_vision_query,
+    "describe_screen": handle_describe_screen,
     "grounding_status": handle_grounding_status,
     "grounding_resolve": handle_grounding_resolve,
     "click_grounded": handle_click_grounded,

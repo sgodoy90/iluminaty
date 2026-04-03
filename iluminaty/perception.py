@@ -738,6 +738,7 @@ class PerceptionEngine:
         self._deep_thread: Optional[threading.Thread] = None
         self._fast_loop_interval = max(0.08, min(0.25, 1.0 / max(1.0, fast_loop_hz)))
         self._deep_loop_interval = max(0.5, min(2.0, 1.0 / max(0.5, deep_loop_hz)))
+        self._vlm_mode = os.environ.get("ILUMINATY_VLM_MODE", "on_demand").strip().lower()
 
         # External references (IPA Phase 1.3)
         self._monitor_mgr = monitor_mgr
@@ -1130,6 +1131,10 @@ class PerceptionEngine:
                         f"conf={mon_state.scene.confidence:.2f} "
                         f"change={getattr(slot, 'change_score', 0.0):.3f}"
                     )
+                    if self._vlm_mode != "continuous":
+                        # on_demand: skip VLM enqueue, model stays idle in VRAM
+                        last_enqueued_ts[monitor_id] = slot.timestamp
+                        continue
                     task = VisualTask(
                         ref_id=ref_id,
                         tick_id=predicted_tick,
