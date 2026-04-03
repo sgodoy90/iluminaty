@@ -762,6 +762,7 @@ async function checkServer() {
       startPolling();
       startVisionPolling();
       startTokenPolling();
+      checkGpuStatus();
     } else {
       stopPolling();
       stopVisionPolling();
@@ -783,6 +784,33 @@ function updateServerUI() {
     dot.classList.remove("online");
     text.textContent = "Server offline";
     btn.textContent = "Start Server";
+  }
+}
+
+async function checkGpuStatus() {
+  try {
+    const port = desktopSettings?.api_port || DEFAULT_DESKTOP_SETTINGS.api_port;
+    const resp = await fetch(`http://127.0.0.1:${port}/system/gpu`);
+    const data = await resp.json();
+    const info = document.getElementById("gpu-info");
+    const badge = document.getElementById("gpu-badge");
+    if (!info || !badge) return;
+    if (data.cuda_available) {
+      info.textContent = `${data.gpu_name} \u2014 ${data.vram_total_mb}MB VRAM (${data.cuda_version})`;
+      badge.textContent = "CUDA";
+      badge.style.color = "#00ff88";
+    } else if (data.torch_version) {
+      info.textContent = "No CUDA GPU detected \u2014 CPU mode";
+      badge.textContent = "CPU";
+      badge.style.color = "#ff8800";
+    } else {
+      info.textContent = "torch not installed \u2014 enable VLM to install";
+      badge.textContent = "N/A";
+      badge.style.color = "#888";
+    }
+  } catch {
+    const info = document.getElementById("gpu-info");
+    if (info) info.textContent = "Server not ready";
   }
 }
 

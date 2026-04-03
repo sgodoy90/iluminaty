@@ -120,7 +120,8 @@ FREE_ENDPOINTS = {
     # Vision (all free)
     "/frame/latest", "/frames", "/buffer/stats", "/health",
     "/vision/snapshot", "/vision/changes", "/vision/status",
-    "/vision/annotate", "/vision/ocr",
+    "/vision/annotate", "/vision/ocr", "/vision/describe",
+    "/system/gpu",
     "/context", "/context/update",
     "/audio/level", "/audio/transcript",
     # Basic actions (all needed by `act` tool)
