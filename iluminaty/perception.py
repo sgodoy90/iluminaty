@@ -490,7 +490,7 @@ class TemporalEventFuser:
 
     def __init__(self):
         self._raw_events: deque[PerceptionEvent] = deque(maxlen=50)
-        self._fused: list[PerceptionEvent] = []
+        self._fused: deque[PerceptionEvent] = deque(maxlen=200)
         self._last_fuse_time: float = 0.0
 
     def add_raw(self, event: PerceptionEvent) -> Optional[PerceptionEvent]:

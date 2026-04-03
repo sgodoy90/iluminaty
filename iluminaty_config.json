@@ -1,0 +1,10 @@
+{
+  "vlm_enabled": true,
+  "vlm_device": "auto",
+  "vlm_model": "HuggingFaceTB/SmolVLM2-500M-Instruct",
+  "vlm_int8": true,
+  "vlm_image_size": 384,
+  "vlm_max_tokens": 64,
+  "fps": 2,
+  "monitors": [0]
+}

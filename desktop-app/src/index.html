@@ -597,6 +597,17 @@
           </div>
           <div class="setting-row">
             <div>
+              <div class="setting-label">VLM Device</div>
+              <div class="setting-desc">GPU requires NVIDIA CUDA. Auto detects best option.</div>
+            </div>
+            <select class="setting-input" id="set-vlm-device">
+              <option value="auto">Auto (recommended)</option>
+              <option value="cuda">GPU (CUDA)</option>
+              <option value="cpu">CPU</option>
+            </select>
+          </div>
+          <div class="setting-row">
+            <div>
               <div class="setting-label">INT8 (CPU)</div>
               <div class="setting-desc">Lower RAM/CPU with small quality tradeoff</div>
             </div>

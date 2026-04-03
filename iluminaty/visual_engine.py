@@ -9,12 +9,15 @@ Default provider is fully local, dependency-free, and CPU-safe.
 from __future__ import annotations
 
 import io
+import logging
 import os
 import threading
 import time
 from collections import deque
 from dataclasses import asdict, dataclass, field
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 try:
     from PIL import Image
@@ -429,7 +432,8 @@ class LocalSmolVLMProvider(BaseVisualProvider):
             self._caption_backend = True  # sentinel — real objects are _vlm_processor/_vlm_model
             self._backend_mode = "smol"
             self._status = "ready"
-        except Exception:
+        except Exception as e:
+            logger.warning("VLM backend init failed: %s", e)
             self._caption_backend = None
             self._vlm_processor = None
             self._vlm_model = None
@@ -502,7 +506,8 @@ class LocalSmolVLMProvider(BaseVisualProvider):
                 self._switch_model_to_cpu()
             self._errors += 1
             return ""
-        except Exception:
+        except Exception as e:
+            logger.debug("VLM caption failed: %s", e)
             self._errors += 1
             return ""
 
@@ -741,7 +746,10 @@ class VisualEngine:
         for inf in candidates:
             text = " ".join([inf.summary] + [f.text for f in inf.facts]).lower()
             overlap = len([w for w in q_words if w in text])
-            score = overlap + inf.confidence
+            # Recency bonus: newer inferences score higher (decay 0.01 per second of age)
+            age_s = max(0, (now_ms - inf.timestamp_ms) / 1000.0)
+            recency_bonus = max(0.0, 1.0 - age_s * 0.01)
+            score = overlap + inf.confidence + recency_bonus
             scored.append((score, inf))
         scored.sort(key=lambda item: item[0], reverse=True)
         best = scored[0][1]

@@ -137,7 +137,9 @@ class GroundingEngine:
         mode_norm = (mode or "SAFE").strip().upper()
         if mode_norm == "RAW":
             return 120000
-        return 1200
+        if mode_norm == "HYBRID":
+            return 10000
+        return 5000  # SAFE: 5s (was 1.2s — too aggressive for CPU VLM)
 
     def _world_ref(self) -> dict:
         if not self._perception:
@@ -206,8 +208,11 @@ class GroundingEngine:
             except Exception:
                 default_monitor = 0
         try:
-            hits = self._ui_tree.find_all(name=query, role=role) or []
-        except Exception:
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(self._ui_tree.find_all, name=query, role=role)
+                hits = future.result(timeout=3.0) or []
+        except (concurrent.futures.TimeoutError, Exception):
             hits = []
         for hit in hits[:16]:
             x = int(hit.get("x", 0))

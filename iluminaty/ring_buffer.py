@@ -211,8 +211,10 @@ class RingBuffer:
     def get_latest_n(self, n: int = 5) -> list[FrameSlot]:
         """Los últimos N frames (para dar contexto temporal a la IA)."""
         with self._lock:
-            items = list(self._buffer)
-        return items[-n:]
+            buf_len = len(self._buffer)
+            if n >= buf_len:
+                return list(self._buffer)
+            return [self._buffer[i] for i in range(buf_len - n, buf_len)]
 
     def get_since(self, seconds_ago: float) -> list[FrameSlot]:
         """Frames desde hace N segundos. Para 'qué acaba de pasar'."""

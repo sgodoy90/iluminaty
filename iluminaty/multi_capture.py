@@ -55,6 +55,7 @@ class MultiMonitorCapture:
         self._activity_thread: Optional[threading.Thread] = None
         self._on_frame: Optional[Callable] = None
         self._active_monitor_id: int = 1
+        self._active_lock = threading.Lock()
         try:
             poll_s = float(os.environ.get("ILUMINATY_ACTIVITY_POLL_S", "0.10"))
         except Exception:
@@ -165,9 +166,10 @@ class MultiMonitorCapture:
                     bounds = win_info.get("bounds", {})
                     if bounds:
                         new_active = self.monitor_mgr.detect_active_from_window(bounds)
-                        if new_active != self._active_monitor_id:
-                            self._active_monitor_id = new_active
-                            self._update_fps_for_active(new_active)
+                        with self._active_lock:
+                            if new_active != self._active_monitor_id:
+                                self._active_monitor_id = new_active
+                        self._update_fps_for_active(new_active)
             except Exception as e:
                 logger.debug("Multi-monitor activity probe failed: %s", e)
             # Event.wait blocks for poll interval but returns immediately on stop()
@@ -196,7 +198,8 @@ class MultiMonitorCapture:
         Trigger short high-FPS capture on one monitor.
         Used by IPA trigger-based capture.
         """
-        target_id = int(monitor_id or self._active_monitor_id or 1)
+        with self._active_lock:
+            target_id = int(monitor_id or self._active_monitor_id or 1)
         cap = self._captures.get(target_id)
         if not cap:
             return {
@@ -222,4 +225,5 @@ class MultiMonitorCapture:
 
     @property
     def active_monitor_id(self) -> int:
-        return self._active_monitor_id
+        with self._active_lock:
+            return self._active_monitor_id

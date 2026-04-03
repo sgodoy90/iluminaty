@@ -43,15 +43,13 @@ ILUMINATY_KEY = os.environ.get("ILUMINATY_KEY", "")
 
 # Free tier tools — available without license
 FREE_MCP_TOOLS = {
+    "act",
     "see_screen", "see_changes", "read_screen_text", "perception",
-    "screen_status", "get_context", "do_action", "raw_action",
-    "action_intent",
+    "screen_status", "get_context",
     "action_precheck", "verify_action",
-    "operate_cycle",
     "perception_world", "perception_trace", "set_operating_mode",
     "domain_pack_list", "domain_pack_override",
     "vision_query",
-    "grounding_status", "grounding_resolve", "click_grounded", "type_grounded",
     "window_minimize", "window_maximize", "window_close",
     "move_window", "drag_screen", "spatial_state",
     "workers_status", "workers_monitor",
@@ -71,11 +69,9 @@ ALL_MCP_TOOLS = {
     "see_screen", "see_changes", "annotate_screen", "read_screen_text", "perception",
     "perception_world", "perception_trace",
     "screen_status", "get_context", "get_audio_level",
-    "do_action", "raw_action", "action_intent", "action_precheck", "verify_action",
-    "operate_cycle",
+    "action_precheck", "verify_action",
     "set_operating_mode", "domain_pack_list", "domain_pack_override",
     "vision_query",
-    "grounding_status", "grounding_resolve", "click_grounded", "type_grounded",
     "click_element", "type_text", "run_command",
     "list_windows", "find_ui_element", "read_file", "write_file",
     "window_minimize", "window_maximize", "window_close",
@@ -91,7 +87,7 @@ ALL_MCP_TOOLS = {
     "get_clipboard", "agent_status",
     # Human-like navigation
     "watch_screen", "focus_window", "browser_navigate", "browser_tabs",
-    "click_screen", "keyboard", "scroll",
+    "act", "click_screen", "keyboard", "scroll",
     "monitor_info", "see_monitor",
     # Token management
     "token_status", "set_token_mode", "set_token_budget",
@@ -178,7 +174,11 @@ def _api_request(method: str, path: str, body: dict | None = None) -> dict:
             resp = conn.getresponse()
             data = resp.read()
             _CONN["ts"] = time.monotonic()
+            if not data or not data.strip():
+                return {"error": f"Empty response (HTTP {resp.status})", "status": resp.status}
             return json.loads(data.decode())
+        except json.JSONDecodeError as e:
+            return {"error": f"Invalid JSON: {e}", "raw": data.decode()[:200] if data else ""}
         except Exception:
             # Force connection reset on next call
             _CONN["conn"] = None
@@ -1307,6 +1307,35 @@ TOOLS = [
         },
     },
     {
+        "name": "act",
+        "description": (
+            "Direct action executor — no middleware, no grounding, no safety gates. "
+            "Claude sees the screen, decides what to do, and ILUMINATY executes exactly. "
+            "Actions: click, double_click, type, key, scroll, focus, move_mouse. "
+            "This is the PRIMARY action tool. Use see_screen first to know WHERE to act."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["click", "double_click", "type", "key", "scroll", "focus", "move_mouse"],
+                    "description": "Action to perform",
+                },
+                "x": {"type": "integer", "description": "X coordinate (for click/double_click/scroll/move_mouse)"},
+                "y": {"type": "integer", "description": "Y coordinate (for click/double_click/scroll/move_mouse)"},
+                "button": {"type": "string", "description": "Mouse button: left/right/middle (for click)", "default": "left"},
+                "text": {"type": "string", "description": "Text to type (for type action)"},
+                "keys": {"type": "string", "description": "Keys to press (for key action). Examples: enter, ctrl+s, win+r, alt+f4"},
+                "amount": {"type": "integer", "description": "Scroll amount: positive=down, negative=up (for scroll)", "default": 3},
+                "title": {"type": "string", "description": "Window title to focus (for focus action)"},
+                "handle": {"type": "integer", "description": "Window handle to focus (for focus action)"},
+                "monitor": {"type": "integer", "description": "Monitor id for monitor-local coordinates"},
+            },
+            "required": ["action"],
+        },
+    },
+    {
         "name": "click_screen",
         "description": (
             "Click at a specific position on screen using REAL screen coordinates (not image coordinates). "
@@ -2150,7 +2179,19 @@ def handle_read_text(args: dict) -> dict:
 
     query = "&".join(params) if params else ""
     path = f"/vision/ocr?{query}" if query else "/vision/ocr"
-    data = _api_get(path)
+    try:
+        data = _api_get(path)
+    except Exception:
+        # Fallback: use cached snapshot OCR if fresh OCR times out (VLM contention)
+        try:
+            fallback_path = f"/vision/snapshot?ocr=true&include_image=false"
+            if "monitor_id" in query:
+                fallback_path += f"&{query}"
+            data = _api_get(fallback_path)
+            data["text"] = data.get("ocr_text", "")
+            data["confidence"] = 70
+        except Exception:
+            return [{"type": "text", "text": "Screen text unavailable (server busy with VLM inference). Try again in a few seconds."}]
 
     text = data.get("text", "")
     if not text:
@@ -3025,6 +3066,83 @@ def handle_keyboard(args: dict) -> list:
     }]
 
 
+def handle_act(args: dict) -> list:
+    """
+    Direct action executor — no middleware, no grounding, no intent classifier.
+    Claude sees the screen, decides what to do, and tells ILUMINATY exactly.
+    Supports: click, type, key, scroll, focus, move_mouse
+    """
+    action = str(args.get("action", "")).strip().lower()
+    if not action:
+        return [{"type": "text", "text": "Error: action is required (click/type/key/scroll/focus/move_mouse)"}]
+
+    try:
+        if action == "click":
+            x, y = int(args.get("x", 0)), int(args.get("y", 0))
+            button = args.get("button", "left")
+            query = f"/action/click?x={x}&y={y}&button={urllib.parse.quote(str(button))}"
+            if args.get("monitor") is not None:
+                query += f"&monitor_id={int(args['monitor'])}&relative_to_monitor=true"
+            data = _api_post(query)
+            ok = data.get("success", False)
+            return [{"type": "text", "text": f"click ({x},{y}) {button}: {'OK' if ok else 'FAIL'} {data.get('message','')}"}]
+
+        elif action == "double_click":
+            x, y = int(args.get("x", 0)), int(args.get("y", 0))
+            data = _api_post(f"/action/double_click?x={x}&y={y}")
+            ok = data.get("success", False)
+            return [{"type": "text", "text": f"double_click ({x},{y}): {'OK' if ok else 'FAIL'}"}]
+
+        elif action == "type":
+            text = str(args.get("text", ""))
+            if not text:
+                return [{"type": "text", "text": "Error: text is required"}]
+            data = _api_post(f"/action/type?text={urllib.parse.quote(text)}")
+            ok = data.get("success", False)
+            return [{"type": "text", "text": f"typed {len(text)} chars: {'OK' if ok else 'FAIL'}"}]
+
+        elif action == "key":
+            keys = str(args.get("keys", ""))
+            if not keys:
+                return [{"type": "text", "text": "Error: keys is required (e.g. 'enter', 'ctrl+s', 'win+r')"}]
+            data = _api_post(f"/action/hotkey?keys={urllib.parse.quote(keys)}")
+            ok = data.get("success", False)
+            return [{"type": "text", "text": f"key {keys}: {'OK' if ok else 'FAIL'}"}]
+
+        elif action == "scroll":
+            amount = int(args.get("amount", 3))
+            query = f"/action/scroll?amount={amount}"
+            if args.get("x") is not None and args.get("y") is not None:
+                query += f"&x={int(args['x'])}&y={int(args['y'])}"
+            data = _api_post(query)
+            ok = data.get("success", False)
+            return [{"type": "text", "text": f"scroll {'down' if amount > 0 else 'up'} {abs(amount)}: {'OK' if ok else 'FAIL'}"}]
+
+        elif action == "focus":
+            title = str(args.get("title", ""))
+            handle = args.get("handle")
+            if handle is not None:
+                data = _api_post(f"/windows/focus?handle={int(handle)}")
+            elif title:
+                data = _api_post(f"/windows/focus?title={urllib.parse.quote(title)}")
+            else:
+                return [{"type": "text", "text": "Error: title or handle required"}]
+            ok = data.get("success", False)
+            return [{"type": "text", "text": f"focus '{title or handle}': {'OK' if ok else 'FAIL'}"}]
+
+        elif action == "move_mouse":
+            x, y = int(args.get("x", 0)), int(args.get("y", 0))
+            data = _api_post(f"/action/move?x={x}&y={y}")
+            ok = data.get("success", False)
+            return [{"type": "text", "text": f"move_mouse ({x},{y}): {'OK' if ok else 'FAIL'}"}]
+
+        else:
+            return [{"type": "text", "text": f"Unknown action: {action}. Use: click, double_click, type, key, scroll, focus, move_mouse"}]
+
+    except Exception as e:
+        return [{"type": "text", "text": f"act failed: {e}"}]
+
+
 def handle_scroll(args: dict) -> list:
     amount = args.get("amount", 3)
     x = args.get("x")
@@ -3546,6 +3664,7 @@ HANDLERS = {
     "focus_window": handle_focus_window,
     "browser_navigate": handle_browser_navigate,
     "browser_tabs": handle_browser_tabs,
+    "act": handle_act,
     "click_screen": handle_click_screen,
     "drag_screen": handle_drag_screen,
     "keyboard": handle_keyboard,

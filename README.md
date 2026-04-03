@@ -28,7 +28,7 @@ ILUMINATY is a local runtime that gives any external AI:
 - **Hands**: real desktop actions (mouse, keyboard, windows, terminal, browser, files).
 - **Loop**: `precheck -> execute -> verify -> recover`.
 
-The AI is the brain. ILUMINATY observes, structures context, and executes.
+The external AI decides. ILUMINATY observes, structures context, and executes.
 
 ---
 
@@ -247,5 +247,5 @@ MIT
 <p align="center">
   <img src="logo.svg" alt="ILUMINATY" width="60"/>
   <br/>
-  <em>AI brain + ILUMINATY eyes and hands.</em>
+  <em>AI decides + ILUMINATY sees and acts.</em>
 </p>

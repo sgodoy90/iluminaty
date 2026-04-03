@@ -28,7 +28,7 @@ def __getattr__(name):
         "BrowserBridge": (".browser", "BrowserBridge"),
         # Capa 5: File System
         "FileSystemSandbox": (".filesystem", "FileSystemSandbox"),
-        # Capa 6: Brain
+        # Capa 6: Orchestration
         "ActionResolver": (".resolver", "ActionResolver"),
         "IntentClassifier": (".intent", "IntentClassifier"),
         "TaskPlanner": (".planner", "TaskPlanner"),

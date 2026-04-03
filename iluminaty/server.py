@@ -20,8 +20,10 @@ Headers de seguridad:
 import asyncio
 import base64
 import io
+import json
 import logging
 import os
+import pathlib
 import time
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -779,7 +781,10 @@ def _extract_target_xy(intent: Intent) -> tuple[Optional[int], Optional[int]]:
     if "x" not in params or "y" not in params:
         return None, None
     try:
-        return int(params.get("x")), int(params.get("y"))
+        x, y = int(params.get("x")), int(params.get("y"))
+        if not (-16384 <= x <= 32768) or not (-16384 <= y <= 32768):
+            return None, None
+        return x, y
     except Exception:
         return None, None
 
@@ -1158,7 +1163,7 @@ def _runtime_post_action_check(intent: Intent, pre_snapshot: dict) -> dict:
 
 def _intent_from_payload(payload: dict) -> Intent:
     if _state.intent is None:
-        raise HTTPException(status_code=503, detail="Brain not initialized")
+        raise HTTPException(status_code=503, detail="Orchestration not initialized")
     instruction = (payload.get("instruction") or "").strip()
     if instruction:
         return _state.intent.classify_or_default(instruction)
@@ -1596,7 +1601,7 @@ async def _execute_intent(
                 intent.params,
                 "blocked",
                 blocked_reason,
-                _state.autonomy.current_level if _state.autonomy else "unknown",
+                _state.autonomy.default_level if _state.autonomy else "unknown",
             )
         if _state.perception and hasattr(_state.perception, "record_worker_verification"):
             try:
@@ -1810,7 +1815,7 @@ async def _execute_intent(
             intent.params,
             "success" if result.success else "failed",
             result.message,
-            _state.autonomy.current_level if _state.autonomy else "unknown",
+            _state.autonomy.default_level if _state.autonomy else "unknown",
             duration_ms=result.total_ms,
         )
 
@@ -1946,8 +1951,8 @@ def _get_cors_origins() -> list[str]:
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_get_cors_origins(),
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "x-api-key"],
 )
 
 
@@ -2147,6 +2152,42 @@ async def update_config(
     return {"updated": changed}
 
 
+_CONFIG_FILE = pathlib.Path(__file__).parent.parent / "iluminaty_config.json"
+
+@app.get("/config/vlm")
+async def get_vlm_config(x_api_key: Optional[str] = Header(None)):
+    """Lee configuracion VLM (GPU/CPU, modelo, etc.)"""
+    _check_auth(x_api_key)
+    try:
+        if _CONFIG_FILE.exists():
+            return json.loads(_CONFIG_FILE.read_text())
+        return {"vlm_device": "auto", "vlm_enabled": True}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/config/vlm")
+async def set_vlm_config(
+    vlm_device: Optional[str] = None,
+    vlm_enabled: Optional[bool] = None,
+    x_api_key: Optional[str] = Header(None),
+):
+    """Guarda configuracion VLM. Requiere reinicio para aplicar cambio de GPU/CPU."""
+    _check_auth(x_api_key)
+    try:
+        cfg = {}
+        if _CONFIG_FILE.exists():
+            cfg = json.loads(_CONFIG_FILE.read_text())
+        if vlm_device is not None and vlm_device in ("auto", "cuda", "cpu"):
+            cfg["vlm_device"] = vlm_device
+        if vlm_enabled is not None:
+            cfg["vlm_enabled"] = vlm_enabled
+        _CONFIG_FILE.write_text(json.dumps(cfg, indent=2))
+        return {"ok": True, "config": cfg, "restart_required": True}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 @app.post("/buffer/flush")
 async def flush_buffer(x_api_key: Optional[str] = Header(None)):
     """Destruir todo el contenido visual del buffer. Irreversible."""
@@ -2213,7 +2254,7 @@ async def perception_stream(
     include_events: bool = Query(True),
 ):
     """
-    IPA v2 semantic stream for external AI brains.
+    IPA v2 semantic stream for external AI agents.
     Sends WorldState snapshots (+ optional recent events) in real time.
     """
     await ws.accept()
@@ -2443,7 +2484,7 @@ def init_server(
             allowed_paths=file_sandbox_paths or ["."],
         )
 
-        # Capa 6: Brain (conecta todas las capas)
+        # Capa 6: Orchestration (conecta todas las capas)
         _state.resolver = ActionResolver()
         _state.resolver.set_layers(
             actions=_state.actions,
@@ -2480,13 +2521,9 @@ def init_server(
                 except Exception:
                     pass
             _state.recovery.set_reporter(_recovery_reporter)
-        _state.grounding = GroundingEngine()
-        _state.grounding.set_layers(
-            ui_tree=_state.ui_tree,
-            vision=_state.vision,
-            perception=_state.perception,
-            buffer=_state.buffer,
-        )
+        # Grounding disabled — replaced by direct `act` tool (Claude decides coordinates)
+        # _state.grounding = GroundingEngine()
+        # _state.grounding.set_layers(ui_tree, vision, perception, buffer)
         _state.ui_semantics = UISemanticsEngine()
         _state.ui_semantics.set_layers(
             ui_tree=_state.ui_tree,
@@ -3137,16 +3174,30 @@ async def grounding_resolve(
     context_tick_id = request_body.get("context_tick_id")
     max_staleness_ms = request_body.get("max_staleness_ms")
     top_k = int(request_body.get("top_k", 5))
-    return _state.grounding.resolve(
-        query=query,
-        role=role,
-        monitor_id=monitor_id,
-        mode=mode,
-        category=category,
-        context_tick_id=context_tick_id,
-        max_staleness_ms=max_staleness_ms,
-        top_k=top_k,
-    )
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(
+            _state.grounding.resolve,
+            query=query,
+            role=role,
+            monitor_id=monitor_id,
+            mode=mode,
+            category=category,
+            context_tick_id=context_tick_id,
+            max_staleness_ms=max_staleness_ms,
+            top_k=top_k,
+        )
+        try:
+            return future.result(timeout=8.0)
+        except concurrent.futures.TimeoutError:
+            return {
+                "success": False,
+                "blocked": True,
+                "reason": "grounding_timeout",
+                "target": None,
+                "candidates": [],
+                "world_ref": {},
+            }
 
 
 @app.post("/grounding/click")
@@ -4450,6 +4501,19 @@ async def action_scroll(
     return result
 
 
+@app.post("/action/move")
+async def action_move(
+    x: int = Query(...), y: int = Query(...),
+    x_api_key: Optional[str] = Header(None),
+):
+    """Move mouse to coordinates without clicking."""
+    _check_auth(x_api_key)
+    if not _state.actions or not _state.actions.available:
+        return {"action": "move_mouse", "success": False, "message": "Action bridge not available"}
+    result = _state.actions.move_mouse(x, y)
+    return {"action": "move_mouse", "success": result.success, "message": result.message, "x": x, "y": y}
+
+
 @app.post("/action/drag")
 async def action_drag(
     start_x: int = Query(...), start_y: int = Query(...),
@@ -4546,7 +4610,7 @@ async def action_intent(
     """
     _check_auth(x_api_key)
     if not _state.intent or not _state.resolver:
-        raise HTTPException(503, "Brain not initialized")
+        raise HTTPException(503, "Orchestration not initialized")
 
     instruction = str(request_body.get("instruction") or "").strip()
     if not instruction:
@@ -5082,7 +5146,7 @@ async def files_delete(path: str = Query(...), x_api_key: Optional[str] = Header
     return _state.filesystem.delete_file(path) if _state.filesystem else {"success": False}
 
 
-# ─── Capa 6: Agent / Brain ───
+# ─── Capa 6: Agent / Orchestration ───
 
 @app.post("/agent/do")
 async def agent_do(
@@ -5095,7 +5159,7 @@ async def agent_do(
     """
     _check_auth(x_api_key)
     if not _state.intent or not _state.resolver:
-        raise HTTPException(503, "Brain not initialized")
+        raise HTTPException(503, "Orchestration not initialized")
     intent = _state.intent.classify_or_default(instruction)
     return await _execute_intent(intent, mode=_state.operating_mode, verify=True)
 
@@ -5155,6 +5219,36 @@ async def system_telemetry(x_api_key: Optional[str] = Header(None)):
     snapshot = _state.host_telemetry.snapshot()
     snapshot["available"] = bool(snapshot.get("available", True))
     return snapshot
+
+
+@app.get("/system/gpu")
+async def system_gpu(x_api_key: Optional[str] = Header(None)):
+    """Report GPU/CUDA availability and VRAM for VLM device selection."""
+    _check_auth(x_api_key)
+    result = {
+        "cuda_available": False,
+        "gpu_name": None,
+        "vram_total_mb": None,
+        "vram_free_mb": None,
+        "torch_version": None,
+        "cuda_version": None,
+    }
+    try:
+        import torch
+        result["torch_version"] = torch.__version__
+        if torch.cuda.is_available():
+            result["cuda_available"] = True
+            result["gpu_name"] = torch.cuda.get_device_name(0)
+            result["cuda_version"] = torch.version.cuda
+            vram_total = torch.cuda.get_device_properties(0).total_mem
+            vram_free = vram_total - torch.cuda.memory_allocated(0)
+            result["vram_total_mb"] = round(vram_total / 1024 / 1024)
+            result["vram_free_mb"] = round(vram_free / 1024 / 1024)
+    except ImportError:
+        pass
+    except Exception as e:
+        logger.debug("GPU detection failed: %s", e)
+    return result
 
 
 @app.get("/system/overview")

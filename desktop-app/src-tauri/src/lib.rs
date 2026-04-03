@@ -47,6 +47,7 @@ struct DesktopSettings {
     vlm_backend: String,
     vlm_model: String,
     vlm_int8: bool,
+    vlm_device: String,
     vlm_image_size: u32,
     vlm_max_tokens: u32,
     vlm_min_interval_ms: u32,
@@ -70,6 +71,7 @@ impl Default for DesktopSettings {
             vlm_backend: "smol".to_string(),
             vlm_model: DEFAULT_VLM_MODEL.to_string(),
             vlm_int8: true,
+            vlm_device: "auto".to_string(),
             vlm_image_size: 384,
             vlm_max_tokens: 64,
             vlm_min_interval_ms: 900,
@@ -102,6 +104,10 @@ impl DesktopSettings {
         self.vlm_backend = match self.vlm_backend.to_lowercase().as_str() {
             "smol" | "blip" => self.vlm_backend.to_lowercase(),
             _ => "smol".to_string(),
+        };
+        self.vlm_device = match self.vlm_device.to_lowercase().as_str() {
+            "auto" | "cpu" | "cuda" | "gpu" => self.vlm_device.to_lowercase(),
+            _ => "auto".to_string(),
         };
         if self.vlm_model.trim().is_empty() {
             self.vlm_model = DEFAULT_VLM_MODEL.to_string();
@@ -764,6 +770,7 @@ fn spawn_server(python: &Path, settings: &DesktopSettings) -> Result<Child, Stri
         cmd.env("ILUMINATY_VLM_BACKEND", settings.vlm_backend.clone());
         cmd.env("ILUMINATY_VLM_MODEL", settings.vlm_model.clone());
         cmd.env("ILUMINATY_VLM_INT8", if settings.vlm_int8 { "1" } else { "0" });
+        cmd.env("ILUMINATY_VLM_DEVICE", settings.vlm_device.clone());
         cmd.env("ILUMINATY_VLM_IMAGE_SIZE", settings.vlm_image_size.to_string());
         cmd.env("ILUMINATY_VLM_MAX_TOKENS", settings.vlm_max_tokens.to_string());
         cmd.env(

@@ -39,6 +39,7 @@ const DEFAULT_DESKTOP_SETTINGS = {
   vlm_backend: "smol",
   vlm_model: "HuggingFaceTB/SmolVLM2-500M-Instruct",
   vlm_int8: true,
+  vlm_device: "auto",
   vlm_image_size: 384,
   vlm_max_tokens: 64,
   vlm_min_interval_ms: 900,
@@ -91,6 +92,7 @@ function applyDesktopSettingsToUI(settings) {
   set("#set-vlm-backend", s.vlm_backend);
   set("#set-vlm-model", s.vlm_model);
   set("#set-vlm-int8", s.vlm_int8);
+  set("#set-vlm-device", s.vlm_device);
   set("#set-vlm-image-size", s.vlm_image_size);
   set("#set-vlm-max-tokens", s.vlm_max_tokens);
   currentOperatingMode = String(s.operating_mode || "SAFE").toUpperCase();
@@ -110,6 +112,7 @@ function readDesktopSettingsFromUI() {
     vlm_backend: $("#set-vlm-backend")?.value || "smol",
     vlm_model: ($("#set-vlm-model")?.value || DEFAULT_DESKTOP_SETTINGS.vlm_model).trim(),
     vlm_int8: !!$("#set-vlm-int8")?.checked,
+    vlm_device: $("#set-vlm-device")?.value || "auto",
     vlm_image_size: Math.round(clampNumber($("#set-vlm-image-size")?.value, 224, 768, 384)),
     vlm_max_tokens: Math.round(clampNumber($("#set-vlm-max-tokens")?.value, 16, 256, 64)),
     vlm_min_interval_ms: 900,

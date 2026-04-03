@@ -123,10 +123,13 @@ FREE_ENDPOINTS = {
     "/vision/annotate", "/vision/ocr",
     "/context", "/context/update",
     "/audio/level", "/audio/transcript",
-    # Basic actions
+    # Basic actions (all needed by `act` tool)
     "/action/click", "/action/type", "/action/key",
     "/action/hotkey", "/action/scroll",
     "/action/screenshot", "/action/mouse_position",
+    "/action/double_click", "/action/right_click",
+    "/action/move", "/action/drag",
+    "/windows/focus",
     # Dashboard
     "/", "/dashboard",
     # Agent (limited in free)
@@ -136,13 +139,11 @@ FREE_ENDPOINTS = {
 # Endpoints that require Pro
 PRO_ENDPOINTS = {
     # Advanced actions
-    "/action/double_click", "/action/right_click",
-    "/action/move", "/action/drag",
     "/action/hold_key", "/action/release_key",
     # UI Tree
     "/ui/click", "/ui/type", "/ui/select", "/ui/find", "/ui/tree",
     # Windows
-    "/windows", "/windows/focus", "/windows/resize",
+    "/windows", "/windows/resize",
     # Clipboard
     "/clipboard", "/clipboard/set",
     # Process
