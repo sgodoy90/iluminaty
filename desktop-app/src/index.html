@@ -487,6 +487,44 @@
     <div class="view" id="view-settings">
       <div class="card">
         <div class="setting-group">
+          <div class="setting-group-title">AI Provider API Keys</div>
+          <div class="setting-row">
+            <div style="flex:1">
+              <div class="setting-label">Anthropic (Claude)</div>
+              <div class="setting-desc">Get key at <a href="https://console.anthropic.com" target="_blank" style="color:#00ff88">console.anthropic.com</a> &mdash; pay-per-token</div>
+            </div>
+            <div style="display:flex;gap:6px;align-items:center">
+              <input class="setting-input" id="key-anthropic" type="password" placeholder="sk-ant-api03-..." style="width:220px;font-size:12px"/>
+              <button class="action-btn" onclick="saveApiKey('anthropic')" style="padding:6px 12px;font-size:12px">Save</button>
+              <span id="key-anthropic-status" style="font-size:18px"></span>
+            </div>
+          </div>
+          <div class="setting-row">
+            <div style="flex:1">
+              <div class="setting-label">OpenAI (GPT)</div>
+              <div class="setting-desc">Get key at <a href="https://platform.openai.com/api-keys" target="_blank" style="color:#00ff88">platform.openai.com</a></div>
+            </div>
+            <div style="display:flex;gap:6px;align-items:center">
+              <input class="setting-input" id="key-openai" type="password" placeholder="sk-proj-..." style="width:220px;font-size:12px"/>
+              <button class="action-btn" onclick="saveApiKey('openai')" style="padding:6px 12px;font-size:12px">Save</button>
+              <span id="key-openai-status" style="font-size:18px"></span>
+            </div>
+          </div>
+          <div class="setting-row">
+            <div style="flex:1">
+              <div class="setting-label">Google Gemini</div>
+              <div class="setting-desc">Get key at <a href="https://aistudio.google.com/apikey" target="_blank" style="color:#00ff88">aistudio.google.com</a></div>
+            </div>
+            <div style="display:flex;gap:6px;align-items:center">
+              <input class="setting-input" id="key-gemini" type="password" placeholder="AIza..." style="width:220px;font-size:12px"/>
+              <button class="action-btn" onclick="saveApiKey('gemini')" style="padding:6px 12px;font-size:12px">Save</button>
+              <span id="key-gemini-status" style="font-size:18px"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="setting-group">
           <div class="setting-group-title">Autonomy</div>
           <div class="setting-row">
             <div>

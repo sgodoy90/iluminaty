@@ -787,6 +787,55 @@ function updateServerUI() {
   }
 }
 
+// ─── API Key Management ──────────────────────────────────────────────────────
+
+async function saveApiKey(provider) {
+  const input = document.getElementById(`key-${provider}`);
+  const status = document.getElementById(`key-${provider}-status`);
+  if (!input || !status) return;
+  const key = input.value.trim();
+  if (!key) { status.textContent = ""; return; }
+  status.textContent = "\u23F3"; // hourglass
+  try {
+    const msg = await invoke("save_api_key", { provider, key });
+    status.textContent = "\u2705"; // green check
+    input.value = "";
+    input.placeholder = "Saved \u2713";
+    addLog("system", msg, "ok");
+    loadApiKeyStatuses();
+  } catch (err) {
+    status.textContent = "\u274C"; // red X
+    addLog("system", `${provider} key error: ${err}`, "fail");
+  }
+}
+
+async function deleteApiKey(provider) {
+  try {
+    const msg = await invoke("delete_api_key", { provider });
+    document.getElementById(`key-${provider}-status`).textContent = "";
+    document.getElementById(`key-${provider}`).placeholder = `Enter ${provider} key...`;
+    addLog("system", msg, "ok");
+    loadApiKeyStatuses();
+  } catch (err) {
+    addLog("system", `Delete failed: ${err}`, "fail");
+  }
+}
+
+async function loadApiKeyStatuses() {
+  if (!isTauri) return;
+  try {
+    const keys = await invoke("list_api_keys");
+    for (const k of keys) {
+      const status = document.getElementById(`key-${k.provider}-status`);
+      const input = document.getElementById(`key-${k.provider}`);
+      if (status && k.configured) {
+        status.textContent = "\u2705";
+        if (input) input.placeholder = `${k.masked} (saved)`;
+      }
+    }
+  } catch {}
+}
+
 async function checkGpuStatus() {
   try {
     const port = desktopSettings?.api_port || DEFAULT_DESKTOP_SETTINGS.api_port;
@@ -1327,6 +1376,9 @@ function init() {
 
   // Check for plan upgrades every 60s (detects payment)
   setInterval(checkPlanUpgrade, 60000);
+
+  // Load saved API key statuses
+  loadApiKeyStatuses();
 }
 
 // Start

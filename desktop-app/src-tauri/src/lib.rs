@@ -730,6 +730,150 @@ async fn check_for_updates() -> Result<UpdateInfo, String> {
     })
 }
 
+// ─── API Key Management (OS Keyring) ─────────────────────────────────────────
+
+const KEYRING_SERVICE: &str = "iluminaty";
+
+fn keyring_id(provider: &str) -> String {
+    format!("{}-api-key", provider.to_lowercase().trim())
+}
+
+fn validate_key_format(provider: &str, key: &str) -> Result<(), String> {
+    let key = key.trim();
+    if key.is_empty() {
+        return Err("API key cannot be empty".to_string());
+    }
+    match provider {
+        "anthropic" => {
+            if !key.starts_with("sk-ant-") {
+                return Err("Anthropic keys start with sk-ant-".to_string());
+            }
+        }
+        "openai" => {
+            if !key.starts_with("sk-") {
+                return Err("OpenAI keys start with sk-".to_string());
+            }
+        }
+        "gemini" => {
+            if !key.starts_with("AIza") || key.len() < 30 {
+                return Err("Gemini keys start with AIza and are 35+ chars".to_string());
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn save_api_key(provider: String, key: String) -> Result<String, String> {
+    let key = key.trim().to_string();
+    validate_key_format(&provider, &key)?;
+
+    // Test the key with a lightweight API call
+    let client = reqwest::Client::new();
+    let valid = match provider.as_str() {
+        "anthropic" => {
+            let resp = client
+                .post("https://api.anthropic.com/v1/messages")
+                .header("x-api-key", &key)
+                .header("anthropic-version", "2023-06-01")
+                .header("content-type", "application/json")
+                .body(r#"{"model":"claude-sonnet-4-20250514","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}"#)
+                .send()
+                .await;
+            match resp {
+                Ok(r) => r.status().as_u16() != 401,
+                Err(_) => false,
+            }
+        }
+        "openai" => {
+            let resp = client
+                .get("https://api.openai.com/v1/models")
+                .header("Authorization", format!("Bearer {}", &key))
+                .send()
+                .await;
+            match resp {
+                Ok(r) => r.status().as_u16() != 401,
+                Err(_) => false,
+            }
+        }
+        "gemini" => {
+            let resp = client
+                .get(format!(
+                    "https://generativelanguage.googleapis.com/v1/models?key={}",
+                    &key
+                ))
+                .send()
+                .await;
+            match resp {
+                Ok(r) => r.status().is_success(),
+                Err(_) => false,
+            }
+        }
+        _ => true, // Unknown provider — skip validation
+    };
+
+    if !valid {
+        return Err(format!("Invalid {} API key — authentication failed", provider));
+    }
+
+    // Store in OS keyring
+    let entry = keyring::Entry::new(KEYRING_SERVICE, &keyring_id(&provider))
+        .map_err(|e| format!("Keyring error: {}", e))?;
+    entry
+        .set_password(&key)
+        .map_err(|e| format!("Failed to store key: {}", e))?;
+
+    Ok(format!("{} key validated and saved", provider))
+}
+
+#[tauri::command]
+async fn get_api_key(provider: String) -> Result<Option<String>, String> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, &keyring_id(&provider))
+        .map_err(|e| format!("Keyring error: {}", e))?;
+    match entry.get_password() {
+        Ok(key) => Ok(Some(key)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(format!("Keyring read failed: {}", e)),
+    }
+}
+
+#[tauri::command]
+async fn delete_api_key(provider: String) -> Result<String, String> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, &keyring_id(&provider))
+        .map_err(|e| format!("Keyring error: {}", e))?;
+    match entry.delete_credential() {
+        Ok(_) => Ok(format!("{} key deleted", provider)),
+        Err(keyring::Error::NoEntry) => Ok("No key to delete".to_string()),
+        Err(e) => Err(format!("Delete failed: {}", e)),
+    }
+}
+
+#[tauri::command]
+async fn list_api_keys() -> Result<Vec<serde_json::Value>, String> {
+    let providers = ["anthropic", "openai", "gemini"];
+    let mut result = Vec::new();
+    for p in &providers {
+        let entry = keyring::Entry::new(KEYRING_SERVICE, &keyring_id(p))
+            .map_err(|e| format!("Keyring error: {}", e))?;
+        let has_key = entry.get_password().is_ok();
+        result.push(serde_json::json!({
+            "provider": p,
+            "configured": has_key,
+            "masked": if has_key {
+                match entry.get_password() {
+                    Ok(k) if k.len() > 8 => format!("{}...{}", &k[..4], &k[k.len()-4..]),
+                    Ok(k) => format!("{}...", &k[..2]),
+                    Err(_) => "***".to_string(),
+                }
+            } else {
+                "".to_string()
+            },
+        }));
+    }
+    Ok(result)
+}
+
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 
 fn spawn_server(python: &Path, settings: &DesktopSettings) -> Result<Child, String> {
@@ -910,6 +1054,10 @@ pub fn run() {
             api_get,
             api_post,
             check_for_updates,
+            save_api_key,
+            get_api_key,
+            delete_api_key,
+            list_api_keys,
         ])
         .setup(|app| {
             let show = MenuItem::with_id(app, "show", "Show ILUMINATY", true, None::<&str>)?;
