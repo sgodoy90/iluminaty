@@ -1605,7 +1605,7 @@ class PerceptionEngine:
             else:
                 # Fallback: in-process OCR (blocks GIL but works without subprocess)
                 try:
-                    ocr_result = self._ocr.extract_text(slot.frame_bytes, frame_hash=slot.phash)
+                    ocr_result = self._ocr.extract_text(slot.frame_bytes, frame_hash=slot.phash, monitor_id=monitor_id)
                     current_text = ocr_result.get("text", "")
                     mon_state.last_ocr_blocks = ocr_result.get("blocks", [])
 

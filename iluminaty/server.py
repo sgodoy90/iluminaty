@@ -1938,6 +1938,39 @@ async def lifespan(app: FastAPI):
         except Exception:
             pass
 
+    # Auto-save visual memory on clean shutdown
+    if _state.visual_memory:
+        try:
+            state = {}
+            if _state.monitor_mgr:
+                state["spatial"] = {
+                    "monitor_count":     _state.monitor_mgr.count,
+                    "active_monitor_id": getattr(_state.monitor_mgr, "_active_monitor_id", 0),
+                    "monitors": [
+                        {"id": m.id, "zone": "?", "width": m.width, "height": m.height}
+                        for m in _state.monitor_mgr.monitors
+                    ],
+                }
+            if _state.ipa_bridge:
+                try:
+                    events = _state.ipa_bridge.recent_events(seconds=1800)
+                    state["ipa_events"] = [
+                        {"event_type": e.event_type, "description": e.description, "timestamp": e.timestamp}
+                        for e in events
+                    ]
+                except Exception:
+                    pass
+            if _state.perception and _state.monitor_mgr:
+                ocr_map = {}
+                for mon in _state.monitor_mgr.monitors:
+                    ms = _state.perception._get_monitor_state(mon.id)
+                    if ms and getattr(ms, "last_ocr_text", None):
+                        ocr_map[mon.id] = ms.last_ocr_text[:500]
+                state["ocr_by_monitor"] = ocr_map
+            _state.visual_memory.save(state)
+        except Exception as _e:
+            pass
+
 
 # ─── App ───
 app = FastAPI(

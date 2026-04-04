@@ -32,21 +32,25 @@ from .ring_buffer import FrameSlot
 logger = logging.getLogger(__name__)
 
 
-# ─── OCR Engine (RapidOCR -> Tesseract -> None fallback chain) ───
-
-def _try_import_rapidocr():
-    """RapidOCR forzando CPU — DirectML solo en ocr_worker.py (thread dedicado)."""
-    try:
-        import os
-        os.environ.setdefault('ORT_DISABLE_DML', '1')
-        from rapidocr import RapidOCR
-        return RapidOCR()
-    except Exception:
-        return None
-
+# ─── OCR Engine ───────────────────────────────────────────────────────────────
+#
+# ARCHITECTURE NOTE — why there is no RapidOCR instance here:
+#
+# Having two RapidOCR / onnxruntime instances in the same Python process
+# causes a segfault on Windows when DirectML is enabled (onnxruntime limitation:
+# only one DML session per process).
+#
+# Solution: OCREngine is a thin proxy. The single authoritative RapidOCR
+# instance lives in OCRWorker (ocr_worker.py) — one thread, one DML session.
+# OCREngine.extract_text() reads from that worker's cache instead of running
+# inference itself. Tesseract is kept as a CPU-only fallback for extract_region()
+# and cases where the worker hasn't warmed up yet.
+#
+# Rule: NEVER instantiate RapidOCR in this file.
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _try_import_tesseract():
-    """Fallback: pytesseract."""
+    """CPU-only fallback for region OCR and first-boot."""
     try:
         import pytesseract
         return pytesseract
@@ -55,104 +59,95 @@ def _try_import_tesseract():
 
 
 class OCREngine:
-    """
-    Extrae texto de frames usando OCR.
-    Fallback chain: RapidOCR (ONNX) -> Tesseract -> None
+    """Proxy OCR engine — delegates full-frame OCR to OCRWorker singleton.
 
-    RapidOCR es 3-5x mas rapido que Tesseract y no necesita
-    instalar binarios del sistema. Solo pip install.
+    Full-frame path:  OCRWorker (background thread, single RapidOCR instance)
+    Region path:      Tesseract CPU fallback (no DML, safe to instantiate anywhere)
+    No-OCR fallback:  empty result, ocr_available=False
 
-    Features:
-    - OCR caching: si el frame no cambio, devuelve cache
-    - Region OCR: crop antes de OCR para velocidad
-    - Bloques con posiciones: para blur de contenido sensible
+    This prevents the onnxruntime/DirectML segfault caused by two RapidOCR
+    instances in the same process.
     """
 
     def __init__(self):
-        self._rapid = _try_import_rapidocr()
-        self._tesseract = _try_import_tesseract() if not self._rapid else None
-        self._engine_name = "rapidocr" if self._rapid else ("tesseract" if self._tesseract else "none")
+        # Never import RapidOCR here — use OCRWorker singleton only
+        self._tesseract = _try_import_tesseract()
+        self._engine_name = "ocr_worker+tesseract" if self._tesseract else "ocr_worker"
         self._cache_hash: Optional[str] = None
         self._cache_result: Optional[dict] = None
+        self._last_monitor_id: int = 0
 
     @property
     def available(self) -> bool:
-        return self._rapid is not None or self._tesseract is not None
+        from .ocr_worker import get_ocr_worker
+        w = get_ocr_worker()
+        return (w is not None and w.available) or self._tesseract is not None
 
     @property
     def engine(self) -> str:
-        return self._engine_name
+        from .ocr_worker import get_ocr_worker
+        w = get_ocr_worker()
+        if w and w.available:
+            return "ocr_worker"
+        return "tesseract" if self._tesseract else "none"
 
-    def extract_text(self, frame_bytes: bytes, frame_hash: Optional[str] = None) -> dict:
+    def set_monitor_id(self, monitor_id: int) -> None:
+        """Tell the engine which monitor's OCR cache to read from."""
+        self._last_monitor_id = monitor_id
+
+    def extract_text(self, frame_bytes: bytes, frame_hash: Optional[str] = None,
+                     monitor_id: Optional[int] = None) -> dict:
+        """Return OCR result for this frame.
+
+        Priority:
+        1. Cache hit (same frame_hash)
+        2. OCRWorker result for this monitor (already computed by perception loop)
+        3. Tesseract CPU fallback (slow, only when worker unavailable)
+        4. Empty result
         """
-        Extrae texto del frame.
-        Si frame_hash coincide con el cache, devuelve resultado cacheado.
-        Returns: { "text": str, "blocks": [...], "confidence": float, "engine": str }
-        """
-        # Cache check: si el frame no cambio, devolver cache
+        mid = monitor_id if monitor_id is not None else self._last_monitor_id
+
+        # 1. Cache hit
         if frame_hash and frame_hash == self._cache_hash and self._cache_result:
             return {**self._cache_result, "cached": True}
 
-        if self._rapid:
-            result = self._extract_rapidocr(frame_bytes)
-        elif self._tesseract:
+        # 2. OCRWorker result (preferred — no extra inference cost)
+        from .ocr_worker import get_ocr_worker
+        worker = get_ocr_worker()
+        if worker and worker.available:
+            cached = worker.get_result(mid)
+            if cached:
+                result = {
+                    "text":        cached.get("text", ""),
+                    "blocks":      cached.get("blocks", []),
+                    "confidence":  0.0,
+                    "engine":      "ocr_worker",
+                    "ocr_available": True,
+                    "block_count": len(cached.get("blocks", [])),
+                    "from_worker": True,
+                }
+                if frame_hash:
+                    self._cache_hash   = frame_hash
+                    self._cache_result = result
+                return result
+
+            # Worker available but no result yet — enqueue and return pending
+            worker.enqueue(frame_bytes, frame_hash, mid)
+            return {"text": "", "blocks": [], "confidence": 0.0,
+                    "engine": "ocr_worker", "ocr_available": True,
+                    "ocr_pending": True}
+
+        # 3. Tesseract CPU fallback
+        if self._tesseract:
             result = self._extract_tesseract(frame_bytes)
-        else:
-            result = {"text": "", "blocks": [], "confidence": 0.0, "engine": "none", "ocr_available": False}
+            if frame_hash:
+                self._cache_hash   = frame_hash
+                self._cache_result = result
+            return result
 
-        # Update cache
-        if frame_hash:
-            self._cache_hash = frame_hash
-            self._cache_result = result
-
-        return result
-
-    def _extract_rapidocr(self, frame_bytes: bytes) -> dict:
-        """OCR con RapidOCR (ONNX). Rapido y preciso."""
-        try:
-            import numpy as np
-            img = Image.open(io.BytesIO(frame_bytes))
-            img_array = np.array(img)
-
-            result = self._rapid(img_array)
-
-            if result is None or result.txts is None:
-                return {"text": "", "blocks": [], "confidence": 0.0, "engine": "rapidocr", "ocr_available": True}
-
-            blocks = []
-            full_text_parts = []
-
-            for i, (box, txt, score) in enumerate(zip(result.boxes, result.txts, result.scores)):
-                if score < 0.3:
-                    continue
-                # box es [[x1,y1],[x2,y2],[x3,y3],[x4,y4]]
-                xs = [p[0] for p in box]
-                ys = [p[1] for p in box]
-                x_min, x_max = int(min(xs)), int(max(xs))
-                y_min, y_max = int(min(ys)), int(max(ys))
-
-                blocks.append({
-                    "text": txt,
-                    "x": x_min,
-                    "y": y_min,
-                    "w": x_max - x_min,
-                    "h": y_max - y_min,
-                    "confidence": round(float(score) * 100, 1),
-                })
-                full_text_parts.append(txt)
-
-            avg_conf = sum(b["confidence"] for b in blocks) / max(len(blocks), 1)
-
-            return {
-                "text": "\n".join(full_text_parts),
-                "blocks": blocks,
-                "confidence": round(avg_conf, 1),
-                "engine": "rapidocr",
-                "ocr_available": True,
-                "block_count": len(blocks),
-            }
-        except Exception as e:
-            return {"text": "", "blocks": [], "confidence": 0.0, "engine": "rapidocr", "error": str(e), "ocr_available": True}
+        # 4. No OCR available
+        return {"text": "", "blocks": [], "confidence": 0.0,
+                "engine": "none", "ocr_available": False}
 
     def _extract_tesseract(self, frame_bytes: bytes) -> dict:
         """Fallback OCR con Tesseract."""
@@ -197,15 +192,19 @@ class OCREngine:
         *,
         zoom_factor: float = 1.0,
     ) -> dict:
-        """OCR solo de una region especifica. BUG-010 fix: bypasses cache (region != full frame)."""
+        """OCR of a specific region only.
+
+        Uses Tesseract CPU directly — avoids enqueuing a partial crop
+        to the OCRWorker (which expects full frames for its cache).
+        Safe to call from any thread.
+        """
         img = Image.open(io.BytesIO(frame_bytes))
-        # Bounds check
         x = max(0, x)
         y = max(0, y)
         w = min(w, img.width - x)
         h = min(h, img.height - y)
         if w <= 0 or h <= 0:
-            return {"text": "", "blocks": [], "confidence": 0.0, "engine": self._engine_name}
+            return {"text": "", "blocks": [], "confidence": 0.0, "engine": "none"}
         cropped = img.crop((x, y, x + w, y + h))
         zf = float(zoom_factor or 1.0)
         if zf > 1.05:
@@ -214,8 +213,14 @@ class OCREngine:
             cropped = cropped.resize((target_w, target_h), Image.LANCZOS)
         buf = io.BytesIO()
         cropped.save(buf, format="JPEG", quality=85)
-        # No frame_hash = no cache (region OCR is always fresh)
-        result = self.extract_text(buf.getvalue(), frame_hash=None)
+
+        # Tesseract is CPU-only — safe to call here without DML conflict
+        if self._tesseract:
+            result = self._extract_tesseract(buf.getvalue())
+        else:
+            # Last resort: enqueue to worker even though it's a crop
+            result = self.extract_text(buf.getvalue(), frame_hash=None)
+
         if isinstance(result, dict):
             result["region_zoom_factor"] = round(max(1.0, zf), 2)
         return result
