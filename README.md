@@ -14,7 +14,7 @@
   <img src="https://img.shields.io/badge/IPA-v3-00ff88?style=flat-square&labelColor=0a0a12" alt="IPA v3"/>
   <img src="https://img.shields.io/badge/MCP_tools-38-00ff88?style=flat-square&labelColor=0a0a12" alt="MCP Tools"/>
   <img src="https://img.shields.io/badge/multi--monitor-3%2B-00ff88?style=flat-square&labelColor=0a0a12" alt="Multi-Monitor"/>
-  <img src="https://img.shields.io/badge/tests-121_passing-00ff88?style=flat-square&labelColor=0a0a12" alt="Tests"/>
+  <img src="https://github.com/sgodoy90/iluminaty/actions/workflows/tests.yml/badge.svg" alt="Tests"/>
   <img src="https://img.shields.io/badge/license-MIT-00ff88?style=flat-square&labelColor=0a0a12" alt="License"/>
 </p>
 
