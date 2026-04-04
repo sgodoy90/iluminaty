@@ -5,94 +5,85 @@
 <h1 align="center">ILUMINATY</h1>
 
 <p align="center">
-  <strong>Real-time perception + action runtime for AI agents.</strong><br/>
-  <strong>Give any AI real eyes on your desktop — no screenshots needed.</strong>
+  <strong>Real-time visual perception + PC control for AI agents.</strong><br/>
+  Local MCP server. No cloud. No screenshots. AI sees your screen live.
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/version-1.0.0-00ff88?style=flat-square&labelColor=0a0a12" alt="Version"/>
   <img src="https://img.shields.io/badge/IPA-v3-00ff88?style=flat-square&labelColor=0a0a12" alt="IPA v3"/>
-  <img src="https://img.shields.io/badge/MCP_tools-34-00ff88?style=flat-square&labelColor=0a0a12" alt="MCP Tools"/>
+  <img src="https://img.shields.io/badge/MCP_tools-38-00ff88?style=flat-square&labelColor=0a0a12" alt="MCP Tools"/>
   <img src="https://img.shields.io/badge/multi--monitor-3%2B-00ff88?style=flat-square&labelColor=0a0a12" alt="Multi-Monitor"/>
+  <img src="https://img.shields.io/badge/tests-121_passing-00ff88?style=flat-square&labelColor=0a0a12" alt="Tests"/>
   <img src="https://img.shields.io/badge/license-MIT-00ff88?style=flat-square&labelColor=0a0a12" alt="License"/>
 </p>
 
-<p align="center">
-  <a href="https://iluminaty.dev">iluminaty.dev</a>
-</p>
-
 ---
 
-## What Is ILUMINATY?
+## Quick Start — 5 minutes
 
-A local server that gives any AI **real eyes and hands** on your desktop. Connect Claude, GPT-4o, or any MCP-compatible AI and it can see your screen, understand what's happening, and act with precision — without sending screenshots to the cloud.
-
-```
-AI (Claude / GPT-4o)  ←→  ILUMINATY (local server)  ←→  Your Desktop
-      decides               sees + acts in RT           screen, keyboard, mouse
-```
-
-**The AI is the brain. ILUMINATY is the body.**
-
----
-
-## What Is IPA v3?
-
-**IPA (Intelligent Perception Algorithm) v3** is the visual perception engine. It runs continuously in the background, processing your screen at 3fps through a codec-inspired pipeline:
-
-- **I-frames**: full screen state compressed and stored
-- **P-frames**: only what changed since the last frame — minimal storage
-- **change_mask**: 25-byte bitmask of exactly which zones changed
-- **motion detection**: cursor, typing, scroll, video, loading — classified automatically
-- **gate events**: `motion_start`, `motion_end`, `content_loaded` — signals for when to act
-
-**100% ours.** IPA v3 uses only `numpy + pillow + imagehash`. No Google models, no external dependencies in the core.
-
-The AI receives **real screen images** (WebP) via `see_now` — not summaries or embeddings. IPA manages the *when* and *how much*, the AI decides the *what*.
-
----
-
-## How It Compares to Computer Use
-
-| | Computer Use (Anthropic) | ILUMINATY |
-|---|---|---|
-| **Screen capture** | Screenshot on demand | Continuous 3fps, always ready |
-| **Monitors** | 1 only | 3+ with spatial context |
-| **Change detection** | Manual comparison | Automatic (IPA change_mask) |
-| **User context** | None | `get_spatial_context` — knows what's the user's |
-| **Tokens per look** | ~20-30K (full image) | ~200 (text) or ~5K (low_res image) |
-| **Click precision** | Model estimates coords | `smart_locate` — exact coords via OCR (3-34ms) |
-| **Modal handling** | Manual | `operate_cycle` handles automatically |
-| **Filesystem/terminal** | No | Yes — sandboxed |
-| **Cost per 20-action task** | ~600K tokens | ~40K tokens |
-
----
-
-## Quickstart
+**Step 1: Clone and install**
 
 ```bash
-# Install
-pip install -e .
-
-# Start server (single monitor, port 8420)
-python main.py start --port 8420 --fps 3 --actions
-
-# Multi-monitor (auto-detect all)
-python main.py start --port 8420 --fps 3 --actions --monitor 0
-
-# With Pro key
-set ILUMINATY_KEY=ILUM-pro-your-key
-python main.py start --port 8420 --fps 3 --actions --monitor 0
+git clone https://github.com/sgodoy90/iluminaty
+cd iluminaty
+install.bat          # Windows: creates .venv, installs deps, writes MCP config
 ```
 
-Then connect your AI via MCP:
+**Step 2: Start the server**
+
+```bash
+start.bat            # starts on :8420, auto-detects all monitors
+```
+
+You'll see:
+```
+Monitor 1: 3.0 fps
+Monitor 2: 3.0 fps
+Monitor 3: 3.0 fps
+[IPA] Multi-monitor capture: 3 monitors
+API: http://127.0.0.1:8420
+```
+
+**Step 3: Connect Claude**
+
+`install.bat` already wrote `.mcp.json` in the project folder and `%APPDATA%\Claude\claude_desktop_config.json`.
+
+For Claude Code, the `.mcp.json` is ready. For Claude Desktop, restart it.
+
+**Step 4: Try it**
+
+In Claude, type:
+```
+call see_now
+```
+
+Claude now sees your screen in real-time.
+
+---
+
+## Manual Install
+
+```bash
+# Create virtualenv
+python -m venv .venv
+.venv\Scripts\activate
+
+# Install core + OCR
+pip install -e ".[ocr]"
+
+# Start with your key
+python main.py start --port 8420 --fps 3 --actions --api-key YOUR_KEY
+```
+
+**MCP config** (`~/.mcp.json` or `%APPDATA%\Claude\claude_desktop_config.json`):
 
 ```json
 {
   "mcpServers": {
     "iluminaty": {
-      "command": "python",
-      "args": ["run_mcp.py"],
+      "command": "C:/path/to/iluminaty/.venv/Scripts/python.exe",
+      "args": ["C:/path/to/iluminaty/run_mcp.py"],
       "env": {
         "ILUMINATY_API_URL": "http://127.0.0.1:8420",
         "ILUMINATY_KEY": "your-key-here"
@@ -104,85 +95,125 @@ Then connect your AI via MCP:
 
 ---
 
-## MCP Tools (34)
+## Why Not Just Use Computer Use?
 
-### Vision — Real-time eyes
+| | Computer Use | ILUMINATY |
+|---|---|---|
+| **Privacy** | Screenshots sent to Anthropic API | 100% local — nothing leaves your machine |
+| **Monitors** | 1 only | 3+ with spatial context per monitor |
+| **Token cost per action** | ~20-30K tokens (full screenshot) | ~200 tokens (text) or ~5K (low_res) |
+| **Cost per 20-action task** | ~600K tokens | ~40K tokens (**15x cheaper**) |
+| **Change detection** | None — blind between calls | Continuous IPA at 3fps — always ready |
+| **Click precision** | Model estimates coordinates | `smart_locate` — OCR exact coords (3-34ms) |
+| **Waiting for events** | Polling loop (token-expensive) | `watch_and_notify` — zero tokens while waiting |
+| **Session continuity** | Starts blind each session | `get_session_memory` — knows what you were doing |
+| **Multi-agent** | Not supported | Multiple AI agents on different monitors |
+| **Works offline** | No | Yes — no internet required for operation |
+
+**Measured in production (stress test, 60s, 4 concurrent clients):**
+- 158 requests served
+- 0 crashes, 0 errors
+- Max latency: 29ms
+
+---
+
+## What Is IPA v3?
+
+The **Intelligent Perception Algorithm** runs continuously in background, processing your screen at 3fps through a codec-inspired pipeline:
+
+- **I-frames**: full screen state (keyframes)
+- **P-frames**: only what changed since last frame — 95% smaller
+- **change_mask**: 25-byte bitmask of which screen zones changed
+- **Gate events**: `motion_start`, `motion_end`, `content_loaded` — signals for when to act
+
+**100% proprietary.** IPA v3 uses only `numpy + pillow + imagehash`. No Google SigLIP, no external model dependencies in the core.
+
+---
+
+## MCP Tools (38)
+
+### Vision
 
 | Tool | What It Does |
 |---|---|
 | `see_now` | **PRIMARY.** Current screen image + IPA context (motion, scene, events) |
 | `what_changed` | What changed in last N seconds + image of the key moment |
-| `see_screen` | Screen image or text_only (~200 tokens) — use for cheap context checks |
+| `see_screen` | Screen image or text_only (~200 tokens) |
 | `see_changes` | Multiple frames showing temporal progression |
 | `see_monitor` | Specific monitor with click coordinate mapping |
-| `read_screen_text` | OCR — all visible text, optionally by region |
+| `read_screen_text` | All visible text via OCR, optionally by region |
 | `vision_query` | Ask about visual history: "what was on screen 30s ago?" |
 
-### Perception — Understand the environment
+### Perception
 
 | Tool | What It Does |
 |---|---|
-| `get_spatial_context` | **SESSION START.** Full spatial context: monitor layout, windows per monitor, user activity, safety rules |
+| `get_spatial_context` | **SESSION START.** Monitor layout, windows per monitor, user activity |
 | `get_context` | Current workflow: app, focus level, time in workflow |
 | `perception` | Raw IPA events: scene state, motion type, OCR events |
 | `perception_world` | WorldState: task phase, affordances, readiness, uncertainty |
 | `spatial_state` | Monitor layout, cursor position, active window |
 
-### Actions — Control the PC
+### Active Waiting (NEW)
 
 | Tool | What It Does |
 |---|---|
-| `act` | **DIRECT.** click, double_click, type, key, scroll, focus, move_mouse. Supports `target="button name"` for smart coordinate resolution |
-| `do_action` | Natural language instruction via SAFE loop (precheck → execute → verify) |
-| `operate_cycle` | Full human-like cycle: orient → locate → focus → read → act → verify. Handles modals automatically |
+| `watch_and_notify` | Wait for screen event without consuming tokens. Conditions: `page_loaded`, `text_appeared`, `build_passed`, `idle`, `element_visible`, and more |
+| `monitor_until` | Like `watch_and_notify` but for long tasks (builds, uploads, deployments) — up to 10 minutes |
+
+### Session Memory (NEW)
+
+| Tool | What It Does |
+|---|---|
+| `get_session_memory` | Load context from previous session — monitor layout, active windows, recent events (~300 tokens, no images) |
+| `save_session_memory` | Save current context before ending session — persists to `~/.iluminaty/memory/` |
+
+### Actions
+
+| Tool | What It Does |
+|---|---|
+| `act` | click, double_click, type, key, scroll, move_mouse. Supports `target="button name"` |
+| `do_action` | Natural language instruction with SAFE loop |
+| `operate_cycle` | Full human-like cycle: orient → locate → focus → read → act → verify |
 | `drag_screen` | Drag from point A to point B |
-| `set_operating_mode` | SAFE (guardrails on) / RAW (no guardrails) / HYBRID |
 
 ### Windows
 
 | Tool | What It Does |
 |---|---|
-| `list_windows` | All visible windows with handle, title, position, monitor_id |
-| `focus_window` | Bring window to front by title or handle |
+| `list_windows` | All visible windows with position and monitor_id |
+| `focus_window` | Bring window to front |
 | `window_minimize` / `window_maximize` / `window_close` | Window management |
-| `move_window` | Reposition/resize a window |
+| `move_window` | Reposition and resize |
 
 ### Browser
 
 | Tool | What It Does |
 |---|---|
-| `browser_navigate` | Navigate to URL — preserves user context, opens new tab by default |
-| `browser_tabs` | List all open tabs with titles and URLs |
+| `browser_navigate` | Navigate to URL |
+| `browser_tabs` | List all open tabs |
 
 ### System
 
 | Tool | What It Does |
 |---|---|
-| `run_command` | Execute shell command, returns stdout/stderr |
-| `read_file` | Read a file (sandboxed) |
-| `write_file` | Write a file (sandboxed, auto-backup) |
-| `get_clipboard` | Read clipboard content |
-
-### Status
-
-| Tool | What It Does |
-|---|---|
-| `screen_status` | Buffer stats, FPS, capture state, active window |
-| `agent_status` | Actions enabled, safety state, autonomy level |
-| `get_audio_level` | Current audio level + speech detection |
-| `os_dialog_status` / `os_dialog_resolve` | Detect and resolve blocking system dialogs |
+| `run_command` | Execute shell command (sandboxed) |
+| `read_file` / `write_file` | File I/O (sandboxed, auto-backup) |
+| `get_clipboard` | Read clipboard |
+| `screen_status` | Buffer stats, FPS, capture state |
+| `os_dialog_status` / `os_dialog_resolve` | Detect and resolve system dialogs |
 
 ---
 
-## Smart Locate — Click Without Guessing
+## Smart Locate
 
-When the AI calls `act(action="click", target="Save button")`, ILUMINATY resolves exact coordinates automatically:
+When the AI calls `act(action="click", target="Save button")`, ILUMINATY resolves exact coordinates:
 
-1. **OCR blocks** (pre-computed by perception, ~0ms) — finds text elements with exact bounding boxes
-2. **UIAutomation tree** (native COM, ~5ms when available) — finds named elements from OS accessibility
-3. **Returns not_found** if neither source has the element — AI falls back to visual estimation
+1. **OCR cache** (~0ms) — pre-computed text blocks with exact bounding boxes
+2. **UIAutomation tree** (~5ms) — native OS accessibility API
+3. Returns `not_found` if element not visible — AI falls back to visual estimation
 
-Typical latency with warm cache: **3-34ms**. No guessing needed for any element that has visible text.
+Warm cache latency: **3-34ms**. Works for any element with visible text.
 
 ---
 
@@ -190,22 +221,75 @@ Typical latency with warm cache: **3-34ms**. No guessing needed for any element 
 
 ```
 Screen (1-3 monitors)
-    ↓ 3fps
-[MultiMonitorCapture] → [RingBuffer] (RAM only, zero disk)
-    ↓                        ↓
+    |
+    v  3fps
+[MultiMonitorCapture] --> [RingBuffer] (RAM only, zero disk)
+    |                          |
+    v                          v
 [IPA v3 Bridge]         [Perception Engine]
   change_mask              scene state
-  motion events            OCR (DirectML GPU)
+  motion events            OCR subprocess (isolated DML)
   gate events              WorldState
-    ↓                        ↓
-              [FastAPI Server :8420]
-                      ↓
-              [MCP Server stdio]
-                      ↓
-            Claude / GPT-4o / Any AI
+    |                          |
+    +----------+---------------+
+               |
+         [FastAPI :8420]
+               |
+         [MCP stdio]
+               |
+      Claude / GPT-4o / Any AI
 ```
 
-**IPA v3** runs separately alongside the main perception engine. It maintains a temporal buffer of compressed frames (I/P-frame codec) and detects significant visual events (gate events) for the AI to react to.
+**OCR isolation**: RapidOCR runs in a fully isolated subprocess (no shared GIL). Main server process never loads ONNX/DirectML. Prevents segfaults on multi-monitor setups.
+
+---
+
+## Visual Memory
+
+ILUMINATY persists session context between AI sessions:
+
+```python
+# At session start — Claude knows what you were doing
+get_session_memory()
+# Returns: monitor layout, last active window, recent events, OCR snippets
+
+# At session end — saves context for next time
+save_session_memory()
+# Saves: ~/.iluminaty/memory/session_TIMESTAMP.json.gz (~10-50KB)
+```
+
+Also auto-saves on server shutdown.
+
+---
+
+## Domain Packs
+
+Adapt ILUMINATY to specific apps with `.toml` config files:
+
+```toml
+[pack]
+name = "tradingview"
+
+[detection]
+url_keywords = ["tradingview.com"]
+text_keywords = ["btcusd", "rsi", "macd"]
+
+[[watch_conditions]]
+name = "price_above"
+type = "ocr_number_above"
+```
+
+Example packs: `domain_packs/tradingview.toml.example`, `domain_packs/vscode.toml.example`
+
+---
+
+## Requirements
+
+- **OS**: Windows 10/11 (primary), macOS/Linux (partial)
+- **Python**: 3.10+
+- **RAM**: 4GB+ (8GB recommended for 3 monitors)
+- **GPU**: Optional — ONNX DirectML for faster OCR
+- **Network**: None — fully local
 
 ---
 
@@ -213,27 +297,19 @@ Screen (1-3 monitors)
 
 | Feature | Free | Pro |
 |---|---|---|
-| `see_now`, `see_screen`, `what_changed` | ✅ | ✅ |
-| `get_spatial_context`, `perception`, `spatial_state` | ✅ | ✅ |
-| `act`, `drag_screen`, window management | ✅ | ✅ |
-| `do_action`, `operate_cycle` | — | ✅ |
-| `browser_navigate`, `browser_tabs` | — | ✅ |
-| `run_command`, `read_file`, `write_file` | — | ✅ |
-| `list_windows`, `focus_window` | — | ✅ |
-| `os_dialog_*`, `agent_status` | — | ✅ |
-
----
-
-## Requirements
-
-- Python 3.10+
-- Windows (primary), macOS/Linux (partial)
-- 4GB+ RAM (8GB recommended for multi-monitor)
-- NVIDIA GPU recommended for OCR acceleration (ONNX DirectML)
-- `numpy`, `pillow`, `imagehash`, `mss`, `fastapi`, `uvicorn`
+| `see_now`, `see_screen`, `what_changed` | YES | YES |
+| `get_spatial_context`, `perception` | YES | YES |
+| `act`, window management | YES | YES |
+| `watch_and_notify`, `monitor_until` | YES | YES |
+| `get_session_memory`, `save_session_memory` | YES | YES |
+| `do_action`, `operate_cycle` | — | YES |
+| `browser_navigate`, `run_command` | — | YES |
+| `read_file`, `write_file` | — | YES |
 
 ---
 
 ## License
 
 MIT — free for personal and commercial use.
+
+Built by [@sgodoy90](https://github.com/sgodoy90)
