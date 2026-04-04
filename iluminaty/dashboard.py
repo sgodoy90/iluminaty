@@ -69,7 +69,7 @@ a { color:var(--accent); text-decoration:none; }
   <div class="logo">
     <span class="dot" id="status-dot"></span>
     ILUMINATY
-    <span style="font-size:11px;color:var(--muted);font-weight:400">v1.0 &middot; IPA v2.1</span>
+    <span style="font-size:11px;color:var(--muted);font-weight:400">v1.0 &middot; IPA v3</span>
   </div>
   <div class="stats-bar">
     <span>FPS <span class="val" id="h-fps">--</span></span>
@@ -220,11 +220,11 @@ async function pollPerception() {
 async function pollSystem() {
   const b = await get("/buffer/stats");
   if (b) {
-    setText("s-buffer", (b.slot_count||0) + "/" + (b.max_slots||0));
-    setText("s-fps", (b.capture_fps||0).toFixed(1));
-    setText("h-fps", (b.capture_fps||0).toFixed(1));
+    setText("s-buffer", (b.slots_used||0) + "/" + (b.slots_max||0));
+    setText("s-fps", (b.current_fps||b.capture_fps||0).toFixed(1));
+    setText("h-fps", (b.current_fps||b.capture_fps||0).toFixed(1));
     setText("h-ram", ((b.memory_mb||0)).toFixed(1) + "MB");
-    setText("h-frames", b.total_frames || 0);
+    setText("h-frames", b.total_frames_captured||b.total_frames || 0);
   }
   const p = await get("/perception/state");
   if (p?.visual) {
