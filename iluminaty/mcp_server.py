@@ -30,8 +30,8 @@ import os
 
 # ILUMINATY API base URL - configurable via env var
 API_BASE = os.environ.get("ILUMINATY_API_URL", "http://127.0.0.1:8420")
-# Optional API key when ILUMINATY server auth is enabled
-API_KEY = os.environ.get("ILUMINATY_API_KEY", "")
+# API key for server auth — read from ILUMINATY_KEY (primary) or ILUMINATY_API_KEY (legacy)
+API_KEY = os.environ.get("ILUMINATY_KEY") or os.environ.get("ILUMINATY_API_KEY", "")
 try:
     API_TIMEOUT_S = float(os.environ.get("ILUMINATY_MCP_TIMEOUT_S", "12"))
 except Exception:
