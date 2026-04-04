@@ -140,7 +140,7 @@ class SessionMemory:
             lines.append("")
             lines.append("Monitor layout:")
             for m in self.monitors:
-                active_mark = " ← was active" if m.get("id") == self.active_monitor else ""
+                active_mark = " [active]" if m.get("id") == self.active_monitor else ""
                 lines.append(f"  M{m.get('id')} [{m.get('zone','?')}] {m.get('width')}x{m.get('height')}{active_mark}")
 
         # Recent windows
@@ -160,13 +160,17 @@ class SessionMemory:
             lines.append("")
             lines.append("Last events before session end:")
             for evt in self.gate_events[-5:]:
-                lines.append(f"  • {evt.get('description', '')} ({evt.get('event_type', '')})")
+                lines.append(f"  - {evt.get('description', '')} ({evt.get('event_type', '')})")
 
         lines.append("")
         lines.append("Note: This is the visual context from the previous session.")
         lines.append("Call get_spatial_context for current state.")
 
-        return "\n".join(lines)
+        result = "\n".join(lines)
+        # Sanitize to ASCII-safe — gate event descriptions may contain Unicode arrows
+        # that crash Windows cp1252 terminals and some JSON consumers
+        result = result.encode("ascii", errors="replace").decode("ascii")
+        return result
 
     def age_hours(self) -> float:
         return (time.time() - self.saved_at) / 3600

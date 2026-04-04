@@ -76,7 +76,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=0,
         help="Monitor mode: 0=auto multi-monitor, N=single monitor N (default: 0)",
     )
-    parser.add_argument("--api-key", type=str, default=None, help="API key for auth (optional)")
+    parser.add_argument(
+        "--api-key",
+        type=str,
+        default=os.environ.get("ILUMINATY_KEY"),  # env var fallback
+        help="API key for auth. Falls back to ILUMINATY_KEY env var (optional)",
+    )
     parser.add_argument("--no-adaptive", action="store_true", help="Disable adaptive FPS")
     parser.add_argument("--no-smart-quality", action="store_true", help="Disable smart quality adjustment")
     parser.add_argument(
@@ -178,6 +183,7 @@ def main():
         buffer=buffer,
         capture=capture,
         api_key=args.api_key,
+        iluminaty_key=args.api_key,   # same key drives both auth + license
         audio_buffer=audio_buffer,
         audio_capture=audio_capture,
         enable_actions=args.actions,
