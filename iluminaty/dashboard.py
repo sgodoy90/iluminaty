@@ -145,14 +145,16 @@ a { color:var(--accent); text-decoration:none; }
 
 <script>
 const API = location.origin;
+const TOKEN = new URLSearchParams(location.search).get('token') || '';
+const HEADERS = TOKEN ? {'X-API-Key': TOKEN} : {};
 let pollId = null;
 let visionId = null;
 
 async function get(path) {
-  try { const r = await fetch(API + path); return r.ok ? await r.json() : null; } catch { return null; }
+  try { const r = await fetch(API + path, {headers: HEADERS}); return r.ok ? await r.json() : null; } catch { return null; }
 }
 async function post(path, body) {
-  try { const r = await fetch(API + path, {method:'POST',headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined}); return r.ok ? await r.json() : null; } catch { return null; }
+  try { const r = await fetch(API + path, {method:'POST',headers:{...HEADERS,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined}); return r.ok ? await r.json() : null; } catch { return null; }
 }
 
 function $(id) { return document.getElementById(id); }
