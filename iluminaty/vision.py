@@ -389,6 +389,21 @@ def _get_active_window_windows() -> dict:
             import psutil
             proc = psutil.Process(pid.value)
             app_name = (proc.name() or "unknown").replace(".exe", "")
+        except ImportError:
+            # psutil not installed — use Windows API directly
+            try:
+                import ctypes
+                PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+                hproc = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid.value)
+                if hproc:
+                    buf2 = ctypes.create_unicode_buffer(260)
+                    size = ctypes.wintypes.DWORD(260)
+                    if ctypes.windll.kernel32.QueryFullProcessImageNameW(hproc, 0, buf2, ctypes.byref(size)):
+                        import os as _os
+                        app_name = _os.path.splitext(_os.path.basename(buf2.value))[0]
+                    ctypes.windll.kernel32.CloseHandle(hproc)
+            except Exception:
+                pass
         except Exception as e:
             logger.debug("Could not resolve active process name from pid %s: %s", pid.value, e)
 

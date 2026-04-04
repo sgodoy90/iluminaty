@@ -255,12 +255,24 @@ class WorldStateEngine:
     ) -> dict:
         now_ms = int(time.time() * 1000)
         task_phase = self._task_phase_from_scene(scene_state, dominant_direction)
-        # Sanitize app_name — strip full paths to just the exe/app name
-        raw_app = (app_name or "unknown").strip()
         import os as _os
-        app = _os.path.splitext(_os.path.basename(raw_app))[0] if (_os.sep in raw_app or "/" in raw_app) else raw_app
+        # Sanitize app_name — strip full exe paths to basename
+        raw_app = (app_name or "").strip()
+        if _os.sep in raw_app or "/" in raw_app:
+            raw_app = _os.path.splitext(_os.path.basename(raw_app))[0]
         title = (window_title or "").strip()
-        active_surface = f"{app} :: {title[:120]}" if title and title != raw_app else app
+        # Fallback: extract app name from window title when app_name is missing
+        # e.g. "sgodoy90/iluminaty - Brave" -> "Brave"
+        # e.g. "C:\Windows\system32\cmd.exe" -> "cmd"
+        if not raw_app or raw_app.lower() in ("unknown", ""):
+            if title:
+                # Try last segment after " - "
+                if " - " in title:
+                    raw_app = title.split(" - ")[-1].strip()[:30]
+                else:
+                    raw_app = title[:30]
+        app = raw_app or "unknown"
+        active_surface = f"{app} :: {title[:80]}" if title and title.lower() != app.lower() else app
 
         attention_targets = [
             f"{_zone_label(z.get('row', 0), z.get('col', 0))}:{z.get('intensity', 0):.2f}"
