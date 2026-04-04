@@ -255,9 +255,12 @@ class WorldStateEngine:
     ) -> dict:
         now_ms = int(time.time() * 1000)
         task_phase = self._task_phase_from_scene(scene_state, dominant_direction)
-        app = app_name or "unknown"
+        # Sanitize app_name — strip full paths to just the exe/app name
+        raw_app = (app_name or "unknown").strip()
+        import os as _os
+        app = _os.path.splitext(_os.path.basename(raw_app))[0] if (_os.sep in raw_app or "/" in raw_app) else raw_app
         title = (window_title or "").strip()
-        active_surface = f"{app} :: {title[:120]}" if title else app
+        active_surface = f"{app} :: {title[:120]}" if title and title != raw_app else app
 
         attention_targets = [
             f"{_zone_label(z.get('row', 0), z.get('col', 0))}:{z.get('intensity', 0):.2f}"
