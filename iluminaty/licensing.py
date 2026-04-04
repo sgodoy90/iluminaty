@@ -38,6 +38,7 @@ CACHE_TTL_S = 86400  # 24 hours
 
 # Dev/test keys (always Pro)
 DEV_KEYS = {
+    "ILUM-dev-local",
     "ILUM-dev-local-test",
 }
 

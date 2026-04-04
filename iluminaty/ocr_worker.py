@@ -1,155 +1,271 @@
 """
-ILUMINATY - OCR Worker
-========================
-Runs RapidOCR in a background thread to avoid blocking the main event loop.
+ILUMINATY - OCR Worker (subprocess isolation)
+===============================================
+Runs RapidOCR in a completely separate Python process.
 
-Uses threading (not multiprocessing) because:
-1. DirectML/GPU releases the GIL during GPU computation
-2. spawn-based multiprocessing has issues in uvicorn server context on Windows
-3. Thread-based approach is simpler and works well when GPU is available
+Why subprocess instead of thread:
+- Thread: RapidOCR/ONNX CPU inference blocks the GIL → FastAPI event loop
+  stalls → /health takes 2000ms instead of <10ms. Unacceptable.
+- Subprocess (spawn): totally isolated GIL. Main process never blocks.
+  Communication via multiprocessing.Queue. Works on Windows with uvicorn.
 
-For CPU-only ONNX: the worker thread still blocks the GIL during inference,
-but the perception loop runs at low frequency (10-15s) so impact is minimal.
+Architecture:
+  Main process (FastAPI/uvicorn)
+      ↓ enqueue(frame_bytes, hash, monitor_id) → mp.Queue (non-blocking)
+  OCR subprocess (isolated Python)
+      ↓ RapidOCR inference (may take 50-300ms, blocks its own GIL)
+      ↓ result → mp.Queue back to main
+  Main process
+      ↓ get_result(monitor_id) → latest cached result (instant)
+
+If subprocess crashes or is unavailable: graceful degradation,
+OCREngine falls back to Tesseract or returns ocr_pending.
 """
 from __future__ import annotations
 
 import io
 import logging
+import multiprocessing as mp
+import os
 import queue
-import threading
 import time
 from typing import Optional
 
 log = logging.getLogger("iluminaty.ocr_worker")
 
+# Max frames queued — drop oldest if subprocess is slow
+_QUEUE_MAXSIZE = 4
+
+
+# ── Subprocess entry point ─────────────────────────────────────────────────────
+
+def _ocr_subprocess_main(req_q: mp.Queue, res_q: mp.Queue) -> None:
+    """Runs in isolated subprocess. Never imported in the main process."""
+    import io as _io
+    import time as _time
+
+    try:
+        from rapidocr import RapidOCR
+        ocr = RapidOCR()
+    except Exception as e:
+        res_q.put({"type": "init_error", "error": str(e)})
+        return
+
+    res_q.put({"type": "ready"})
+
+    import numpy as np
+    from PIL import Image
+
+    hash_cache: dict[str, dict] = {}
+
+    while True:
+        try:
+            item = req_q.get(timeout=5.0)
+        except Exception:
+            continue
+
+        if item is None:
+            break   # shutdown signal
+
+        frame_bytes, frame_hash, monitor_id = item
+
+        # Cache hit — no inference needed
+        if frame_hash and frame_hash in hash_cache:
+            cached = hash_cache[frame_hash]
+            res_q.put({
+                "type": "result",
+                "monitor_id": monitor_id,
+                "text": cached["text"],
+                "blocks": cached["blocks"],
+                "from_cache": True,
+                "ts": _time.time(),
+            })
+            continue
+
+        # Run inference
+        try:
+            img = Image.open(_io.BytesIO(frame_bytes)).convert("RGB")
+            arr = np.array(img)
+            result = ocr(arr)
+
+            blocks, parts = [], []
+            if result is not None and result.txts is not None:
+                for box, txt, score in zip(result.boxes, result.txts, result.scores):
+                    if score < 0.3:
+                        continue
+                    xs = [p[0] for p in box]
+                    ys = [p[1] for p in box]
+                    blocks.append({
+                        "text": txt,
+                        "x": int(min(xs)), "y": int(min(ys)),
+                        "w": int(max(xs)) - int(min(xs)),
+                        "h": int(max(ys)) - int(min(ys)),
+                        "confidence": round(float(score) * 100, 1),
+                    })
+                    parts.append(txt)
+
+            text = "\n".join(parts)
+
+            if frame_hash:
+                hash_cache[frame_hash] = {"text": text, "blocks": blocks}
+                if len(hash_cache) > 30:
+                    del hash_cache[next(iter(hash_cache))]
+
+            res_q.put({
+                "type": "result",
+                "monitor_id": monitor_id,
+                "text": text,
+                "blocks": blocks,
+                "from_cache": False,
+                "ts": _time.time(),
+            })
+
+        except Exception as e:
+            res_q.put({"type": "error", "monitor_id": monitor_id, "error": str(e)})
+
+
+# ── OCRWorker — main process side ──────────────────────────────────────────────
 
 class OCRWorker:
-    """Manages OCR inference in a background thread.
+    """Manages OCR inference in an isolated subprocess.
 
-    Enqueue frames non-blocking. Read results when ready.
-    Falls back gracefully if RapidOCR is unavailable.
+    Main process only enqueues frames and reads cached results.
+    All RapidOCR/ONNX code lives in the subprocess — GIL never blocks here.
     """
 
     def __init__(self):
-        self._request_q: queue.Queue = queue.Queue(maxsize=6)
-        self._lock = threading.Lock()
+        self._req_q:  Optional[mp.Queue] = None
+        self._res_q:  Optional[mp.Queue] = None
+        self._proc:   Optional[mp.Process] = None
         self._latest: dict[int, dict] = {}
-        self._thread: Optional[threading.Thread] = None
-        self._running = False
         self._available = False
-        self._ocr = None
+        self._result_drain_running = False
+
+    # ── Lifecycle ──────────────────────────────────────────────────────────────
 
     def start(self) -> bool:
-        """Start the OCR worker thread. Returns True if RapidOCR is available."""
+        """Launch OCR subprocess. Returns True when subprocess is ready."""
         try:
-            from rapidocr import RapidOCR
-            self._ocr = RapidOCR()
-            self._available = True
-        except ImportError:
-            log.warning("RapidOCR not available — OCR worker disabled")
+            # Use 'spawn' explicitly — required on Windows, avoids fork issues
+            ctx = mp.get_context("spawn")
+            self._req_q = ctx.Queue(maxsize=_QUEUE_MAXSIZE)
+            self._res_q = ctx.Queue(maxsize=_QUEUE_MAXSIZE * 2)
+
+            self._proc = ctx.Process(
+                target=_ocr_subprocess_main,
+                args=(self._req_q, self._res_q),
+                daemon=True,
+                name="iluminaty-ocr",
+            )
+            self._proc.start()
+
+            # Wait for ready signal (max 30s — model load time)
+            deadline = time.time() + 30
+            while time.time() < deadline:
+                try:
+                    msg = self._res_q.get(timeout=1.0)
+                    if msg.get("type") == "ready":
+                        self._available = True
+                        log.info("OCR subprocess ready (pid=%d)", self._proc.pid)
+                        self._start_drain_thread()
+                        return True
+                    elif msg.get("type") == "init_error":
+                        log.warning("OCR subprocess init failed: %s", msg.get("error"))
+                        return False
+                except Exception:
+                    continue
+
+            log.warning("OCR subprocess did not become ready in 30s")
             return False
 
-        self._running = True
-        self._thread = threading.Thread(
-            target=self._worker_loop,
-            daemon=True,
-            name="ocr-worker",
-        )
-        self._thread.start()
-        log.info("OCR worker thread started")
-        return True
+        except Exception as e:
+            log.warning("OCR subprocess start failed: %s", e)
+            return False
 
     def stop(self) -> None:
-        self._running = False
+        self._available = False
         try:
-            self._request_q.put_nowait(None)
+            if self._req_q:
+                self._req_q.put_nowait(None)
+        except Exception:
+            pass
+        try:
+            if self._proc and self._proc.is_alive():
+                self._proc.join(timeout=3)
+                if self._proc.is_alive():
+                    self._proc.kill()
         except Exception:
             pass
 
+    # ── Public API ─────────────────────────────────────────────────────────────
+
     def enqueue(self, frame_bytes: bytes, frame_hash: Optional[str],
                 monitor_id: int) -> bool:
-        """Queue a frame for OCR. Non-blocking — drops if queue is full."""
-        if not self._available:
+        """Queue a frame for OCR. Non-blocking — drops frame if queue is full."""
+        if not self._available or self._req_q is None:
             return False
         try:
-            self._request_q.put_nowait((frame_bytes, frame_hash, monitor_id))
+            self._req_q.put_nowait((frame_bytes, frame_hash, monitor_id))
             return True
-        except queue.Full:
-            return False
+        except Exception:
+            return False   # queue full — drop frame, not a problem
 
     def get_result(self, monitor_id: int) -> Optional[dict]:
-        with self._lock:
-            return self._latest.get(monitor_id)
+        """Return latest OCR result for a monitor. Always instant."""
+        self._drain_results()
+        return self._latest.get(monitor_id)
 
     def get_all_results(self) -> dict[int, dict]:
-        with self._lock:
-            return dict(self._latest)
+        self._drain_results()
+        return dict(self._latest)
 
     @property
     def available(self) -> bool:
-        return self._available and self._running
+        if not self._available:
+            return False
+        # Check subprocess health
+        if self._proc and not self._proc.is_alive():
+            log.warning("OCR subprocess died — marking unavailable")
+            self._available = False
+            return False
+        return True
 
-    def _worker_loop(self) -> None:
-        import numpy as np
-        from PIL import Image
+    # ── Internal ───────────────────────────────────────────────────────────────
 
-        hash_cache: dict[str, dict] = {}
-
-        while self._running:
-            try:
-                item = self._request_q.get(timeout=2.0)
-                if item is None:
-                    break
-
-                frame_bytes, frame_hash, monitor_id = item
-
-                # Cache hit
-                if frame_hash and frame_hash in hash_cache:
-                    cached = hash_cache[frame_hash]
-                    with self._lock:
-                        self._latest[monitor_id] = {**cached, "from_cache": True, "ts": time.time()}
-                    continue
-
-                # Run OCR
+    def _drain_results(self) -> None:
+        """Pull all pending results from the subprocess queue. Non-blocking."""
+        if self._res_q is None:
+            return
+        try:
+            while True:
                 try:
-                    img = Image.open(io.BytesIO(frame_bytes)).convert("RGB")
-                    img_array = np.array(img)
-                    result = self._ocr(img_array)
+                    msg = self._res_q.get_nowait()
+                except Exception:
+                    break
+                if msg.get("type") == "result":
+                    mid = msg.get("monitor_id", 0)
+                    self._latest[mid] = {
+                        "text":       msg.get("text", ""),
+                        "blocks":     msg.get("blocks", []),
+                        "from_cache": msg.get("from_cache", False),
+                        "ts":         msg.get("ts", time.time()),
+                    }
+        except Exception:
+            pass
 
-                    blocks, text_parts = [], []
-                    if result is not None and result.txts is not None:
-                        for box, txt, score in zip(result.boxes, result.txts, result.scores):
-                            if score < 0.3:
-                                continue
-                            xs = [p[0] for p in box]
-                            ys = [p[1] for p in box]
-                            blocks.append({
-                                "text": txt,
-                                "x": int(min(xs)), "y": int(min(ys)),
-                                "w": int(max(xs)) - int(min(xs)),
-                                "h": int(max(ys)) - int(min(ys)),
-                                "confidence": round(float(score) * 100, 1),
-                            })
-                            text_parts.append(txt)
+    def _start_drain_thread(self) -> None:
+        """Background thread that continuously drains the result queue.
+        Keeps _latest fresh without requiring callers to drain manually.
+        """
+        import threading
 
-                    text = "\n".join(text_parts)
-                    entry = {"blocks": blocks, "text": text, "ts": time.time(), "from_cache": False}
+        def _drain_loop():
+            while self._available:
+                self._drain_results()
+                time.sleep(0.1)   # 10Hz drain — fresh enough for 3fps capture
 
-                    if frame_hash:
-                        hash_cache[frame_hash] = {"blocks": blocks, "text": text}
-                        if len(hash_cache) > 20:
-                            del hash_cache[next(iter(hash_cache))]
-
-                    with self._lock:
-                        self._latest[monitor_id] = entry
-
-                except Exception as e:
-                    log.debug("OCR worker inference failed: %s", e)
-
-            except queue.Empty:
-                continue
-            except Exception as e:
-                log.debug("OCR worker loop error: %s", e)
+        t = threading.Thread(target=_drain_loop, daemon=True, name="ocr-drain")
+        t.start()
 
 
 # ── Singleton ──────────────────────────────────────────────────────────────────
@@ -167,4 +283,3 @@ def init_ocr_worker() -> OCRWorker:
         _ocr_worker = OCRWorker()
         _ocr_worker.start()
     return _ocr_worker
-

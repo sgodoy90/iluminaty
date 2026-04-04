@@ -2004,16 +2004,25 @@ app.add_middleware(
 # ─── License Gate Middleware ───
 
 class LicenseGateMiddleware(BaseHTTPMiddleware):
-    """Blocks Pro-only endpoints for Free plan users."""
+    """Blocks Pro-only endpoints for Free plan users.
+
+    NOTE: uses cached singleton — no I/O per request.
+    License is validated once at startup in init_license().
+    """
     async def dispatch(self, request: StarletteRequest, call_next):
+        # Fast path: skip check for public/health endpoints
+        path = request.url.path
+        if path in ("/health", "/", "/docs", "/openapi.json", "/redoc"):
+            return await call_next(request)
+
         lic = get_license()
-        if lic and not lic.is_endpoint_allowed(request.url.path):
+        if lic and not lic.is_endpoint_allowed(path):
             return JSONResponse(
                 status_code=403,
                 content={
                     "error": "pro_required",
                     "message": "This endpoint requires ILUMINATY Pro ($29/mo).",
-                    "endpoint": request.url.path,
+                    "endpoint": path,
                     "current_plan": lic.plan.value,
                     "upgrade_url": "https://iluminaty.dev/#pricing",
                 },
