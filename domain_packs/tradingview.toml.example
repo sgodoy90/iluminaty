@@ -1,0 +1,140 @@
+# ILUMINATY Domain Pack — Public API v1
+#
+# A domain pack adapts ILUMINATY to a specific app or workflow.
+# Create a .toml file in ./domain_packs/ and ILUMINATY auto-loads it.
+#
+# Example: domain_packs/tradingview.toml
+#
+# See: https://iluminaty.dev/domain-packs
+
+[pack]
+name        = "tradingview"          # unique identifier (lowercase, no spaces)
+version     = "1.0.0"
+description = "TradingView chart analysis and order execution"
+author      = "your-name"
+homepage    = ""                     # optional
+
+# ── Detection ──────────────────────────────────────────────────────────────────
+# ILUMINATY auto-activates this pack when these signals are detected on screen.
+
+[detection]
+# Window title contains any of these (case-insensitive)
+window_keywords = ["tradingview", "trading view"]
+
+# App process name contains any of these
+app_keywords = ["chrome", "brave", "firefox", "edge"]
+
+# OCR text on screen contains any of these
+text_keywords = ["tradingview", "btcusd", "eurusd", "candlestick",
+                 "rsi", "macd", "bollinger", "buy", "sell", "pnl"]
+
+# URL contains (for browser-based apps)
+url_keywords = ["tradingview.com", "tv.ctrader.com"]
+
+# Minimum signals required to activate (prevents false positives)
+min_signals = 2
+
+# ── Context ────────────────────────────────────────────────────────────────────
+# What the AI should know about this domain.
+
+[context]
+# Injected into the AI's system context when this pack is active
+description = """
+TradingView is a charting and trading platform. The screen shows:
+- Price chart (candlestick or line) — main central area
+- Indicator values (RSI, MACD, etc.) — below the chart  
+- Order panel (buy/sell buttons) — right side or bottom
+- Watchlist (list of symbols) — left sidebar
+- Current price is shown prominently near the top of the chart
+
+When reading prices: format is like "94,250.50" or "94250.5" — both are valid.
+Colors: green = bullish/profit, red = bearish/loss.
+"""
+
+# OCR regions of interest (where to focus OCR for best results)
+# Coordinates are percentages of screen (0.0 = left/top, 1.0 = right/bottom)
+# [x1, y1, x2, y2]
+ocr_regions = [
+    [0.0, 0.0, 1.0, 0.15],   # top bar — current price, symbol name
+    [0.6, 0.7, 1.0, 1.0],    # order panel — buy/sell buttons
+    [0.0, 0.0, 0.2, 1.0],    # left sidebar — watchlist
+]
+
+# ── State detection ─────────────────────────────────────────────────────────────
+# Text patterns that indicate specific app states.
+# Used by watch_and_notify and monitor_until.
+
+[states]
+order_filled     = ["order filled", "position opened", "trade executed"]
+order_rejected   = ["rejected", "insufficient margin", "market closed"]
+chart_loaded     = ["loading", "tradingview"]   # appears when chart finishes loading
+alert_triggered  = ["alert:", "price alert"]
+connection_lost  = ["disconnected", "reconnecting", "no connection"]
+
+# ── Actions ────────────────────────────────────────────────────────────────────
+# Named actions specific to this domain.
+# These become available as act(action="domain:action_name").
+
+[[actions]]
+name        = "place_buy_order"
+description = "Click the Buy button in the order panel"
+find        = "Buy"                   # smart_locate target
+role        = "button"
+confirm_with = "order_filled"        # wait for this state after action
+
+[[actions]]
+name        = "place_sell_order"
+description = "Click the Sell button in the order panel"
+find        = "Sell"
+role        = "button"
+confirm_with = "order_filled"
+
+[[actions]]
+name        = "add_to_watchlist"
+description = "Add current symbol to watchlist"
+keys        = "shift+a"              # keyboard shortcut instead of click
+
+[[actions]]
+name        = "take_screenshot_chart"
+description = "Export chart as image"
+keys        = "alt+s"
+
+# ── Watch conditions ───────────────────────────────────────────────────────────
+# Custom conditions for watch_and_notify / monitor_until.
+# Extend the built-in conditions with domain-specific ones.
+
+[[watch_conditions]]
+name         = "price_above"
+description  = "Notify when price rises above a threshold"
+# The AI passes: monitor_until(condition="domain:price_above", text="95000")
+# ILUMINATY extracts the number from OCR and compares
+type         = "ocr_number_above"
+ocr_region   = [0.0, 0.0, 1.0, 0.15]   # where to look for the price
+
+[[watch_conditions]]
+name         = "price_below"
+description  = "Notify when price falls below a threshold"
+type         = "ocr_number_below"
+ocr_region   = [0.0, 0.0, 1.0, 0.15]
+
+[[watch_conditions]]
+name         = "alert_fired"
+description  = "Notify when a TradingView price alert fires"
+type         = "text_appeared"
+text_match   = ["alert:", "price alert", "notification"]
+
+# ── Staleness policy ───────────────────────────────────────────────────────────
+# How fresh the context needs to be before the AI acts.
+# Trading requires very fresh data — tighter thresholds.
+
+[staleness]
+safe_ms   = 800    # SAFE mode: max 800ms stale before blocking action
+hybrid_ms = 600    # HYBRID mode
+raw_ms    = 2000   # RAW mode
+
+# ── Token hints ────────────────────────────────────────────────────────────────
+# Suggest which vision mode to use for this domain.
+
+[tokens]
+recommended_mode = "low_res"   # "text_only" | "low_res" | "medium_res" | "full_res"
+reason = "Charts require visual analysis but medium_res is sufficient"

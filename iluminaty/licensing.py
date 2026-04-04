@@ -62,7 +62,7 @@ UNREGISTERED_MCP_TOOLS = {
 
 # Free (registered): full perception + basic act
 FREE_MCP_TOOLS = UNREGISTERED_MCP_TOOLS | {
-    "act", "what_changed",
+    "act", "what_changed", "watch_and_notify", "monitor_until", "get_session_memory", "save_session_memory",
     "see_changes", "see_monitor",
  "vision_query",
     "set_operating_mode",

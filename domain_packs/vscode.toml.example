@@ -1,0 +1,96 @@
+[pack]
+name        = "vscode"
+version     = "1.0.0"
+description = "VS Code development workflow"
+author      = "iluminaty-community"
+
+[detection]
+window_keywords = ["visual studio code", "vscode", "code - oss"]
+app_keywords    = ["code", "code.exe", "code-insiders"]
+text_keywords   = ["explorer", "source control", "extensions", "terminal",
+                   "problems", "output", "debug console", "git"]
+min_signals     = 2
+
+[context]
+description = """
+VS Code is a code editor. Layout:
+- File explorer (left sidebar): project files and folders
+- Editor (center): open files with syntax highlighting  
+- Terminal (bottom panel): command line, build output
+- Problems panel (bottom): errors and warnings
+- Source Control (left): git status, staged changes
+- Status bar (very bottom): branch name, errors count, encoding
+
+Current file and line number shown in status bar bottom-left.
+Error count shown as red X in status bar.
+"""
+
+ocr_regions = [
+    [0.0, 0.9, 1.0, 1.0],    # status bar — branch, errors, file info
+    [0.0, 0.0, 0.2, 1.0],    # left sidebar — file explorer
+    [0.2, 0.7, 1.0, 1.0],    # bottom panel — terminal output
+]
+
+[states]
+build_passed    = ["terminal process exited with exit code: 0",
+                   "✓", "passed", "compiled successfully", "build succeeded",
+                   "all tests passed", "0 errors", "✔"]
+build_failed    = ["error ts", "compilationerror", "build failed", "failed to compile",
+                   "exit code: 1", "❌", "failed", "error:", "× "]
+tests_running   = ["running tests", "test suites", "test files"]
+git_clean       = ["nothing to commit", "your branch is up to date"]
+git_dirty       = ["modified:", "untracked files:", "changes to be committed"]
+debug_active    = ["debug console", "pause on caught exceptions", "call stack"]
+
+[[actions]]
+name        = "save_file"
+description = "Save current file"
+keys        = "ctrl+s"
+
+[[actions]]
+name        = "open_terminal"
+description = "Open integrated terminal"
+keys        = "ctrl+grave"
+
+[[actions]]
+name        = "run_tests"
+description = "Run test suite (npm test / pytest / etc)"
+keys        = "ctrl+shift+p"
+# After pressing, type the command:
+# Additional handling needed — domain pack v2 will support multi-step actions
+
+[[actions]]
+name        = "git_commit"
+description = "Open source control and commit"
+keys        = "ctrl+shift+g"
+
+[[actions]]
+name        = "format_document"
+description = "Format current document"
+keys        = "shift+alt+f"
+
+[[actions]]
+name        = "go_to_definition"
+description = "Go to symbol definition"
+keys        = "f12"
+
+[[watch_conditions]]
+name        = "terminal_prompt"
+description = "Terminal finished running — shows prompt again"
+type        = "text_appeared"
+text_match  = ["$", "❯", ">", "PS ", ">>>"]
+
+[[watch_conditions]]
+name        = "error_count_zero"
+description = "All errors resolved"
+type        = "text_appeared"
+text_match  = ["0 errors", "✓ 0"]
+
+[staleness]
+safe_ms   = 1500
+hybrid_ms = 1200
+raw_ms    = 4000
+
+[tokens]
+recommended_mode = "text_only"
+reason = "Code editors are mostly text — OCR is sufficient, saves tokens"

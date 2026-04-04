@@ -69,6 +69,8 @@ from .licensing import LicenseManager, get_license, init_license
 from .grounding import GroundingEngine
 from .smart_locate import SmartLocateEngine, LocateResult
 from .ocr_worker import OCRWorker, init_ocr_worker, get_ocr_worker
+from .watch_engine import WatchEngine, WatchResult
+from .visual_memory import VisualMemory, SessionMemory
 from .ui_semantics import UISemanticsEngine
 from .host_telemetry import HostTelemetry
 from .os_surface import OSSurfaceSignals
@@ -138,6 +140,8 @@ class _ServerState:
         self.grounding: Optional[GroundingEngine] = None
         self.smart_locator: Optional[SmartLocateEngine] = None
         self.ocr_worker: Optional[OCRWorker] = None
+        self.watch_engine: Optional[WatchEngine] = None
+        self.visual_memory: Optional[VisualMemory] = None
         self.ui_semantics: Optional[UISemanticsEngine] = None
         self.host_telemetry: Optional[HostTelemetry] = None
         self.os_surface: Optional[OSSurfaceSignals] = None
@@ -2528,7 +2532,38 @@ def init_server(
             logger.warning("OCR worker init failed: %s", _e)
             _state.ocr_worker = None
 
-        # Capa 3: App Control
+        # Watch Engine — active monitoring without token consumption
+        def _ocr_text_for_watch(monitor_id=None):
+            """Fast OCR text for watch conditions — uses perception cache."""
+            try:
+                if _state.perception and _state.monitor_mgr:
+                    for mon in _state.monitor_mgr.monitors:
+                        if monitor_id is None or mon.id == monitor_id:
+                            ms = _state.perception._get_monitor_state(mon.id)
+                            if ms and ms.last_ocr_text:
+                                return ms.last_ocr_text
+            except Exception:
+                pass
+            return ""
+
+        def _element_found_for_watch(query):
+            """Check if element is visible via smart_locate cache."""
+            try:
+                if _state.smart_locator:
+                    result = _state.smart_locator.locate(query)
+                    return result is not None
+            except Exception:
+                pass
+            return False
+
+        _state.watch_engine = WatchEngine(
+            ipa_bridge=_state.ipa_bridge,
+            ocr_fn=_ocr_text_for_watch,
+            ui_tree_fn=_element_found_for_watch,
+        )
+
+        # Visual Memory — persist context between AI sessions
+        _state.visual_memory = VisualMemory()
         _state.vscode = VSCodeBridge()
         _state.terminal = TerminalManager()
         _state.git_ops = GitOps()
@@ -4331,6 +4366,160 @@ async def ipa_events(
 
     x_api_key: Optional[str] = Header(None),
 
+
+
+# ─── Watch Engine endpoints ───
+
+@app.post("/watch/notify")
+async def watch_and_notify(
+    condition: str = Query(..., description="Condition to watch for"),
+    timeout: float = Query(30.0),
+    text: Optional[str] = Query(None),
+    window_title: Optional[str] = Query(None),
+    element: Optional[str] = Query(None),
+    idle_seconds: float = Query(3.0),
+    monitor_id: Optional[int] = Query(None),
+    x_api_key: Optional[str] = Header(None),
+):
+    """Wait for a screen condition without consuming tokens.
+    Runs synchronously — returns when condition met or timeout expires.
+    """
+    _check_auth(x_api_key)
+    if not _state.watch_engine:
+        return {"triggered": False, "reason": "watch_engine_not_initialized"}
+
+    import asyncio
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(
+        None,
+        lambda: _state.watch_engine.wait(
+            condition=condition, timeout=timeout,
+            text=text, window_title=window_title,
+            element=element, idle_seconds=idle_seconds,
+            monitor_id=monitor_id,
+        )
+    )
+    return result.to_dict()
+
+
+@app.post("/watch/until")
+async def monitor_until(
+    condition: str = Query(...),
+    timeout: float = Query(120.0),
+    text: Optional[str] = Query(None),
+    element: Optional[str] = Query(None),
+    monitor_id: Optional[int] = Query(None),
+    x_api_key: Optional[str] = Header(None),
+):
+    """Alias for watch/notify with longer default timeout."""
+    _check_auth(x_api_key)
+    if not _state.watch_engine:
+        return {"triggered": False, "reason": "watch_engine_not_initialized"}
+    import asyncio
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(
+        None,
+        lambda: _state.watch_engine.wait(
+            condition=condition, timeout=timeout,
+            text=text, element=element, monitor_id=monitor_id,
+        )
+    )
+    return result.to_dict()
+
+
+# ─── Visual Memory endpoints ───
+
+@app.post("/memory/save")
+async def memory_save(x_api_key: Optional[str] = Header(None)):
+    """Save current session state to visual memory."""
+    _check_auth(x_api_key)
+    if not _state.visual_memory:
+        return {"saved": False, "reason": "visual_memory_not_initialized"}
+
+    # Collect state snapshot
+    state = {}
+    try:
+        spatial_data = {}
+        if _state.monitor_mgr:
+            from .smart_locate import SmartLocateEngine
+            # Reuse spatial context logic
+            spatial_data = {
+                "monitor_count":  _state.monitor_mgr.count,
+                "active_monitor_id": _state.monitor_mgr._active_monitor_id,
+                "monitors": [
+                    {"id": m.id, "zone": "?", "width": m.width, "height": m.height}
+                    for m in _state.monitor_mgr.monitors
+                ],
+            }
+            win_info = getattr(_state.perception, "_last_window_info", {}) if _state.perception else {}
+            if win_info:
+                spatial_data["active_window"] = win_info
+        state["spatial"] = spatial_data
+
+        if _state.context:
+            ctx = _state.context.get_state()
+            state["context"] = {"workflow": ctx.get("workflow"), "task_phase": "active"}
+
+        if _state.ipa_bridge:
+            events = _state.ipa_bridge.recent_events(seconds=1800)  # last 30min
+            state["ipa_events"] = [e.__dict__ for e in events]
+
+        if _state.perception and _state.monitor_mgr:
+            ocr_map = {}
+            for mon in _state.monitor_mgr.monitors:
+                ms = _state.perception._get_monitor_state(mon.id)
+                if ms and ms.last_ocr_text:
+                    ocr_map[mon.id] = ms.last_ocr_text[:500]
+            state["ocr_by_monitor"] = ocr_map
+
+        if _state.perception:
+            win_info = getattr(_state.perception, "_last_window_info", {})
+            state["window_history"] = [win_info.get("window_title", "")] if win_info else []
+
+    except Exception as e:
+        pass
+
+    ok = _state.visual_memory.save(state)
+    stats = _state.visual_memory.stats()
+    return {"saved": ok, "stats": stats}
+
+
+@app.get("/memory/load")
+async def memory_load(
+    max_age_hours: float = Query(48.0),
+    x_api_key: Optional[str] = Header(None),
+):
+    """Load most recent session memory."""
+    _check_auth(x_api_key)
+    if not _state.visual_memory:
+        return {"found": False}
+    mem = _state.visual_memory.load(max_age_hours)
+    if not mem:
+        return {"found": False}
+    return {"found": True, **mem.to_dict(), "session_prompt": mem.to_session_prompt()}
+
+
+@app.get("/memory/prompt")
+async def memory_prompt(
+    max_age_hours: float = Query(48.0),
+    x_api_key: Optional[str] = Header(None),
+):
+    """Get session context as a ready-to-inject system prompt."""
+    _check_auth(x_api_key)
+    if not _state.visual_memory:
+        return {"prompt": "", "found": False}
+    mem = _state.visual_memory.load(max_age_hours)
+    if not mem:
+        return {"prompt": "", "found": False}
+    return {"prompt": mem.to_session_prompt(), "found": True, "age_hours": round(mem.age_hours(), 1)}
+
+
+@app.get("/memory/stats")
+async def memory_stats(x_api_key: Optional[str] = Header(None)):
+    _check_auth(x_api_key)
+    if not _state.visual_memory:
+        return {}
+    return _state.visual_memory.stats()
 
 
 # ═══════════════════════════════════════════════════════════════

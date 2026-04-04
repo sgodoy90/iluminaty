@@ -759,6 +759,82 @@ TOOLS = [
             "properties": {"include_windows": {"type": "boolean", "default": True}},
         },
     },
+    # ── Watch Engine ──────────────────────────────────────────────────────────
+    {
+        "name": "watch_and_notify",
+        "description": (
+            "Wait for a screen condition WITHOUT consuming tokens while waiting. "
+            "The AI delegates monitoring to ILUMINATY and gets notified when done. "
+            "Use instead of polling loops.\n\n"
+            "Conditions: page_loaded, motion_stopped, motion_started, "
+            "text_appeared, text_disappeared, build_passed, build_failed, "
+            "idle, element_visible, window_opened\n\n"
+            "Examples:\n"
+            "  watch_and_notify('page_loaded', timeout=30)  — wait for page to load\n"
+            "  watch_and_notify('text_appeared', text='Upload complete', timeout=120)\n"
+            "  watch_and_notify('build_passed', timeout=60)  — wait for build"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "condition":    {"type": "string", "description": "Condition to watch for"},
+                "timeout":      {"type": "number",  "description": "Max seconds to wait (default 30)", "default": 30},
+                "text":         {"type": "string",  "description": "Text to look for (text_appeared/disappeared)"},
+                "element":      {"type": "string",  "description": "Element name to look for (element_visible)"},
+                "window_title": {"type": "string",  "description": "Window title (window_opened/closed)"},
+                "idle_seconds": {"type": "number",  "description": "Seconds of no activity for idle condition", "default": 3},
+                "monitor":      {"type": "integer", "description": "Monitor id to watch (default: active)"},
+            },
+            "required": ["condition"],
+        },
+    },
+    {
+        "name": "monitor_until",
+        "description": (
+            "Wait up to N seconds until a condition is met — for long-running tasks. "
+            "Use for uploads, downloads, builds, deployments. "
+            "Returns immediately when done, not after full timeout.\n\n"
+            "Same conditions as watch_and_notify but with longer default timeout (120s)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "condition": {"type": "string",  "description": "Condition to wait for"},
+                "timeout":   {"type": "number",  "description": "Max seconds (default 120)", "default": 120},
+                "text":      {"type": "string",  "description": "Text to look for"},
+                "element":   {"type": "string",  "description": "Element name to look for"},
+                "monitor":   {"type": "integer", "description": "Monitor id"},
+            },
+            "required": ["condition"],
+        },
+    },
+    # ── Visual Memory ──────────────────────────────────────────────────────────
+    {
+        "name": "get_session_memory",
+        "description": (
+            "Load visual context from the PREVIOUS session. "
+            "Call at the start of every session to know what the user was working on. "
+            "Returns: monitor layout, active windows, recent events, OCR context (~300 tokens). "
+            "No images — pure semantic context. "
+            "The AI resumes work with full context without the user re-explaining anything."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "max_age_hours": {"type": "number", "description": "Max session age to load (default 48h)", "default": 48},
+            },
+        },
+    },
+    {
+        "name": "save_session_memory",
+        "description": (
+            "Save current visual context for the NEXT session. "
+            "Call before ending a session. "
+            "Saves: monitor layout, active windows, recent IPA events, OCR snippets. "
+            "Storage: ~/.iluminaty/memory/ (gzipped JSON, ~10-50KB). No images stored."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
     # ── Computer Use ──────────────────────────────────────────────────────────
     {
         "name": "do_action",
@@ -2817,6 +2893,137 @@ def handle_what_changed(args: dict) -> list:
     return result_parts if result_parts else [{"type": "text", "text": f"No changes detected in last {seconds:.0f}s."}]
 
 
+# ─── Watch Engine handlers ────────────────────────────────────────────────────
+
+def handle_watch_and_notify(args: dict) -> list:
+    """Wait for a screen condition without consuming tokens.
+
+    The AI delegates monitoring to ILUMINATY and gets notified when done.
+    Frees the AI from polling loops — zero tokens while waiting.
+    """
+    condition = (args.get("condition") or "").strip()
+    if not condition:
+        return [{"type": "text", "text": "Error: condition is required. Available: page_loaded, motion_stopped, motion_started, text_appeared, text_disappeared, build_passed, build_failed, idle, element_visible, window_opened"}]
+
+    timeout = float(args.get("timeout", 30))
+    text    = args.get("text")
+    element = args.get("element")
+    window  = args.get("window_title")
+    idle_s  = float(args.get("idle_seconds", 3.0))
+    monitor = args.get("monitor")
+
+    path = f"/watch/notify?condition={urllib.parse.quote(condition)}&timeout={timeout}&idle_seconds={idle_s}"
+    if text:    path += f"&text={urllib.parse.quote(str(text))}"
+    if element: path += f"&element={urllib.parse.quote(str(element))}"
+    if window:  path += f"&window_title={urllib.parse.quote(str(window))}"
+    if monitor: path += f"&monitor_id={int(monitor)}"
+
+    try:
+        data = _api_post(path)
+    except Exception as e:
+        return [{"type": "text", "text": f"watch_and_notify failed: {e}"}]
+
+    triggered = data.get("triggered", False)
+    elapsed   = data.get("elapsed_s", 0)
+    reason    = data.get("reason", "")
+    evidence  = data.get("evidence", "")
+    timed_out = data.get("timed_out", False)
+
+    if timed_out:
+        return [{"type": "text", "text": f"TIMEOUT: Condition '{condition}' not met after {elapsed:.0f}s. {reason}"}]
+
+    lines = [
+        f"TRIGGERED: {condition}",
+        f"Time: {elapsed:.1f}s",
+        f"Reason: {reason}",
+    ]
+    if evidence:
+        lines.append(f"Evidence: {evidence[:200]}")
+
+    return [{"type": "text", "text": "\n".join(lines)}]
+
+
+def handle_monitor_until(args: dict) -> list:
+    """Wait up to N seconds until a condition is met — for long-running tasks.
+
+    Use this when the task may take minutes: uploads, builds, downloads.
+    Returns immediately when done, not after the full timeout.
+    """
+    condition = (args.get("condition") or "").strip()
+    if not condition:
+        return [{"type": "text", "text": "Error: condition is required"}]
+
+    timeout = float(args.get("timeout", 120))
+    text    = args.get("text")
+    element = args.get("element")
+    monitor = args.get("monitor")
+
+    path = f"/watch/until?condition={urllib.parse.quote(condition)}&timeout={timeout}"
+    if text:    path += f"&text={urllib.parse.quote(str(text))}"
+    if element: path += f"&element={urllib.parse.quote(str(element))}"
+    if monitor: path += f"&monitor_id={int(monitor)}"
+
+    try:
+        data = _api_post(path)
+    except Exception as e:
+        return [{"type": "text", "text": f"monitor_until failed: {e}"}]
+
+    triggered = data.get("triggered", False)
+    elapsed   = data.get("elapsed_s", 0)
+    reason    = data.get("reason", "")
+    timed_out = data.get("timed_out", False)
+
+    if timed_out:
+        return [{"type": "text", "text": f"TIMEOUT after {elapsed:.0f}s: condition '{condition}' not met. {reason}"}]
+
+    return [{"type": "text", "text": f"DONE in {elapsed:.1f}s: {reason}"}]
+
+
+# ─── Visual Memory handlers ───────────────────────────────────────────────────
+
+def handle_get_session_memory(args: dict) -> list:
+    """Load visual context from the previous session.
+
+    Call at the start of every session to know what the user was working on.
+    Returns a ready-to-use context description (~200-400 tokens).
+    No images — just the semantic context of where work was left off.
+    """
+    max_age = float(args.get("max_age_hours", 48.0))
+    try:
+        data = _api_get(f"/memory/prompt?max_age_hours={max_age}")
+    except Exception as e:
+        return [{"type": "text", "text": f"Memory unavailable: {e}"}]
+
+    if not data.get("found"):
+        return [{"type": "text", "text": "No previous session memory found. This appears to be a fresh start."}]
+
+    age   = data.get("age_hours", 0)
+    prompt = data.get("prompt", "")
+
+    return [{"type": "text", "text": f"## Previous Session (saved {age:.1f}h ago)\n\n{prompt}"}]
+
+
+def handle_save_session_memory(args: dict) -> list:
+    """Save current visual context for the next session.
+
+    Call before ending a session so the AI can resume with full context.
+    Saves monitor layout, active windows, recent events — no images.
+    """
+    try:
+        data = _api_post("/memory/save")
+    except Exception as e:
+        return [{"type": "text", "text": f"Memory save failed: {e}"}]
+
+    saved = data.get("saved", False)
+    stats = data.get("stats", {})
+    sessions = stats.get("sessions_saved", 0)
+    kb = stats.get("total_kb", 0)
+
+    if saved:
+        return [{"type": "text", "text": f"Session memory saved. Total: {sessions} sessions, {kb:.0f}KB"}]
+    return [{"type": "text", "text": "Memory save failed — will retry on server shutdown."}]
+
+
 HANDLERS = {
     # ── Vision (IPA v3 + OCR) ──
     "see_screen": handle_see_screen,
@@ -2832,6 +3039,12 @@ HANDLERS = {
     "get_context": handle_context,
     "get_spatial_context": handle_get_spatial_context,
     "spatial_state": handle_spatial_state,
+    # ── Watch Engine ──
+    "watch_and_notify":    handle_watch_and_notify,
+    "monitor_until":       handle_monitor_until,
+    # ── Visual Memory ──
+    "get_session_memory":  handle_get_session_memory,
+    "save_session_memory": handle_save_session_memory,
     # ── Grounding ──
     # ── Computer Use ──
     "do_action": handle_do_action,
