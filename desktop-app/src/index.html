@@ -66,10 +66,6 @@
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
       Actions
     </div>
-    <div class="nav-item" data-view="layers">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
-      7 Layers
-    </div>
 
     <div class="nav-section-label">Data</div>
     <div class="nav-item" data-view="logs">
@@ -85,6 +81,7 @@
   </nav>
 
   <div class="sidebar-footer">
+    <!-- Shown when logged in -->
     <div class="sidebar-user" id="sidebar-user" style="display:none;">
       <div class="sidebar-user-avatar" id="sidebar-avatar">G</div>
       <div class="sidebar-user-info">
@@ -95,7 +92,7 @@
         <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
       </button>
     </div>
-    <button class="btn-upgrade" id="btn-upgrade">
+<button class="btn-upgrade" id="btn-upgrade">
       <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
       Upgrade to Pro
     </button>
@@ -291,126 +288,66 @@
         <div id="agent-result" style="margin-top:10px;font-family:var(--font-mono);font-size:12px;color:var(--text-dim);display:none;"></div>
       </div>
 
-      <!-- act() Tool — Primary Action Interface -->
+      <!-- MCP Connection -->
       <div class="card">
         <div class="card-header">
-          <span class="card-title">act() — Direct Actions</span>
-          <span class="card-badge">~150ms each</span>
+          <span class="card-title">MCP Connection</span>
+          <span class="card-badge" id="mcp-status-badge">OFFLINE</span>
         </div>
-        <div class="action-grid">
-          <button class="action-btn" data-action="click"><span class="action-icon">🖱</span><span class="action-name">Click</span></button>
-          <button class="action-btn" data-action="double_click"><span class="action-icon">🖱</span><span class="action-name">Double Click</span></button>
-          <button class="action-btn" data-action="typewrite"><span class="action-icon">⌨</span><span class="action-name">Type Text</span></button>
-          <button class="action-btn" data-action="hotkey"><span class="action-icon">⌨</span><span class="action-name">Hotkey / Key</span></button>
-          <button class="action-btn" data-action="scroll"><span class="action-icon">↕</span><span class="action-name">Scroll</span></button>
-          <button class="action-btn" data-action="move_mouse"><span class="action-icon">➤</span><span class="action-name">Move Mouse</span></button>
-          <button class="action-btn" data-action="drag_drop"><span class="action-icon">↔</span><span class="action-name">Drag & Drop</span></button>
+        <div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;">Add ILUMINATY to Claude Code, Cursor, or any MCP client:</div>
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px;font-family:var(--font-mono);font-size:12px;user-select:text;cursor:text;color:var(--text);">
+          claude mcp add iluminaty -- python -m iluminaty.mcp
+        </div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:8px;">
+          Or with key: <span style="font-family:var(--font-mono);color:var(--text-dim);">env ILUMINATY_KEY=your-key python -m iluminaty.mcp</span>
+        </div>
+        <div style="margin-top:12px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;">
+          <div class="stat-card" style="padding:8px;">
+            <div class="stat-value" style="font-size:18px;" id="act-calls-count">0</div>
+            <div class="stat-label">act() calls</div>
+          </div>
+          <div class="stat-card" style="padding:8px;">
+            <div class="stat-value" style="font-size:18px;" id="perc-calls-count">0</div>
+            <div class="stat-label">perception calls</div>
+          </div>
+          <div class="stat-card" style="padding:8px;">
+            <div class="stat-value" style="font-size:18px;" id="mcp-tools-live">--</div>
+            <div class="stat-label">tools available</div>
+          </div>
         </div>
       </div>
 
-      <!-- Perception — Eyes -->
+      <!-- act() Reference -->
       <div class="card">
         <div class="card-header">
-          <span class="card-title">Perception — Eyes</span>
-          <span class="card-badge">IPA v2.1</span>
+          <span class="card-title">act() Reference</span>
+          <span class="card-badge">~150ms · direct</span>
         </div>
-        <div class="action-grid">
-          <button class="action-btn" data-action="vision_query"><span class="action-icon">👁</span><span class="action-name">Vision Query</span></button>
-          <button class="action-btn" data-action="describe_screen"><span class="action-icon">🧠</span><span class="action-name">Describe (VLM)</span></button>
-          <button class="action-btn" data-action="screenshot"><span class="action-icon">📸</span><span class="action-name">Screenshot</span></button>
-          <button class="action-btn" data-action="find_element"><span class="action-icon">🔍</span><span class="action-name">Find Element</span></button>
-        </div>
-      </div>
-
-      <!-- System Control -->
-      <div class="card">
-        <div class="card-header">
-          <span class="card-title">System Control</span>
-          <span class="card-badge">Windows + Terminal + Files</span>
-        </div>
-        <div class="action-grid">
-          <button class="action-btn" data-action="terminal_run"><span class="action-icon">▶</span><span class="action-name">Run Command</span></button>
-          <button class="action-btn" data-action="file_read"><span class="action-icon">📄</span><span class="action-name">Read File</span></button>
-          <button class="action-btn" data-action="file_write"><span class="action-icon">📄</span><span class="action-name">Write File</span></button>
-          <button class="action-btn" data-action="browser_navigate"><span class="action-icon">🌐</span><span class="action-name">Navigate URL</span></button>
-        </div>
-      </div>
-    </div>
-
-    <!-- ═══ VIEW: LAYERS ═══ -->
-    <div class="view" id="view-layers">
-      <div class="card" style="background:transparent;border:none;padding:0;">
-        <div class="layer-item">
-          <div class="layer-num">1</div>
-          <div class="layer-info">
-            <div class="layer-name">OS Control</div>
-            <div class="layer-desc">Mouse, keyboard, clipboard, screenshots — 16 native actions</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:12px;">
+          <div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:8px;font-family:var(--font-mono);">
+            <div style="color:var(--green);margin-bottom:4px;">click</div>
+            <div style="color:var(--text-muted);">act("click", x=500, y=300)</div>
           </div>
-          <span class="layer-status on" id="layer-1-status">ACTIVE</span>
-        </div>
-        <div class="layer-item">
-          <div class="layer-num">2</div>
-          <div class="layer-info">
-            <div class="layer-name">UI Intelligence</div>
-            <div class="layer-desc">Accessibility Tree — Windows UIAutomation, macOS AppleScript, Linux AT-SPI</div>
+          <div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:8px;font-family:var(--font-mono);">
+            <div style="color:var(--green);margin-bottom:4px;">type</div>
+            <div style="color:var(--text-muted);">act("type", text="hello")</div>
           </div>
-          <span class="layer-status on" id="layer-2-status">ACTIVE</span>
-        </div>
-        <div class="layer-item">
-          <div class="layer-num">3</div>
-          <div class="layer-info">
-            <div class="layer-name">App Control</div>
-            <div class="layer-desc">VS Code CLI, Terminal PTY, Git operations</div>
+          <div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:8px;font-family:var(--font-mono);">
+            <div style="color:var(--green);margin-bottom:4px;">key</div>
+            <div style="color:var(--text-muted);">act("key", key="ctrl+s")</div>
           </div>
-          <span class="layer-status on" id="layer-3-status">ACTIVE</span>
-        </div>
-        <div class="layer-item">
-          <div class="layer-num">4</div>
-          <div class="layer-info">
-            <div class="layer-name">Web Automation</div>
-            <div class="layer-desc">Chrome DevTools Protocol — DOM, navigation, JS evaluation</div>
+          <div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:8px;font-family:var(--font-mono);">
+            <div style="color:var(--green);margin-bottom:4px;">scroll</div>
+            <div style="color:var(--text-muted);">act("scroll", x=500, y=300, dy=-3)</div>
           </div>
-          <span class="layer-status on" id="layer-4-status">ACTIVE</span>
-        </div>
-        <div class="layer-item">
-          <div class="layer-num">5</div>
-          <div class="layer-info">
-            <div class="layer-name">File System</div>
-            <div class="layer-desc">Sandboxed read/write/search with path validation</div>
+          <div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:8px;font-family:var(--font-mono);">
+            <div style="color:var(--green);margin-bottom:4px;">double_click</div>
+            <div style="color:var(--text-muted);">act("double_click", x=500, y=300)</div>
           </div>
-          <span class="layer-status on" id="layer-5-status">ACTIVE</span>
-        </div>
-        <div class="layer-item">
-          <div class="layer-num">6</div>
-          <div class="layer-info">
-            <div class="layer-name">Orchestration</div>
-            <div class="layer-desc">Action resolver, verifier, error recovery, safety gates</div>
+          <div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:8px;font-family:var(--font-mono);">
+            <div style="color:var(--green);margin-bottom:4px;">focus</div>
+            <div style="color:var(--text-muted);">act("focus", window="Chrome")</div>
           </div>
-          <span class="layer-status on" id="layer-6-status">ACTIVE</span>
-        </div>
-        <div class="layer-item">
-          <div class="layer-num">7</div>
-          <div class="layer-info">
-            <div class="layer-name">Safety</div>
-            <div class="layer-desc">3 autonomy levels, rate limiting, kill zones, full audit trail</div>
-          </div>
-          <span class="layer-status on" id="layer-7-status">ACTIVE</span>
-        </div>
-      </div>
-
-      <!-- Layer Stats -->
-      <div class="grid-3" style="margin-top:16px;">
-        <div class="stat-card">
-          <div class="stat-value">7</div>
-          <div class="stat-label">Active Layers</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-value">35</div>
-          <div class="stat-label">MCP Tools</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-value" id="stat-vlm-mode">on_demand</div>
-          <div class="stat-label">VLM Mode</div>
         </div>
       </div>
     </div>
@@ -420,7 +357,10 @@
       <div class="card">
         <div class="card-header">
           <span class="card-title">Action Log</span>
-          <button class="topbar-btn" id="btn-clear-logs">Clear</button>
+          <div style="display:flex;gap:6px;">
+            <button class="topbar-btn" id="btn-copy-logs" title="Copy all logs to clipboard">Copy All</button>
+            <button class="topbar-btn" id="btn-clear-logs">Clear</button>
+          </div>
         </div>
         <div class="log-list" id="log-list">
           <div class="empty-state">

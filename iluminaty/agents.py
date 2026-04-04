@@ -61,33 +61,36 @@ class AgentSession:
 # ─── Tool scoping per role ───
 
 OBSERVER_TOOLS = frozenset({
-    "see_screen", "see_changes", "read_screen_text", "perception",
-    "perception_world", "perception_trace", "vision_query",
-    "grounding_status",
-    "workers_status", "workers_monitor",
-    "screen_status", "get_context", "get_audio_level", "token_status",
-    "set_token_mode", "set_token_budget",
+    "see_now", "see_screen", "see_changes", "what_changed",
+    "read_screen_text",
+ "see_monitor",
+    "perception", "perception_world",
+    "vision_query",
+    "screen_status", "get_context", "get_audio_level",
+    "spatial_state",
 })
 
 PLANNER_TOOLS = OBSERVER_TOOLS | frozenset({
-    "action_precheck", "grounding_resolve",
-    "list_windows", "find_ui_element", "monitor_info", "see_monitor",
+    "list_windows",
 })
 
 EXECUTOR_TOOLS = frozenset({
-    "do_action", "raw_action", "action_precheck", "verify_action",
-    "set_operating_mode",
-    "workers_claim_action", "workers_release_action",
-    "grounding_resolve", "click_grounded", "type_grounded",
-    "click_element", "type_text", "run_command",
-    "keyboard", "scroll", "click_screen", "browser_navigate",
-    "focus_window", "window_minimize", "window_maximize", "window_close",
+    "do_action", "operate_cycle", "set_operating_mode",
+    "act",
+ "drag_screen",
+ "run_command",
+    "browser_navigate", "browser_tabs",
+    "focus_window", "window_minimize", "window_maximize",
+    "window_close", "move_window",
     "read_file", "write_file", "get_clipboard",
+    "os_dialog_status", "os_dialog_resolve",
 }) | OBSERVER_TOOLS
 
 VERIFIER_TOOLS = OBSERVER_TOOLS | frozenset({
-    "verify_action", "grounding_resolve",
-    "read_file", "get_clipboard", "find_ui_element", "list_windows",
+ "what_changed",
+    "read_file", "get_clipboard",
+ "list_windows",
+    "os_dialog_status",
 })
 
 ROLE_TOOLS: dict[AgentRole, frozenset[str]] = {

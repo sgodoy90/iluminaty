@@ -92,16 +92,16 @@
     </p>
     <div class="hero-stats">
       <div class="stat">
-        <span class="stat-num" data-target="42">0</span><span class="stat-plus">+</span>
-        <span class="stat-label">Actions</span>
+        <span class="stat-num" data-target="7">0</span>
+        <span class="stat-label">act() Actions</span>
       </div>
       <div class="stat">
-        <span class="stat-num" data-target="80">0</span><span class="stat-plus">+</span>
-        <span class="stat-label">API Endpoints</span>
-      </div>
-      <div class="stat">
-        <span class="stat-num" data-target="17">0</span>
+        <span class="stat-num" data-target="64">0</span>
         <span class="stat-label">MCP Tools</span>
+      </div>
+      <div class="stat">
+        <span class="stat-num" data-target="150">0</span><span class="stat-plus">x</span>
+        <span class="stat-label">Token Efficient</span>
       </div>
       <div class="stat">
         <span class="stat-num" data-target="0">0</span>
@@ -212,8 +212,8 @@
       <div class="layer" data-layer="6">
         <div class="layer-num">6</div>
         <div class="layer-info">
-          <h3>Brain</h3>
-          <p>Intent classifier, cascade resolver, task planner, action verifier, error recovery</p>
+          <h3>Orchestration</h3>
+          <p>act() executor, workers, domain packs, behavior stats, autonomy scheduler</p>
         </div>
         <div class="layer-badge">5 modules</div>
       </div>
@@ -279,13 +279,13 @@
       </div>
       <div class="feature-card">
         <div class="feature-icon-wrap"><span>🖱</span></div>
-        <h3>42+ Actions</h3>
-        <p>Click, drag, type, scroll, hotkey, window management, clipboard, process control.</p>
+        <h3>act() — 7 Direct Actions</h3>
+        <p>click, double_click, type, key, scroll, focus, move_mouse. ~150ms. No middleware.</p>
       </div>
       <div class="feature-card">
         <div class="feature-icon-wrap"><span>🧠</span></div>
-        <h3>Cascade Resolver</h3>
-        <p>API Direct &lt;10ms → Keyboard → UI Tree → Vision. Always tries the fastest first.</p>
+        <h3>IPA WorldState</h3>
+        <p>4-gate pipeline: window change → histogram → pHash → optical flow. ~200 token output.</p>
       </div>
       <div class="feature-card">
         <div class="feature-icon-wrap"><span>🌐</span></div>
@@ -304,7 +304,7 @@
       </div>
       <div class="feature-card">
         <div class="feature-icon-wrap"><span>🔌</span></div>
-        <h3>48 MCP Tools</h3>
+        <h3>64 MCP Tools</h3>
         <p>Drop-in for Claude Code, Cursor, Windsurf. See screen + act in one integration.</p>
       </div>
       <div class="feature-card">
@@ -335,7 +335,7 @@
         <tbody>
           <tr><td>Mode</td><td>Manual</td><td>Records all</td><td>API screenshots</td><td class="highlight-col">Live perception + action</td></tr>
           <tr><td>Between actions</td><td>N/A</td><td>N/A</td><td class="text-red">Blind</td><td class="highlight-col">Always watching</td></tr>
-          <tr><td>Actions</td><td>None</td><td>None</td><td>5 basic</td><td class="highlight-col">42+ (7 layers)</td></tr>
+          <tr><td>Actions</td><td>None</td><td>None</td><td>5 basic</td><td class="highlight-col">64 tools (act + 7 layers)</td></tr>
           <tr><td>UI Understanding</td><td>None</td><td>None</td><td>Pixels + OCR</td><td class="highlight-col">Accessibility Tree + OCR</td></tr>
           <tr><td>Error Recovery</td><td>None</td><td>None</td><td>None</td><td class="highlight-col">Auto retry + cascade</td></tr>
           <tr><td>Speed</td><td>Seconds</td><td>Seconds</td><td>1-3s per action</td><td class="highlight-col">&lt;10ms to 500ms</td></tr>
@@ -486,11 +486,11 @@ pip install iluminaty[ocr]     <span class="c"># with OCR support</span></code><
     <div class="download-license">
       <div class="license-free">
         <span class="license-badge free">FREE</span>
-        <span>Core vision + 7 actions + 29 MCP tools. No license needed.</span>
+        <span>IPA vision + act() + 24 MCP tools. No account needed to start.</span>
       </div>
       <div class="license-pro">
         <span class="license-badge pro">PRO</span>
-        <span>42+ actions, browser, terminal, full autonomy. <a href="#pricing">Get a license key &rarr;</a></span>
+        <span>64 MCP tools, browser, terminal, workers, VLM. <a href="#pricing">Register free &rarr;</a></span>
       </div>
     </div>
   </div>
@@ -500,64 +500,69 @@ pip install iluminaty[ocr]     <span class="c"># with OCR support</span></code><
 <section id="pricing" class="section section-dark">
   <div class="container">
     <div class="section-badge">Pricing</div>
-    <h2>Choose your <span class="text-green">power level</span></h2>
-    <p class="section-sub">Start free. Scale when you need more.</p>
+    <h2>Everything is <span class="text-green">free</span></h2>
+    <p class="section-sub">Open source. Registration unlocks more tools — no payment, ever.</p>
     <div class="pricing-grid">
-      <!-- Free -->
+      <!-- Unregistered -->
       <div class="pricing-card">
         <div class="pricing-header">
-          <h3>Free</h3>
-          <p class="pricing-tier">Open Source</p>
+          <h3>Unregistered</h3>
+          <p class="pricing-tier">Demo mode</p>
         </div>
         <div class="pricing-price">$0<span class="pricing-period">/forever</span></div>
         <ul class="pricing-features">
-          <li>Core vision engine</li>
-          <li>7 basic actions</li>
-          <li>MCP server (29 tools)</li>
-          <li>Community support</li>
+          <li>IPA vision engine</li>
+          <li>10 perception tools</li>
+          <li>see_screen, OCR, WorldState</li>
+          <li>No account needed</li>
           <li>RAM-only privacy</li>
         </ul>
-        <a href="#get-started" class="btn btn-secondary pricing-cta">Get Started Free</a>
+        <a href="#get-started" class="btn btn-secondary pricing-cta">Get Started</a>
       </div>
-      <!-- Pro (featured) -->
+      <!-- Free (featured) -->
       <div class="pricing-card featured">
-        <div class="pricing-popular-badge">MOST POPULAR</div>
+        <div class="pricing-popular-badge">RECOMMENDED</div>
         <div class="pricing-header">
-          <h3>Pro</h3>
-          <p class="pricing-tier">For power users</p>
+          <h3>Free</h3>
+          <p class="pricing-tier">Registered</p>
         </div>
-        <div class="pricing-price">$29<span class="pricing-period">/mo</span></div>
+        <div class="pricing-price">$0<span class="pricing-period">/forever</span></div>
         <ul class="pricing-features">
-          <li>Everything in Free</li>
-          <li>42+ full actions</li>
-          <li>48 MCP tools</li>
-          <li>Browser automation (Chrome DevTools)</li>
-          <li>Terminal PTY + Git ops</li>
-          <li>Priority support</li>
+          <li>Everything in Unregistered</li>
+          <li>act() — 7 instant actions</li>
+          <li>24 MCP tools total</li>
+          <li>Window management</li>
+          <li>Vision query + perception trace</li>
+          <li>Register at iluminaty.dev</li>
         </ul>
-        <a href="#" class="btn btn-primary btn-lemon pricing-cta" data-lemon-plan="pro">
+        <a href="/dashboard.html" class="btn btn-primary pricing-cta">
           <span class="btn-glow"></span>
-          Subscribe
+          Register Free
         </a>
       </div>
-      <!-- Enterprise -->
+      <!-- Pro -->
       <div class="pricing-card">
         <div class="pricing-header">
-          <h3>Enterprise</h3>
-          <p class="pricing-tier">Full autonomy</p>
+          <h3>Pro</h3>
+          <p class="pricing-tier">Full power</p>
         </div>
-        <div class="pricing-price">Custom</div>
+        <div class="pricing-price">$0<span class="pricing-period">/forever</span></div>
         <ul class="pricing-features">
-          <li>Everything in Pro</li>
-          <li>Full autonomy mode</li>
-          <li>Custom integrations</li>
-          <li>Dedicated support</li>
-          <li>SLA guarantee</li>
-          <li>On-premise deployment</li>
+          <li>Everything in Free</li>
+          <li>64 MCP tools</li>
+          <li>Browser automation (CDP)</li>
+          <li>Terminal + Git ops</li>
+          <li>File system access</li>
+          <li>Workers + autonomy scheduler</li>
+          <li>SmolVLM2 describe_screen</li>
         </ul>
-        <a href="mailto:contact@iluminaty.dev" class="btn btn-secondary pricing-cta">Contact Us</a>
+        <a href="/dashboard.html" class="btn btn-secondary pricing-cta">Upgrade Free</a>
       </div>
     </div>
+    <p style="text-align:center;margin-top:24px;color:var(--text-dim);font-size:13px;">
+      Need custom integrations, SLA, or priority support?
+      <a href="mailto:custom@iluminaty.dev" class="text-green">custom@iluminaty.dev</a>
+    </p>
   </div>
 </section>
 

@@ -166,12 +166,12 @@
         <div class="card-value green" id="dash-plan">Free</div>
       </div>
       <div class="card">
-        <div class="card-label">Available Actions</div>
-        <div class="card-value" id="dash-actions">7 / 42</div>
+        <div class="card-label">act() Actions</div>
+        <div class="card-value" id="dash-actions">7</div>
       </div>
       <div class="card">
         <div class="card-label">MCP Tools</div>
-          <div class="card-value" id="dash-tools">29 / 48</div>
+        <div class="card-value" id="dash-tools">24 / 64</div>
       </div>
       <div class="card">
         <div class="card-label">Member Since</div>
@@ -200,19 +200,19 @@
         <div>
           <span class="plan-badge free" id="plan-badge">FREE</span>
         </div>
-        <button class="btn-upgrade" id="btn-upgrade">Upgrade to Pro — $29/mo</button>
+        <button class="btn-upgrade" id="btn-upgrade">Upgrade to Pro — FREE</button>
       </div>
       <div class="plan-features" id="plan-features">
-        <div class="plan-feature"><span class="check">&#10003;</span> Core vision engine</div>
-        <div class="plan-feature"><span class="check">&#10003;</span> 7 basic actions</div>
-        <div class="plan-feature"><span class="check">&#10003;</span> 29 MCP tools</div>
-        <div class="plan-feature"><span class="check">&#10003;</span> REST API (local)</div>
-        <div class="plan-feature locked"><span class="lock">&#128274;</span> 42+ full actions</div>
-        <div class="plan-feature locked"><span class="lock">&#128274;</span> 48 MCP tools</div>
+        <div class="plan-feature"><span class="check">&#10003;</span> IPA vision engine (real-time)</div>
+        <div class="plan-feature"><span class="check">&#10003;</span> act() — 7 instant actions</div>
+        <div class="plan-feature"><span class="check">&#10003;</span> 24 MCP tools</div>
+        <div class="plan-feature"><span class="check">&#10003;</span> REST API (local, 8420)</div>
+        <div class="plan-feature locked"><span class="lock">&#128274;</span> 64 MCP tools (Pro)</div>
         <div class="plan-feature locked"><span class="lock">&#128274;</span> Browser automation</div>
         <div class="plan-feature locked"><span class="lock">&#128274;</span> Terminal + Git ops</div>
         <div class="plan-feature locked"><span class="lock">&#128274;</span> File system access</div>
-        <div class="plan-feature locked"><span class="lock">&#128274;</span> Full autonomy mode</div>
+        <div class="plan-feature locked"><span class="lock">&#128274;</span> Workers + autonomy</div>
+        <div class="plan-feature locked"><span class="lock">&#128274;</span> SmolVLM2 describe_screen</div>
       </div>
     </div>
 
@@ -331,8 +331,8 @@ function showDashboard(session) {
 
   // Cards
   document.getElementById("dash-plan").textContent = isPro ? "Pro" : "Free";
-  document.getElementById("dash-actions").textContent = isPro ? "42+" : "7 / 42";
-  document.getElementById("dash-tools").textContent = isPro ? "48" : "29 / 48";
+  document.getElementById("dash-actions").textContent = "7";
+  document.getElementById("dash-tools").textContent = isPro ? "64" : "24 / 64";
   document.getElementById("dash-since").textContent = user.created_at
     ? new Date(user.created_at).toLocaleDateString("en-US", { month: "short", year: "numeric" })
     : "—";
@@ -383,10 +383,33 @@ document.getElementById("btn-copy").addEventListener("click", () => {
   });
 });
 
-// Upgrade
-document.getElementById("btn-upgrade").addEventListener("click", () => {
-  // TODO: Replace with Lemon Squeezy checkout URL
-  window.location.href = "/#pricing";
+// Upgrade (free Pro — just call the upgrade endpoint)
+document.getElementById("btn-upgrade").addEventListener("click", async () => {
+  const session = getSession();
+  if (!session?.api_key) return;
+  const btn = document.getElementById("btn-upgrade");
+  btn.disabled = true;
+  btn.textContent = "Upgrading...";
+  try {
+    const resp = await fetch(API_BASE + "/auth/upgrade", {
+      method: "POST",
+      headers: { Authorization: "Bearer " + session.api_key },
+    });
+    const data = await resp.json();
+    if (resp.ok) {
+      // Update stored session plan and refresh UI
+      session.user.plan = "pro";
+      setSession(session);
+      showDashboard(session);
+    } else {
+      btn.disabled = false;
+      btn.textContent = "Upgrade to Pro — FREE";
+      alert(data.error || "Upgrade failed, try again.");
+    }
+  } catch {
+    btn.disabled = false;
+    btn.textContent = "Upgrade to Pro — FREE";
+  }
 });
 
 // Logout

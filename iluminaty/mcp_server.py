@@ -593,607 +593,375 @@ VISION_MODE = os.environ.get("ILUMINATY_VISION_MODE", "text_only")
 # ─── MCP Tool Definitions ───
 
 TOOLS = [
+    # ── Vision — IPA v3 + real frames ────────────────────────────────────────
     {
-        "name": "see_screen",
+        "name": "see_now",
         "description": (
-            "See what is currently on the user's screen. "
-            "Uses smart token mode to control costs. Modes: "
-            "text_only (~200 tokens), low_res (~5K), medium_res (~15K), full_res (~30K). "
-            "Default is text_only. Use text_only for most tasks, only use image modes "
-            "when you truly need to SEE the screen layout or colors."
+            "PRIMARY VISION TOOL. See the current screen right now. "
+            "Returns the actual screen image (Claude/GPT-4o sees it directly) "
+            "plus IPA v3 real-time context: motion type, scene state, recent events. "
+            "Use this before acting and after acting to verify results. "
+            "Modes: low_res (~5K tokens), medium_res (~15K), full_res (~30K)."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "mode": {
                     "type": "string",
-                    "enum": ["text_only", "low_res", "medium_res", "full_res"],
-                    "description": "Vision mode. text_only=cheapest, full_res=expensive. Default: text_only",
-                    "default": "text_only",
+                    "enum": ["low_res", "medium_res", "full_res"],
+                    "description": "Image resolution. low_res recommended for most tasks.",
+                    "default": "low_res",
                 },
                 "monitor": {
                     "type": "integer",
-                    "description": "Optional monitor id. If omitted, backend uses active monitor.",
+                    "description": "Monitor id (1..N). Omit for active monitor.",
                 },
             },
         },
     },
     {
-        "name": "token_status",
+        "name": "what_changed",
         "description": (
-            "Check current token usage, budget, and mode. "
-            "Use this to monitor how many tokens ILUMINATY vision has consumed."
-        ),
-        "inputSchema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "set_token_mode",
-        "description": (
-            "Set the default vision mode to control token costs. "
-            "text_only (~200 tokens/call), low_res (~5K), medium_res (~15K), full_res (~30K)."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "mode": {
-                    "type": "string",
-                    "enum": ["text_only", "low_res", "medium_res", "full_res"],
-                    "description": "Vision mode to set as default",
-                },
-            },
-            "required": ["mode"],
-        },
-    },
-    {
-        "name": "set_token_budget",
-        "description": (
-            "Set a token budget limit. ILUMINATY will refuse vision requests "
-            "when budget is exceeded. Set to 0 for unlimited."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "limit": {
-                    "type": "integer",
-                    "description": "Max tokens to spend. 0 = unlimited",
-                },
-            },
-            "required": ["limit"],
-        },
-    },
-    {
-        "name": "see_changes",
-        "description": (
-            "See what changed on screen in the last N seconds. "
-            "Returns multiple frames showing the progression. "
-            "Use this when the user says 'what just happened' or "
-            "'did you see that'."
+            "What changed on screen in the last N seconds? "
+            "Returns IPA v3 gate events (significant motion/content changes) "
+            "plus an image of the most significant frame. "
+            "Use: after an action to verify it worked, or when resuming work."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "seconds": {
                     "type": "number",
-                    "description": "How many seconds back to look (default 10)",
-                    "default": 10,
+                    "description": "Lookback window in seconds (default 15)",
+                    "default": 15,
                 },
                 "monitor": {
                     "type": "integer",
-                    "description": "Optional monitor id (1..N). If omitted, includes all monitors.",
+                    "description": "Optional monitor id filter",
                 },
             },
         },
     },
     {
-        "name": "annotate_screen",
+        "name": "see_screen",
         "description": (
-            "Draw an annotation on the screen to mark an area for discussion. "
-            "Types: rect (rectangle), circle, arrow, text. "
-            "Use this when you want to point at something specific."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "type": {
-                    "type": "string",
-                    "enum": ["rect", "circle", "arrow", "text"],
-                    "description": "Annotation type",
-                },
-                "x": {"type": "integer", "description": "X position"},
-                "y": {"type": "integer", "description": "Y position"},
-                "width": {"type": "integer", "description": "Width", "default": 100},
-                "height": {"type": "integer", "description": "Height", "default": 100},
-                "color": {"type": "string", "description": "Color hex", "default": "#FF0000"},
-                "text": {"type": "string", "description": "Text for text annotations", "default": ""},
-            },
-            "required": ["type", "x", "y"],
-        },
-    },
-    {
-        "name": "read_screen_text",
-        "description": (
-            "Read all visible text on the screen using OCR. "
-            "Optionally read only a specific region. "
-            "Use this when you need to read text that is on screen."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "monitor": {"type": "integer", "description": "Optional monitor id (1..N)"},
-                "region_x": {"type": "integer", "description": "Region X (optional)"},
-                "region_y": {"type": "integer", "description": "Region Y (optional)"},
-                "region_w": {"type": "integer", "description": "Region width (optional)"},
-                "region_h": {"type": "integer", "description": "Region height (optional)"},
-            },
-        },
-    },
-    {
-        "name": "screen_status",
-        "description": (
-            "Get ILUMINATY system status: buffer stats, capture state, "
-            "memory usage, FPS, active window, workflow, audio level."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {},
-        },
-    },
-    {
-        "name": "get_context",
-        "description": (
-            "Get the user's current context: what app they're using, "
-            "what workflow they're in (coding, browsing, meeting, etc.), "
-            "how focused they are, and how long they've been at it. "
-            "Use this to understand what the user is doing before helping them."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {},
-        },
-    },
-    {
-        "name": "get_audio_level",
-        "description": (
-            "Get the current audio level and whether speech is detected. "
-            "Use this to know if the user is talking or in a call."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {},
-        },
-    },
-    # ─── v1.0: Computer Use Tools ───
-    {
-        "name": "do_action",
-        "description": (
-            "Execute an action using SAFE/HYBRID control loop (precheck -> execute -> verify -> recover). "
-            "Use this as the default action tool for reliable operation."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "instruction": {
-                    "type": "string",
-                    "description": "Natural language instruction (e.g. 'save the file', 'click Submit')",
-                },
-                "context_tick_id": {
-                    "type": "integer",
-                    "description": "Optional world tick id to enforce freshness in SAFE/HYBRID",
-                },
-                "max_staleness_ms": {
-                    "type": "integer",
-                    "description": "Optional max context age in ms (default 1500)",
-                },
-                "use_grounding": {
-                    "type": "boolean",
-                    "description": "Enable hybrid grounding for target resolution before execute",
-                    "default": False,
-                },
-                "target_query": {
-                    "type": "string",
-                    "description": "Optional grounding target query (e.g. 'Save button')",
-                },
-                "target_role": {
-                    "type": "string",
-                    "description": "Optional role hint for grounding",
-                },
-                "monitor_id": {
-                    "type": "integer",
-                    "description": "Optional monitor id for grounding",
-                },
-            },
-            "required": ["instruction"],
-        },
-    },
-    {
-        "name": "action_intent",
-        "description": (
-            "Execute a high-level natural language intent via ILUMINATY's intent classifier "
-            "and closed-loop action pipeline."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "instruction": {"type": "string", "description": "Natural language instruction"},
-                "mode": {"type": "string", "enum": ["SAFE", "RAW", "HYBRID"], "description": "Optional operating mode override"},
-                "verify": {"type": "boolean", "description": "Run verifier/recovery after action", "default": True},
-                "context_tick_id": {"type": "integer", "description": "Optional expected world tick id"},
-                "max_staleness_ms": {"type": "integer", "description": "Optional max context age in ms"},
-                "use_grounding": {"type": "boolean", "description": "Enable grounding support for target selection", "default": False},
-                "target_query": {"type": "string", "description": "Optional grounding query"},
-                "target_role": {"type": "string", "description": "Optional grounding role hint"},
-                "monitor_id": {"type": "integer", "description": "Optional monitor id for grounding"},
-            },
-            "required": ["instruction"],
-        },
-    },
-    {
-        "name": "raw_action",
-        "description": (
-            "Execute an action in RAW mode (0 guardrails except kill switch). "
-            "Use only when the external AI handles all safety."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "instruction": {"type": "string", "description": "Natural language instruction"},
-                "action": {"type": "string", "description": "Direct action name (optional if instruction provided)"},
-                "params": {"type": "object", "description": "Direct action params"},
-                "verify": {"type": "boolean", "description": "Run verifier after execution", "default": False},
-            },
-        },
-    },
-    {
-        "name": "action_precheck",
-        "description": (
-            "Validate readiness + mode + safety before taking an action. "
-            "Returns whether execution would be blocked."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "instruction": {"type": "string", "description": "Natural language instruction"},
-                "action": {"type": "string", "description": "Direct action name"},
-                "params": {"type": "object", "description": "Direct action params"},
-                "category": {"type": "string", "description": "safe|normal|destructive", "default": "normal"},
-                "mode": {"type": "string", "enum": ["SAFE", "RAW", "HYBRID"], "description": "Optional override mode"},
-                "context_tick_id": {"type": "integer", "description": "Optional expected world tick id"},
-                "max_staleness_ms": {"type": "integer", "description": "Optional max context age in ms"},
-                "use_grounding": {"type": "boolean", "description": "Enable hybrid grounding checks", "default": False},
-                "target_query": {"type": "string", "description": "Optional grounding target query"},
-                "target_role": {"type": "string", "description": "Optional grounding role hint"},
-                "monitor_id": {"type": "integer", "description": "Optional monitor id for grounding"},
-            },
-        },
-    },
-    {
-        "name": "verify_action",
-        "description": (
-            "Run post-action verification for an action/params pair without executing a new action."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "action": {"type": "string", "description": "Action name to verify"},
-                "params": {"type": "object", "description": "Action params used during execution"},
-                "pre_state": {"type": "object", "description": "Optional captured pre-state"},
-            },
-            "required": ["action"],
-        },
-    },
-    {
-        "name": "operate_cycle",
-        "description": (
-            "Global human-like operation cycle for any app/window: "
-            "orientation -> localization -> focus -> read -> action -> verification."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "goal": {"type": "string", "description": "Short objective description"},
-                "target_window": {"type": "string", "description": "Optional target window/app query"},
-                "monitor": {"type": "integer", "description": "Optional monitor bias (1..N)"},
-                "include_ocr": {"type": "boolean", "description": "Read OCR for comprehension step", "default": True},
-                "resolve_interrupts": {
-                    "type": "boolean",
-                    "description": "Auto-handle blocking dialogs/modals before action (default true).",
-                    "default": True,
-                },
-                "interrupt_strategy": {
-                    "type": "string",
-                    "enum": ["accept_first", "dismiss_first", "none"],
-                    "description": "How to resolve blocking dialogs when detected.",
-                    "default": "accept_first",
-                },
-                "action": {
-                    "type": "object",
-                    "description": (
-                        "Optional action descriptor. "
-                        "Supported kinds: click, type, hotkey, scroll, drag."
-                    ),
-                },
-                "verify_contains": {"type": "string", "description": "Optional text expected after action"},
-            },
-        },
-    },
-    {
-        "name": "set_operating_mode",
-        "description": (
-            "Set ILUMINATY operating mode: SAFE (default), RAW, or HYBRID."
+            "See the screen. Returns image + perception context. "
+            "Prefer see_now for RT agent loops. Use see_screen for text_only mode "
+            "(~200 tokens, no image) when you just need OCR/context without the image."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "mode": {
                     "type": "string",
-                    "enum": ["SAFE", "RAW", "HYBRID"],
-                    "description": "Target operating mode",
+                    "enum": ["text_only", "low_res", "medium_res", "full_res"],
+                    "description": "text_only=cheapest (~200t), full_res=expensive (~30K t). Default: text_only",
+                    "default": "text_only",
+                },
+                "monitor": {"type": "integer", "description": "Optional monitor id."},
+            },
+        },
+    },
+    {
+        "name": "see_changes",
+        "description": (
+            "See what changed in the last N seconds — multiple frames showing progression. "
+            "Use when you need the full temporal sequence, not just the key moment."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "seconds": {"type": "number", "description": "Lookback seconds (default 10)", "default": 10},
+                "monitor": {"type": "integer", "description": "Optional monitor id"},
+            },
+        },
+    },
+    {
+        "name": "see_monitor",
+        "description": "See a specific monitor with its layout context and click coordinate mapping.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "monitor": {"type": "integer", "description": "Monitor id (1..N)", "default": 1},
+                "mode": {
+                    "type": "string",
+                    "enum": ["low_res", "medium_res", "full_res"],
+                    "default": "medium_res",
                 },
             },
-            "required": ["mode"],
+            "required": ["monitor"],
+        },
+    },
+    {
+        "name": "read_screen_text",
+        "description": "OCR all visible text on screen or in a region. Use when you need to read text.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "monitor": {"type": "integer"},
+                "region_x": {"type": "integer"}, "region_y": {"type": "integer"},
+                "region_w": {"type": "integer"}, "region_h": {"type": "integer"},
+            },
         },
     },
     {
         "name": "vision_query",
-        "description": (
-            "Ask a temporal visual question over IPA memory. "
-            "Supports point-in-time (`at_ms`) or windowed (`window_seconds`) reasoning."
-        ),
+        "description": "Ask a visual question over IPA memory (e.g. 'what was on screen 30s ago?').",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "question": {"type": "string", "description": "Natural language visual question"},
-                "at_ms": {"type": "integer", "description": "Optional target timestamp in ms"},
-                "window_seconds": {"type": "number", "description": "Lookback window in seconds", "default": 30},
-                "monitor_id": {"type": "integer", "description": "Optional monitor id"},
+                "at_ms": {"type": "integer", "description": "Target timestamp in ms"},
+                "window_seconds": {"type": "number", "description": "Lookback window", "default": 30},
+                "monitor_id": {"type": "integer"},
             },
             "required": ["question"],
         },
     },
+    # ── Perception / context ──────────────────────────────────────────────────
     {
-        "name": "describe_screen",
-        "description": (
-            "On-demand VLM description of current screen. Triggers fresh SmolVLM2 inference. "
-            "Model stays idle in VRAM until this is called — zero background cost. "
-            "Use when you need to understand WHAT is on screen (not just text/OCR)."
-        ),
+        "name": "get_context",
+        "description": "User's current context: app, workflow, focus level, time in workflow.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "perception",
+        "description": "Raw IPA v2 perception events stream (scene state, motion, OCR events).",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "monitor": {"type": "integer", "description": "Monitor id to describe. Defaults to active."},
+                "seconds": {"type": "number", "description": "Lookback seconds (default 30)", "default": 30},
             },
         },
     },
     {
-        "name": "grounding_status",
+        "name": "perception_world",
+        "description": "IPA v2 WorldState snapshot (task phase, affordances, uncertainty, readiness).",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "get_spatial_context",
         "description": (
-            "Get hybrid grounding engine status and performance metrics."
+            "ONE-SHOT SESSION CONTEXT. Call this FIRST at the start of every session. "
+            "Returns: physical monitor layout with human labels (LEFT/CENTER/RIGHT/TOP), "
+            "window inventory per monitor, active user window, user activity state, "
+            "and auto-inferred safety rules (e.g. 'user is on Facebook M2 — open new tab'). "
+            "~400-600 tokens. Re-call only if monitors change. "
+            "For dynamic state (windows changing) use see_now + spatial_state."
         ),
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
-        "name": "grounding_resolve",
+        "name": "spatial_state",
+        "description": "Active monitor, cursor position, window layout across all monitors.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"include_windows": {"type": "boolean", "default": True}},
+        },
+    },
+    # ── Computer Use ──────────────────────────────────────────────────────────
+    {
+        "name": "do_action",
         "description": (
-            "Resolve an actionable UI target using hybrid grounding (UI tree + OCR + visual hints). "
-            "Returns ranked candidates with confidence and selected target."
+            "Execute any action via SAFE control loop (precheck → execute → verify). "
+            "Natural language instruction. Use for most actions."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "Target query (e.g. 'Save button')"},
-                "role": {"type": "string", "description": "Optional role hint (button, textfield, etc.)"},
-                "monitor_id": {"type": "integer", "description": "Optional monitor id"},
-                "mode": {"type": "string", "enum": ["SAFE", "RAW", "HYBRID"], "default": "SAFE"},
-                "category": {"type": "string", "description": "safe|normal|destructive", "default": "normal"},
-                "top_k": {"type": "integer", "description": "Max candidates", "default": 5},
-                "context_tick_id": {"type": "integer", "description": "Optional expected world tick id"},
-                "max_staleness_ms": {"type": "integer", "description": "Optional context max age in ms"},
+                "instruction": {"type": "string", "description": "What to do (e.g. 'click Save')"},
+                "use_grounding": {"type": "boolean", "default": False},
+                "target_query": {"type": "string"},
+                "monitor_id": {"type": "integer"},
             },
-            "required": ["query"],
+            "required": ["instruction"],
         },
     },
     {
-        "name": "click_grounded",
+        "name": "operate_cycle",
         "description": (
-            "Resolve a target via grounding and click it with SAFE/HYBRID/RAW policy."
+            "Full human-like operation cycle: orient → locate → focus → read → act → verify. "
+            "Handles dialogs/modals automatically. Best for complex multi-step tasks."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "What to click"},
-                "role": {"type": "string", "description": "Optional role hint"},
-                "monitor_id": {"type": "integer", "description": "Optional monitor id"},
-                "button": {"type": "string", "description": "Mouse button", "default": "left"},
-                "mode": {"type": "string", "enum": ["SAFE", "RAW", "HYBRID"], "default": "SAFE"},
-                "category": {"type": "string", "description": "safe|normal|destructive", "default": "normal"},
-                "verify": {"type": "boolean", "default": True},
-                "context_tick_id": {"type": "integer"},
-                "max_staleness_ms": {"type": "integer"},
+                "goal": {"type": "string"},
+                "target_window": {"type": "string"},
+                "monitor": {"type": "integer"},
+                "include_ocr": {"type": "boolean", "default": True},
+                "resolve_interrupts": {"type": "boolean", "default": True},
+                "interrupt_strategy": {"type": "string", "enum": ["accept_first", "dismiss_first", "none"], "default": "accept_first"},
+                "action": {"type": "object", "description": "Action descriptor {kind, x, y, text, keys, ...}"},
+                "verify_contains": {"type": "string"},
             },
-            "required": ["query"],
         },
     },
     {
-        "name": "type_grounded",
+        "name": "act",
         "description": (
-            "Resolve a text field via grounding, focus it, and type text."
+            "Direct action executor. Actions: click, double_click, type, key, scroll, focus, move_mouse.\n"
+            "SMART LOCATE: pass target= to resolve coordinates automatically via UITree+OCR — no guessing.\n"
+            "  act(action='click', target='Save button')           — finds element, clicks exactly\n"
+            "  act(action='type', target='email field', text='x')  — finds field, clicks, types\n"
+            "  act(action='click', x=500, y=300)                   — direct coords from see_now"
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "Field target query"},
-                "text": {"type": "string", "description": "Text to type"},
-                "role": {"type": "string", "description": "Optional role hint", "default": "textfield"},
-                "monitor_id": {"type": "integer", "description": "Optional monitor id"},
-                "mode": {"type": "string", "enum": ["SAFE", "RAW", "HYBRID"], "default": "SAFE"},
-                "category": {"type": "string", "description": "safe|normal|destructive", "default": "normal"},
-                "verify": {"type": "boolean", "default": True},
-                "context_tick_id": {"type": "integer"},
-                "max_staleness_ms": {"type": "integer"},
+                "action": {"type": "string", "enum": ["click", "double_click", "type", "key", "scroll", "focus", "move_mouse"]},
+                "target": {"type": "string", "description": "Natural language element name. Smart-locates via UITree+OCR. Takes priority over x,y."},
+                "x": {"type": "integer"}, "y": {"type": "integer"},
+                "text": {"type": "string"},
+                "keys": {"type": "string"},
+                "button": {"type": "string", "default": "left"},
+                "amount": {"type": "integer"},
+                "role": {"type": "string", "description": "Role hint: button|edit|link|checkbox|combobox"},
+                "title": {"type": "string"},
+                "handle": {"type": "integer"},
+                "monitor": {"type": "integer"},
             },
-            "required": ["query", "text"],
+            "required": ["action"],
         },
     },
     {
-        "name": "click_element",
-        "description": (
-            "Click on a UI element by name using the accessibility tree. "
-            "No coordinates needed - finds the element automatically. "
-            "Example: click_element('Save') clicks the Save button."
-        ),
+        "name": "set_operating_mode",
+        "description": "Set operating mode: SAFE (guardrails on), RAW (no guardrails), HYBRID.",
         "inputSchema": {
             "type": "object",
-            "properties": {
-                "name": {"type": "string", "description": "Element name or label"},
-                "role": {"type": "string", "description": "Element role (button, textfield, etc)", "default": ""},
-            },
-            "required": ["name"],
+            "properties": {"mode": {"type": "string", "enum": ["SAFE", "RAW", "HYBRID"]}},
+            "required": ["mode"],
         },
     },
     {
-        "name": "type_text",
-        "description": (
-            "Type text using the keyboard. Supports unicode. "
-            "The text is typed at the current cursor position."
-        ),
+        "name": "drag_screen",
+        "description": "Drag from (start_x, start_y) to (end_x, end_y).",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "text": {"type": "string", "description": "Text to type"},
+                "start_x": {"type": "integer"}, "start_y": {"type": "integer"},
+                "end_x": {"type": "integer"}, "end_y": {"type": "integer"},
+                "duration": {"type": "number", "default": 0.35},
+                "monitor": {"type": "integer"},
+                "coord_space": {"type": "string", "enum": ["global", "monitor"], "default": "global"},
             },
-            "required": ["text"],
+            "required": ["start_x", "start_y", "end_x", "end_y"],
         },
     },
-    {
-        "name": "run_command",
-        "description": (
-            "Execute a shell command and return the output. "
-            "Example: 'npm test', 'python script.py', 'git status'."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "command": {"type": "string", "description": "Shell command to execute"},
-                "timeout": {"type": "number", "description": "Timeout in seconds (default 30)", "default": 30},
-            },
-            "required": ["command"],
-        },
-    },
+    # ── Windows ───────────────────────────────────────────────────────────────
     {
         "name": "list_windows",
-        "description": (
-            "List windows with handle, title, position, size, and monitor_id. "
-            "Use handle-based targeting for reliable control."
-        ),
+        "description": "List all visible windows with handle, title, position, size, monitor_id.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "monitor": {"type": "integer", "description": "Optional monitor id filter"},
-                "title_contains": {"type": "string", "description": "Optional title substring filter"},
-                "exclude_minimized": {"type": "boolean", "description": "Hide minimized windows", "default": True},
+                "monitor": {"type": "integer"},
+                "title_contains": {"type": "string"},
+                "exclude_minimized": {"type": "boolean", "default": True},
+            },
+        },
+    },
+    {
+        "name": "focus_window",
+        "description": "Bring a window to the front by title or handle.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "handle": {"type": "integer"},
+                "prefer_active_monitor": {"type": "boolean", "default": True},
             },
         },
     },
     {
         "name": "window_minimize",
-        "description": "Minimize a window by handle or title.",
+        "description": "Minimize a window.",
         "inputSchema": {
             "type": "object",
-            "properties": {
-                "title": {"type": "string", "description": "Window title (partial match accepted by backend)"},
-                "handle": {"type": "integer", "description": "Exact window handle (preferred when available)"},
-            },
+            "properties": {"title": {"type": "string"}, "handle": {"type": "integer"}},
         },
     },
     {
         "name": "window_maximize",
-        "description": "Maximize a window by handle or title.",
+        "description": "Maximize a window.",
         "inputSchema": {
             "type": "object",
-            "properties": {
-                "title": {"type": "string", "description": "Window title (partial match accepted by backend)"},
-                "handle": {"type": "integer", "description": "Exact window handle (preferred when available)"},
-            },
+            "properties": {"title": {"type": "string"}, "handle": {"type": "integer"}},
         },
     },
     {
         "name": "window_close",
-        "description": "Close a window by handle or title.",
+        "description": "Close a window.",
         "inputSchema": {
             "type": "object",
-            "properties": {
-                "title": {"type": "string", "description": "Window title (partial match accepted by backend)"},
-                "handle": {"type": "integer", "description": "Exact window handle (preferred when available)"},
-            },
+            "properties": {"title": {"type": "string"}, "handle": {"type": "integer"}},
         },
     },
     {
         "name": "move_window",
-        "description": (
-            "Move/resize a window to specific desktop coordinates. "
-            "Useful to relocate windows between monitors quickly."
-        ),
+        "description": "Move/resize a window to specific coordinates.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "title": {"type": "string", "description": "Window title (partial match)"},
-                "handle": {"type": "integer", "description": "Exact window handle (preferred)"},
-                "x": {"type": "integer", "description": "Target x (virtual desktop)"},
-                "y": {"type": "integer", "description": "Target y (virtual desktop)"},
-                "width": {"type": "integer", "description": "Optional width (default keep)", "default": -1},
-                "height": {"type": "integer", "description": "Optional height (default keep)", "default": -1},
-                "monitor": {"type": "integer", "description": "Optional monitor id for monitor-local coordinates"},
-                "coord_space": {
-                    "type": "string",
-                    "enum": ["global", "monitor"],
-                    "description": "global=virtual desktop coordinates, monitor=coords relative to selected monitor",
-                    "default": "global",
-                },
+                "title": {"type": "string"}, "handle": {"type": "integer"},
+                "x": {"type": "integer"}, "y": {"type": "integer"},
+                "width": {"type": "integer", "default": -1},
+                "height": {"type": "integer", "default": -1},
+                "monitor": {"type": "integer"},
+                "coord_space": {"type": "string", "enum": ["global", "monitor"], "default": "global"},
             },
             "required": ["x", "y"],
         },
     },
+    # ── Browser ───────────────────────────────────────────────────────────────
     {
-        "name": "find_ui_element",
-        "description": (
-            "Find a UI element on screen using the accessibility tree. "
-            "Returns element info including position, size, and state. "
-            "Use this before clicking to verify the element exists."
-        ),
+        "name": "browser_navigate",
+        "description": "Navigate to a URL. Preserves existing browser context (reuses tab by default).",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "name": {"type": "string", "description": "Element name to search for"},
-                "role": {"type": "string", "description": "Element role filter (button, textfield, etc)", "default": ""},
+                "url": {"type": "string"},
+                "new_tab": {"type": "boolean", "default": True},
+                "browser": {"type": "string", "enum": ["auto", "brave", "chrome", "edge", "firefox"], "default": "auto"},
             },
-            "required": ["name"],
+            "required": ["url"],
+        },
+    },
+    {
+        "name": "browser_tabs",
+        "description": "List all open browser tabs with titles and URLs.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    # ── Files / system ────────────────────────────────────────────────────────
+    {
+        "name": "run_command",
+        "description": "Execute a shell command and return output.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string"},
+                "timeout": {"type": "number", "default": 30},
+            },
+            "required": ["command"],
         },
     },
     {
         "name": "read_file",
-        "description": (
-            "Read the contents of a file from the filesystem (sandboxed). "
-            "Returns the file content as text."
-        ),
+        "description": "Read a file from the filesystem.",
         "inputSchema": {
             "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "File path to read"},
-            },
+            "properties": {"path": {"type": "string"}},
             "required": ["path"],
         },
     },
     {
         "name": "write_file",
-        "description": (
-            "Write content to a file (sandboxed, auto-backup). "
-            "Creates parent directories if needed."
-        ),
+        "description": "Write content to a file.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "File path to write"},
-                "content": {"type": "string", "description": "Content to write"},
+                "path": {"type": "string"},
+                "content": {"type": "string"},
             },
             "required": ["path", "content"],
         },
@@ -1201,521 +969,38 @@ TOOLS = [
     {
         "name": "get_clipboard",
         "description": "Read the current clipboard content.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {},
-        },
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    # ── Status ────────────────────────────────────────────────────────────────
+    {
+        "name": "screen_status",
+        "description": "System status: buffer stats, capture state, FPS, active window.",
+        "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "agent_status",
-        "description": (
-            "Get the full agent status: actions enabled, safety state, "
-            "autonomy level, available capabilities, and recent action log."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {},
-        },
-    },
-    {
-        "name": "focus_window",
-        "description": (
-            "Switch to a window by title/handle with contextual ranking (active monitor + best match). "
-            "Example: focus_window('Chrome') switches to Chrome. "
-            "Use list_windows first to see available windows."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "title": {"type": "string", "description": "Window title (partial match)"},
-                "handle": {"type": "integer", "description": "Exact window handle (preferred when available)"},
-                "prefer_active_monitor": {
-                    "type": "boolean",
-                    "description": "Bias match toward active monitor window when title is ambiguous (default true).",
-                    "default": True,
-                },
-            },
-        },
-    },
-    {
-        "name": "browser_navigate",
-        "description": (
-            "Navigate to a URL using human-like context reasoning. "
-            "By default it preserves current user context: reuse existing browser window, "
-            "open a new tab, then navigate from the address bar. "
-            "Falls back to CDP/process launch only if needed."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "url": {"type": "string", "description": "URL to navigate to"},
-                "new_tab": {
-                    "type": "boolean",
-                    "description": "Open in a new tab (default true) to preserve current page context.",
-                    "default": True,
-                },
-                "preserve_context": {
-                    "type": "boolean",
-                    "description": "Prefer existing browser window/session before any fallback (default true).",
-                    "default": True,
-                },
-                "browser": {
-                    "type": "string",
-                    "enum": ["auto", "brave", "chrome", "edge", "firefox"],
-                    "description": "Preferred browser family when selecting/fallback launching.",
-                    "default": "auto",
-                },
-            },
-            "required": ["url"],
-        },
-    },
-    {
-        "name": "browser_tabs",
-        "description": "List all open browser tabs with their titles and URLs.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {},
-        },
-    },
-    {
-        "name": "act",
-        "description": (
-            "Direct action executor — no middleware, no grounding, no safety gates. "
-            "Claude sees the screen, decides what to do, and ILUMINATY executes exactly. "
-            "Actions: click, double_click, type, key, scroll, focus, move_mouse. "
-            "This is the PRIMARY action tool. Use see_screen first to know WHERE to act."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "enum": ["click", "double_click", "type", "key", "scroll", "focus", "move_mouse"],
-                    "description": "Action to perform",
-                },
-                "x": {"type": "integer", "description": "X coordinate (for click/double_click/scroll/move_mouse)"},
-                "y": {"type": "integer", "description": "Y coordinate (for click/double_click/scroll/move_mouse)"},
-                "button": {"type": "string", "description": "Mouse button: left/right/middle (for click)", "default": "left"},
-                "text": {"type": "string", "description": "Text to type (for type action)"},
-                "keys": {"type": "string", "description": "Keys to press (for key action). Examples: enter, ctrl+s, win+r, alt+f4"},
-                "amount": {"type": "integer", "description": "Scroll amount: positive=down, negative=up (for scroll)", "default": 3},
-                "title": {"type": "string", "description": "Window title to focus (for focus action)"},
-                "handle": {"type": "integer", "description": "Window handle to focus (for focus action)"},
-                "monitor": {"type": "integer", "description": "Monitor id for monitor-local coordinates"},
-            },
-            "required": ["action"],
-        },
-    },
-    {
-        "name": "click_screen",
-        "description": (
-            "Click at a specific position on screen using REAL screen coordinates (not image coordinates). "
-            "For multi-monitor setups, coordinates span the full virtual desktop by default. "
-            "If you used see_monitor, pass monitor + coord_space='monitor' to auto-translate monitor-local coords."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "x": {"type": "integer", "description": "X coordinate (real screen pixels)"},
-                "y": {"type": "integer", "description": "Y coordinate (real screen pixels)"},
-                "button": {"type": "string", "description": "Mouse button: left, right, middle", "default": "left"},
-                "monitor": {"type": "integer", "description": "Optional monitor id when using monitor-local coordinates"},
-                "coord_space": {
-                    "type": "string",
-                    "enum": ["global", "monitor"],
-                    "description": "global=virtual desktop coordinates, monitor=coords relative to selected monitor",
-                    "default": "global",
-                },
-                "focus_title": {"type": "string", "description": "Optional window title to focus before clicking."},
-                "focus_handle": {"type": "integer", "description": "Optional window handle to focus before clicking."},
-            },
-            "required": ["x", "y"],
-        },
-    },
-    {
-        "name": "drag_screen",
-        "description": (
-            "Drag from start to end coordinates. "
-            "Supports global coordinates or monitor-local coordinates."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "start_x": {"type": "integer", "description": "Drag start X"},
-                "start_y": {"type": "integer", "description": "Drag start Y"},
-                "end_x": {"type": "integer", "description": "Drag end X"},
-                "end_y": {"type": "integer", "description": "Drag end Y"},
-                "duration": {"type": "number", "description": "Drag duration seconds", "default": 0.35},
-                "monitor": {"type": "integer", "description": "Optional monitor id for monitor-local coordinates"},
-                "coord_space": {
-                    "type": "string",
-                    "enum": ["global", "monitor"],
-                    "description": "global=virtual desktop coordinates, monitor=coords relative to selected monitor",
-                    "default": "global",
-                },
-                "focus_title": {"type": "string", "description": "Optional window title to focus before dragging."},
-                "focus_handle": {"type": "integer", "description": "Optional window handle to focus before dragging."},
-            },
-            "required": ["start_x", "start_y", "end_x", "end_y"],
-        },
-    },
-    {
-        "name": "keyboard",
-        "description": (
-            "Press keyboard keys or shortcuts. Like a human pressing keys. "
-            "Examples: 'enter', 'tab', 'ctrl+s', 'ctrl+shift+t', 'alt+tab', 'ctrl+l', 'f5'. "
-            "For typing text use type_text instead."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "keys": {"type": "string", "description": "Key or key combo (e.g. 'ctrl+s', 'enter', 'alt+tab')"},
-                "focus_title": {"type": "string", "description": "Optional window title to focus before keypress."},
-                "focus_handle": {"type": "integer", "description": "Optional window handle to focus before keypress."},
-            },
-            "required": ["keys"],
-        },
-    },
-    {
-        "name": "scroll",
-        "description": (
-            "Scroll in the active window. Positive = down, negative = up. "
-            "Like a human using the mouse wheel."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "amount": {"type": "integer", "description": "Scroll amount. Positive=down, negative=up. Default=3", "default": 3},
-                "x": {"type": "integer", "description": "Optional x coordinate for scroll target"},
-                "y": {"type": "integer", "description": "Optional y coordinate for scroll target"},
-                "monitor": {"type": "integer", "description": "Optional monitor id for monitor-local coordinates"},
-                "coord_space": {
-                    "type": "string",
-                    "enum": ["global", "monitor"],
-                    "description": "global=virtual desktop coordinates, monitor=coords relative to selected monitor",
-                    "default": "global",
-                },
-                "focus_title": {"type": "string", "description": "Optional window title to focus before scroll."},
-                "focus_handle": {"type": "integer", "description": "Optional window handle to focus before scroll."},
-            },
-        },
-    },
-    {
-        "name": "perception",
-        "description": (
-            "Get real-time perception of what's happening on screen — like having eyes that never blink. "
-            "Instead of taking a screenshot (1 frozen moment), this returns a STREAM of events that the "
-            "perception engine detected continuously: window switches, page loads, text changes, motion, "
-            "loading spinners, content stabilization. Costs ~200 tokens (text only, no images). "
-            "Use this FIRST before any action to understand current state. "
-            "Use this AFTER any action to see what happened without needing a screenshot."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "seconds": {
-                    "type": "number",
-                    "description": "How many seconds back to look (default 30)",
-                    "default": 30,
-                },
-            },
-        },
-    },
-    {
-        "name": "perception_world",
-        "description": (
-            "Get IPA v2 semantic WorldState snapshot (task phase, affordances, uncertainty, readiness)."
-        ),
+        "description": "Full agent status: actions enabled, safety state, autonomy level.",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
-        "name": "perception_trace",
-        "description": (
-            "Get compressed semantic transitions from RAM-only episodic trace."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "seconds": {
-                    "type": "number",
-                    "description": "Trace window in seconds (default 90)",
-                    "default": 90,
-                },
-            },
-        },
-    },
-    {
-        "name": "domain_pack_list",
-        "description": (
-            "List built-in and custom Domain Packs, including active selection and override state."
-        ),
-        "inputSchema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "domain_pack_override",
-        "description": (
-            "Force a specific Domain Pack (e.g. trading, coding) or set name=auto to return to automatic selection."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "name": {
-                    "type": "string",
-                    "description": "Pack name or auto",
-                    "default": "auto",
-                },
-            },
-        },
-    },
-    {
-        "name": "watch_screen",
-        "description": (
-            "See the last N frames as a sequence — like watching a video replay. "
-            "Use this instead of see_screen when you need to understand what JUST happened: "
-            "animations, loading spinners, transitions, popups appearing/disappearing. "
-            "Returns the most recent frames with images so you see the flow, not just a snapshot. "
-            "Default: last 3 frames (~0.6s at 5 FPS). Max: 5 frames."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "frames": {
-                    "type": "integer",
-                    "description": "Number of recent frames to return (1-5, default 3)",
-                    "default": 3,
-                },
-                "monitor": {
-                    "type": "integer",
-                    "description": "Specific monitor (1,2,3). Omit for all monitors.",
-                },
-            },
-        },
-    },
-    {
-        "name": "monitor_info",
-        "description": (
-            "Get information about all connected monitors: positions, sizes, and layout. "
-            "Essential for understanding the multi-monitor setup before interacting."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {},
-        },
-    },
-    {
-        "name": "see_monitor",
-        "description": (
-            "Capture a specific monitor (1, 2, 3...) instead of all monitors combined. "
-            "This gives much better resolution for reading content on that monitor. "
-            "Use monitor_info first to know which monitor number to target."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "monitor": {"type": "integer", "description": "Monitor number (1=primary, 2, 3...)"},
-                "mode": {"type": "string", "enum": ["low_res", "medium_res", "full_res"], "default": "medium_res"},
-            },
-            "required": ["monitor"],
-        },
-    },
-    {
-        "name": "spatial_state",
-        "description": (
-            "Get unified desktop spatial map: monitors, active monitor/window, cursor, and windows grouped by monitor."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "include_windows": {"type": "boolean", "description": "Include full windows list", "default": True},
-            },
-        },
-    },
-    {
-        "name": "workers_status",
-        "description": (
-            "Get Workers Sys v1 status: monitor digests, spatial/fusion state, action arbiter lease, "
-            "intent timeline, and verification timeline."
-        ),
-        "inputSchema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "workers_monitor",
-        "description": (
-            "Get a single monitor worker digest (scene, readiness, staleness, attention, visual facts)."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "monitor": {"type": "integer", "description": "Monitor id (1..N)"},
-            },
-            "required": ["monitor"],
-        },
-    },
-    {
-        "name": "workers_claim_action",
-        "description": (
-            "Claim the single-writer action lease from Workers Arbiter. "
-            "Use before multi-step execution loops when coordinating multiple agents."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "owner": {"type": "string", "description": "Lease owner id/name", "default": "mcp-executor"},
-                "ttl_ms": {"type": "integer", "description": "Optional lease TTL in ms", "default": 2500},
-                "force": {"type": "boolean", "description": "Force lease takeover", "default": False},
-            },
-        },
-    },
-    {
-        "name": "workers_release_action",
-        "description": (
-            "Release the single-writer action lease back to the arbiter."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "owner": {"type": "string", "description": "Lease owner id/name", "default": "mcp-executor"},
-                "success": {"type": "boolean", "description": "Whether last action succeeded", "default": True},
-                "message": {"type": "string", "description": "Optional result message"},
-            },
-        },
-    },
-    {
-        "name": "workers_schedule",
-        "description": "Get Workers v2 attention schedule (budget share per monitor + recommended monitor).",
-        "inputSchema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "workers_set_subgoal",
-        "description": "Set a monitor-local subgoal with priority/risk/deadline for Workers scheduler.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "monitor_id": {"type": "integer", "description": "Monitor id (1..N)"},
-                "goal": {"type": "string", "description": "Subgoal summary"},
-                "priority": {"type": "number", "description": "0.0..1.0", "default": 0.5},
-                "risk": {"type": "string", "description": "low|normal|high|critical", "default": "normal"},
-                "deadline_ms": {"type": "integer", "description": "Optional unix epoch ms deadline"},
-            },
-            "required": ["monitor_id", "goal"],
-        },
-    },
-    {
-        "name": "workers_clear_subgoal",
-        "description": "Clear/complete a workers subgoal by id.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "subgoal_id": {"type": "string", "description": "Subgoal id"},
-                "completed": {"type": "boolean", "description": "Mark as completed", "default": True},
-            },
-            "required": ["subgoal_id"],
-        },
-    },
-    {
-        "name": "workers_route",
-        "description": "Route a query/objective to the best monitor using scheduler + digest context.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "Intent/query to route"},
-                "preferred_monitor_id": {"type": "integer", "description": "Optional preferred monitor"},
-            },
-            "required": ["query"],
-        },
-    },
-    {
-        "name": "behavior_stats",
-        "description": "Get persistent app behavior cache stats (Phase C).",
-        "inputSchema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "behavior_recent",
-        "description": "Get recent behavior outcomes from persistent cache.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "limit": {"type": "integer", "description": "Entries to return (1-200)", "default": 20},
-            },
-        },
-    },
-    {
-        "name": "behavior_suggest",
-        "description": "Ask behavior cache for execution hints on action/app/window.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "action": {"type": "string"},
-                "app_name": {"type": "string"},
-                "window_title": {"type": "string"},
-            },
-            "required": ["action"],
-        },
-    },
-    {
-        "name": "runtime_profile",
-        "description": "Get or set runtime profile (standard|enterprise|lab).",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "set": {"type": "string", "description": "Optional target profile"},
-            },
-        },
-    },
-    {
-        "name": "host_telemetry",
-        "description": "Get host telemetry snapshot (CPU/RAM/temps/GPU when available).",
-        "inputSchema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "os_notifications",
-        "description": "Read merged OS notifications feed (watchdog + audio interrupts).",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "limit": {"type": "integer", "description": "Max items to return", "default": 20},
-            },
-        },
-    },
-    {
-        "name": "os_tray",
-        "description": "Inspect OS tray/taskbar surface status (Windows-first).",
+        "name": "get_audio_level",
+        "description": "Current audio level and whether speech is detected.",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "os_dialog_status",
-        "description": "Detect likely blocking native dialog and available affordances.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "monitor_id": {"type": "integer", "description": "Optional monitor id for dialog probe"},
-            },
-        },
+        "description": "Detect if a system dialog/modal is blocking the screen.",
+        "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "os_dialog_resolve",
-        "description": "Attempt to resolve a blocking dialog by label or coordinates.",
+        "description": "Resolve a blocking system dialog (accept or dismiss).",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "label": {"type": "string", "description": "Preferred dialog button label (e.g. OK, Cancel)"},
-                "x": {"type": "integer", "description": "Optional absolute x coordinate"},
-                "y": {"type": "integer", "description": "Optional absolute y coordinate"},
-                "monitor_id": {"type": "integer", "description": "Optional monitor id"},
-                "mode": {"type": "string", "enum": ["SAFE", "RAW", "HYBRID"], "description": "Optional mode override"},
-                "verify": {"type": "boolean", "description": "Run post-action verification", "default": True},
+                "strategy": {"type": "string", "enum": ["accept_first", "dismiss_first"], "default": "accept_first"},
             },
         },
-    },
-    {
-        "name": "audio_interrupt_status",
-        "description": "Get operational audio interrupt status and recent interrupt events.",
-        "inputSchema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "audio_interrupt_ack",
-        "description": "Acknowledge/clear current audio interrupt guard.",
-        "inputSchema": {"type": "object", "properties": {}},
     },
 ]
 
@@ -1803,65 +1088,6 @@ def handle_perception_world(args: dict) -> list:
         return [{"type": "text", "text": f"WorldState not available: {e}"}]
 
 
-def handle_perception_trace(args: dict) -> list:
-    seconds = args.get("seconds", 90)
-    try:
-        data = _api_get(f"/perception/trace?seconds={seconds}")
-        trace = data.get("trace", [])
-        temporal = data.get("temporal", {})
-        frame_refs = temporal.get("frame_refs", [])
-        if not trace:
-            return [{"type": "text", "text": "No semantic trace entries in the requested window."}]
-        lines = [f"## IPA Trace ({len(trace)} entries / {seconds}s, frame_refs={len(frame_refs)})"]
-        for item in trace[-20:]:
-            ts = item.get("timestamp_ms", 0)
-            summary = item.get("summary", "")
-            reason = item.get("boundary_reason", "")
-            lines.append(f"- [{ts}] {summary} ({reason})")
-        return [{"type": "text", "text": "\n".join(lines)}]
-    except Exception as e:
-        return [{"type": "text", "text": f"Trace not available: {e}"}]
-
-
-def handle_domain_pack_list(args: dict) -> list:
-    try:
-        data = _api_get("/domain-packs")
-    except Exception as e:
-        return [{"type": "text", "text": f"Domain packs unavailable: {e}"}]
-
-    packs = data.get("packs", [])
-    active = data.get("active", {}) or {}
-    override = data.get("override")
-    lines = [
-        "## Domain Packs",
-        f"- Active: {active.get('domain_pack', 'general')} (conf={active.get('domain_confidence', 0)})",
-        f"- Override: {override if override else 'auto'}",
-        f"- Available: {len(packs)}",
-    ]
-    for pack in packs[:12]:
-        lines.append(
-            f"- {pack.get('name')} [{pack.get('source', 'builtin')}] "
-            f"priority={pack.get('priority', '?')} "
-            f"stale={((pack.get('staleness_policy') or {}).get('safe', '?'))}ms safe"
-        )
-    return [{"type": "text", "text": "\n".join(lines)}]
-
-
-def handle_domain_pack_override(args: dict) -> list:
-    name = (args.get("name") or "auto").strip()
-    try:
-        data = _api_post("/domain-packs/override", body={"name": name})
-    except Exception as e:
-        return [{"type": "text", "text": f"Domain pack override failed: {e}"}]
-    return [{
-        "type": "text",
-        "text": (
-            f"Domain override: {'OK' if data.get('ok') else 'FAILED'} | "
-            f"override={data.get('override')} | reason={data.get('reason', 'n/a')}"
-        ),
-    }]
-
-
 def handle_describe_screen(args: dict) -> list:
     monitor = args.get("monitor")
     path = "/vision/describe"
@@ -1902,165 +1128,6 @@ def handle_vision_query(args: dict) -> list:
     if frames:
         lines.append(f"Frame refs: {len(frames)}")
     return [{"type": "text", "text": "\n".join(lines)}]
-
-
-def handle_grounding_status(args: dict) -> list:
-    try:
-        data = _api_get("/grounding/status")
-        stats = data.get("stats", {})
-        lines = [
-            "## Grounding Status",
-            f"Mode: {data.get('mode', 'hybrid_ui_text')}",
-            f"Profile: {data.get('profile', 'balanced')}",
-            f"Resolves: {stats.get('resolves', 0)}",
-            f"Success rate: {stats.get('success_rate_pct', 0)}%",
-            f"Blocked rate: {stats.get('blocked_rate_pct', 0)}%",
-            f"Avg latency: {stats.get('avg_latency_ms', 0)}ms",
-            f"Last reason: {stats.get('last_reason', 'n/a')}",
-        ]
-        return [{"type": "text", "text": "\n".join(lines)}]
-    except Exception as e:
-        return [{"type": "text", "text": f"Grounding status unavailable: {e}"}]
-
-
-def handle_grounding_resolve(args: dict) -> list:
-    query = (args.get("query") or "").strip()
-    if not query:
-        return [{"type": "text", "text": "Error: query is required"}]
-    body = {
-        "query": query,
-        "role": args.get("role"),
-        "monitor_id": args.get("monitor_id"),
-        "mode": args.get("mode", "SAFE"),
-        "category": args.get("category", "normal"),
-        "top_k": args.get("top_k", 5),
-        "context_tick_id": args.get("context_tick_id"),
-        "max_staleness_ms": args.get("max_staleness_ms"),
-    }
-    try:
-        data = _api_post("/grounding/resolve", body=body)
-    except Exception as e:
-        return [{"type": "text", "text": f"Grounding resolve failed: {e}"}]
-
-    target = data.get("target")
-    lines = [
-        "## Grounding Resolve",
-        f"Query: {query}",
-        f"Success: {data.get('success', False)}",
-        f"Blocked: {data.get('blocked', False)}",
-        f"Reason: {data.get('reason', 'unknown')}",
-    ]
-    if target:
-        lines.append(
-            f"Target: {target.get('name', '')} ({target.get('role', '')}) "
-            f"at {target.get('center_xy')} conf={target.get('confidence', 0)}"
-        )
-    lines.append(f"Candidates: {len(data.get('candidates', []))}")
-    return [{"type": "text", "text": "\n".join(lines)}]
-
-
-def handle_click_grounded(args: dict) -> list:
-    query = (args.get("query") or "").strip()
-    if not query:
-        return [{"type": "text", "text": "Error: query is required"}]
-    body = {
-        "query": query,
-        "role": args.get("role"),
-        "monitor_id": args.get("monitor_id"),
-        "button": args.get("button", "left"),
-        "mode": args.get("mode", "SAFE"),
-        "category": args.get("category", "normal"),
-        "verify": bool(args.get("verify", True)),
-        "context_tick_id": args.get("context_tick_id"),
-        "max_staleness_ms": args.get("max_staleness_ms"),
-        "top_k": args.get("top_k", 5),
-    }
-    try:
-        data = _api_post("/grounding/click", body=body)
-    except Exception as e:
-        return [{"type": "text", "text": f"Grounded click failed: {e}"}]
-    lines = [
-        "## Grounded Click",
-        f"Query: {query}",
-        f"Success: {data.get('success', False)}",
-    ]
-    grd = data.get("grounding", {})
-    lines.append(f"Grounding reason: {grd.get('reason', 'n/a')}")
-    return [{"type": "text", "text": "\n".join(lines)}]
-
-
-def handle_type_grounded(args: dict) -> list:
-    query = (args.get("query") or "").strip()
-    text = args.get("text")
-    if not query:
-        return [{"type": "text", "text": "Error: query is required"}]
-    if text is None:
-        return [{"type": "text", "text": "Error: text is required"}]
-    body = {
-        "query": query,
-        "text": str(text),
-        "role": args.get("role", "textfield"),
-        "monitor_id": args.get("monitor_id"),
-        "mode": args.get("mode", "SAFE"),
-        "category": args.get("category", "normal"),
-        "verify": bool(args.get("verify", True)),
-        "context_tick_id": args.get("context_tick_id"),
-        "max_staleness_ms": args.get("max_staleness_ms"),
-        "top_k": args.get("top_k", 5),
-    }
-    try:
-        data = _api_post("/grounding/type", body=body)
-    except Exception as e:
-        return [{"type": "text", "text": f"Grounded type failed: {e}"}]
-    lines = [
-        "## Grounded Type",
-        f"Query: {query}",
-        f"Chars: {len(str(text))}",
-        f"Success: {data.get('success', False)}",
-    ]
-    grd = data.get("grounding", {})
-    lines.append(f"Grounding reason: {grd.get('reason', 'n/a')}")
-    return [{"type": "text", "text": "\n".join(lines)}]
-
-
-def handle_watch_screen(args: dict) -> list:
-    """Return last N frames as images — like watching a video replay."""
-    n = min(args.get("frames", 3), 5)
-    monitor = args.get("monitor")
-    path = f"/frames?last={n}&include_images=true"
-    if monitor is not None:
-        path += f"&monitor_id={int(monitor)}"
-    data = _api_get(path)
-    frames = data.get("frames", [])
-
-    if not frames:
-        return [{"type": "text", "text": "No frames in buffer yet."}]
-
-    result = []
-    scope = f"monitor {monitor}" if monitor is not None else "all monitors"
-    result.append({
-        "type": "text",
-        "text": f"## Screen Replay ({len(frames)} frames, {scope})\nOldest → Newest. Watch for changes between frames.",
-    })
-
-    for i, f in enumerate(frames):
-        ts = f.get("timestamp_iso", "?")
-        change = f.get("change_score", 0)
-        img_b64 = f.get("image_base64")
-
-        label = f"**Frame {i+1}/{len(frames)}** — {ts} | change: {change}"
-
-        if img_b64:
-            result.append({"type": "text", "text": label})
-            result.append({
-                "type": "image",
-                "data": img_b64,
-                "mimeType": f.get("mime_type", "image/webp"),
-            })
-        else:
-            result.append({"type": "text", "text": label + " (no image data)"})
-
-    return result
 
 
 def handle_token_status(args: dict) -> dict:
@@ -2605,21 +1672,6 @@ def handle_set_operating_mode(args: dict) -> list:
     return [{"type": "text", "text": f"Operating mode set to {data.get('mode', 'SAFE')}"}]
 
 
-def handle_click_element(args: dict) -> list:
-    name = args.get("name", "")
-    role = args.get("role", "")
-    query = f"name={urllib.parse.quote(name)}"
-    if role:
-        query += f"&role={urllib.parse.quote(role)}"
-    data = _api_post(f"/ui/click?{query}")
-    return [{"type": "text", "text": f"Click element '{name}': {'SUCCESS' if data.get('success') else 'FAILED'} - {data.get('message', '')}"}]
-
-
-def handle_type_text(args: dict) -> list:
-    text = args.get("text", "")
-    data = _api_post(f"/action/type?text={urllib.parse.quote(text)}")
-    return [{"type": "text", "text": f"Typed {len(text)} chars: {'SUCCESS' if data.get('success') else 'FAILED'}"}]
-
 
 def handle_run_command(args: dict) -> list:
     cmd = args.get("command", "")
@@ -2737,19 +1789,6 @@ def handle_move_window(args: dict) -> list:
             f"(space={coord_space}, monitor={monitor if monitor is not None else 'auto'})"
         ),
     }]
-
-
-def handle_find_ui_element(args: dict) -> list:
-    name = args.get("name", "")
-    role = args.get("role", "")
-    query = f"name={urllib.parse.quote(name)}"
-    if role:
-        query += f"&role={urllib.parse.quote(role)}"
-    data = _api_get(f"/ui/find?{query}")
-    el = data.get("element")
-    if el:
-        return [{"type": "text", "text": f"Found: **{el.get('name')}** ({el.get('role')}) at ({el.get('x')},{el.get('y')}) {el.get('width')}x{el.get('height')} enabled={el.get('is_enabled')}"}]
-    return [{"type": "text", "text": f"Element '{name}' not found on screen."}]
 
 
 def handle_read_file(args: dict) -> list:
@@ -2967,36 +2006,6 @@ def handle_browser_tabs(args: dict) -> list:
     return [{"type": "text", "text": "Could not get browser tabs. Is Chrome running with --remote-debugging-port=9222?"}]
 
 
-def handle_click_screen(args: dict) -> list:
-    x = args.get("x", 0)
-    y = args.get("y", 0)
-    button = args.get("button", "left")
-    monitor = args.get("monitor")
-    coord_space = str(args.get("coord_space", "global")).strip().lower()
-    focus_title = (args.get("focus_title") or "").strip()
-    focus_handle = args.get("focus_handle")
-    query = f"/action/click?x={x}&y={y}&button={urllib.parse.quote(str(button))}"
-    if monitor is not None:
-        query += f"&monitor_id={int(monitor)}"
-    if coord_space in {"monitor", "local", "monitor_local"}:
-        query += "&relative_to_monitor=true"
-    if focus_handle is not None:
-        query += f"&focus_handle={int(focus_handle)}"
-    elif focus_title:
-        query += f"&focus_title={urllib.parse.quote(focus_title)}"
-    data = _api_post(query)
-    rx = data.get("resolved_x", x)
-    ry = data.get("resolved_y", y)
-    return [{
-        "type": "text",
-        "text": (
-            f"Clicked at ({x},{y}) {button}: {'SUCCESS' if data.get('success') else 'FAILED'} "
-            f"(resolved=({rx},{ry}), space={coord_space}, monitor={monitor if monitor is not None else 'auto'}, "
-            f"focus={'handle='+str(focus_handle) if focus_handle is not None else (focus_title or 'none')})"
-        ),
-    }]
-
-
 def handle_drag_screen(args: dict) -> list:
     start_x = int(args.get("start_x", 0))
     start_y = int(args.get("start_y", 0))
@@ -3031,36 +2040,48 @@ def handle_drag_screen(args: dict) -> list:
     }]
 
 
-def handle_keyboard(args: dict) -> list:
-    keys = args.get("keys", "")
-    focus_title = (args.get("focus_title") or "").strip()
-    focus_handle = args.get("focus_handle")
-    if not keys:
-        return [{"type": "text", "text": "Error: keys is required"}]
-    query = f"/action/hotkey?keys={urllib.parse.quote(keys)}"
-    if focus_handle is not None:
-        query += f"&focus_handle={int(focus_handle)}"
-    elif focus_title:
-        query += f"&focus_title={urllib.parse.quote(focus_title)}"
-    data = _api_post(query)
-    return [{
-        "type": "text",
-        "text": (
-            f"Pressed {keys}: {'SUCCESS' if data.get('success') else 'FAILED'} "
-            f"(focus={'handle='+str(focus_handle) if focus_handle is not None else (focus_title or 'none')})"
-        ),
-    }]
-
-
 def handle_act(args: dict) -> list:
     """
-    Direct action executor — no middleware, no grounding, no intent classifier.
-    Claude sees the screen, decides what to do, and tells ILUMINATY exactly.
-    Supports: click, type, key, scroll, focus, move_mouse
+    Direct action executor. Claude sees screen via see_now, decides what to do.
+    Supports: click, double_click, type, key, scroll, focus, move_mouse
+
+    COORDINATE RESOLUTION:
+    - If target= is provided (e.g. target="Save button"), smart_locate resolves
+      exact coordinates via UITree + OCR. No guessing needed.
+    - If x,y are provided, uses them directly.
+    - target= takes priority over x,y.
     """
     action = str(args.get("action", "")).strip().lower()
     if not action:
         return [{"type": "text", "text": "Error: action is required (click/type/key/scroll/focus/move_mouse)"}]
+
+    # ── Smart locate: resolve target name → exact coordinates ────────────────
+    target = (args.get("target") or "").strip()
+    if target and action in ("click", "double_click", "type"):
+        monitor = args.get("monitor")
+        role_hint = args.get("role")
+        locate_query = f"/locate?query={urllib.parse.quote(target)}"
+        if monitor is not None:
+            locate_query += f"&monitor_id={int(monitor)}"
+        if role_hint:
+            locate_query += f"&role={urllib.parse.quote(str(role_hint))}"
+        try:
+            loc = _api_get(locate_query)
+            if loc.get("found"):
+                # Inject resolved coordinates
+                args = dict(args)
+                args["x"] = loc["x"]
+                args["y"] = loc["y"]
+                source = loc.get("source", "?")
+                conf   = loc.get("confidence", 0)
+                label  = loc.get("label", target)
+                loc_note = f" [located via {source} conf={conf:.0%}: {label}]"
+            else:
+                loc_note = f" [WARNING: '{target}' not found via smart_locate — using x,y fallback]"
+        except Exception as e:
+            loc_note = f" [smart_locate error: {e}]"
+    else:
+        loc_note = ""
 
     try:
         if action == "click":
@@ -3071,21 +2092,25 @@ def handle_act(args: dict) -> list:
                 query += f"&monitor_id={int(args['monitor'])}&relative_to_monitor=true"
             data = _api_post(query)
             ok = data.get("success", False)
-            return [{"type": "text", "text": f"click ({x},{y}) {button}: {'OK' if ok else 'FAIL'} {data.get('message','')}"}]
+            return [{"type": "text", "text": f"click ({x},{y}) {button}: {'OK' if ok else 'FAIL'}{loc_note} {data.get('message','')}"}]
 
         elif action == "double_click":
             x, y = int(args.get("x", 0)), int(args.get("y", 0))
             data = _api_post(f"/action/double_click?x={x}&y={y}")
             ok = data.get("success", False)
-            return [{"type": "text", "text": f"double_click ({x},{y}): {'OK' if ok else 'FAIL'}"}]
+            return [{"type": "text", "text": f"double_click ({x},{y}): {'OK' if ok else 'FAIL'}{loc_note}"}]
 
         elif action == "type":
             text = str(args.get("text", ""))
             if not text:
                 return [{"type": "text", "text": "Error: text is required"}]
+            # If target resolved a field, click it first to focus
+            if target and args.get("x") and args.get("y"):
+                x, y = int(args["x"]), int(args["y"])
+                _api_post(f"/action/click?x={x}&y={y}&button=left")
             data = _api_post(f"/action/type?text={urllib.parse.quote(text)}")
             ok = data.get("success", False)
-            return [{"type": "text", "text": f"typed {len(text)} chars: {'OK' if ok else 'FAIL'}"}]
+            return [{"type": "text", "text": f"typed {len(text)} chars: {'OK' if ok else 'FAIL'}{loc_note}"}]
 
         elif action == "key":
             keys = str(args.get("keys", ""))
@@ -3129,64 +2154,6 @@ def handle_act(args: dict) -> list:
         return [{"type": "text", "text": f"act failed: {e}"}]
 
 
-def handle_scroll(args: dict) -> list:
-    amount = args.get("amount", 3)
-    x = args.get("x")
-    y = args.get("y")
-    monitor = args.get("monitor")
-    coord_space = str(args.get("coord_space", "global")).strip().lower()
-    focus_title = (args.get("focus_title") or "").strip()
-    focus_handle = args.get("focus_handle")
-    query = f"/action/scroll?amount={amount}"
-    if x is not None:
-        query += f"&x={int(x)}"
-    if y is not None:
-        query += f"&y={int(y)}"
-    if monitor is not None:
-        query += f"&monitor_id={int(monitor)}"
-    if coord_space in {"monitor", "local", "monitor_local"}:
-        query += "&relative_to_monitor=true"
-    if focus_handle is not None:
-        query += f"&focus_handle={int(focus_handle)}"
-    elif focus_title:
-        query += f"&focus_title={urllib.parse.quote(focus_title)}"
-    data = _api_post(query)
-    direction = "down" if amount > 0 else "up"
-    return [{
-        "type": "text",
-        "text": (
-            f"Scrolled {direction} ({abs(amount)}): {'SUCCESS' if data.get('success') else 'FAILED'} "
-            f"(space={coord_space}, monitor={monitor if monitor is not None else 'auto'}, "
-            f"focus={'handle='+str(focus_handle) if focus_handle is not None else (focus_title or 'none')})"
-        ),
-    }]
-
-
-def handle_monitor_info(args: dict) -> list:
-    try:
-        monitors = _api_get("/monitors/info")
-        lines = ["## Monitor Layout"]
-        for m in monitors.get("monitors", []):
-            lines.append(
-                f"- **Monitor {m.get('id')}**: {m.get('resolution')} at {m.get('position')} "
-                f"(active={m.get('active')}, primary={m.get('primary')})"
-            )
-
-        windows = _api_get("/windows/list?visible_only=true&exclude_minimized=true")
-        items = windows.get("windows", [])
-        if items:
-            lines.append("\n## Windows by Monitor")
-            for w in items[:80]:
-                lines.append(
-                    f"- m{w.get('monitor_id', '?')} | h={w.get('handle')} | "
-                    f"**{w.get('title', '?')[:70]}** "
-                    f"({w.get('x')},{w.get('y')} {w.get('width')}x{w.get('height')})"
-                )
-        return [{"type": "text", "text": "\n".join(lines)}]
-    except Exception as e:
-        return [{"type": "text", "text": f"Error getting monitor info: {e}"}]
-
-
 def handle_see_monitor(args: dict) -> list:
     monitor = args.get("monitor", 1)
     mode = args.get("mode", "medium_res")
@@ -3211,6 +2178,213 @@ def handle_see_monitor(args: dict) -> list:
         ]
     except Exception as e:
         return [{"type": "text", "text": f"Error capturing monitor {monitor}: {e}"}]
+
+
+def _spatial_zone(left: int, top: int, width: int, height: int,
+                  all_monitors: list) -> str:
+    """Convert absolute monitor coordinates to human-readable spatial zone.
+
+    Compares this monitor's center against all others to produce
+    a natural label: CENTER, LEFT, RIGHT, TOP-LEFT, etc.
+    Works for any number of monitors in any physical arrangement.
+    """
+    if len(all_monitors) <= 1:
+        return "MAIN"
+
+    cx = left + width // 2
+    cy = top + height // 2
+
+    # Compute centers of all monitors
+    centers = [(m.get("left", 0) + m.get("width", 1) // 2,
+                m.get("top", 0) + m.get("height", 1) // 2)
+               for m in all_monitors]
+
+    avg_x = sum(c[0] for c in centers) / len(centers)
+    avg_y = sum(c[1] for c in centers) / len(centers)
+
+    # X: how far from average horizontal center (normalized)
+    x_range = max(abs(c[0] - avg_x) for c in centers) or 1
+    y_range = max(abs(c[1] - avg_y) for c in centers) or 1
+
+    rel_x = (cx - avg_x) / x_range   # -1 = leftmost, +1 = rightmost
+    rel_y = (cy - avg_y) / y_range   # -1 = topmost,  +1 = bottommost
+
+    h = "LEFT" if rel_x < -0.3 else ("RIGHT" if rel_x > 0.3 else "CENTER")
+    v = "TOP" if rel_y < -0.3 else ("BOTTOM" if rel_y > 0.3 else "")
+
+    if v and h == "CENTER":
+        return v
+    if v:
+        return f"{v}-{h}"
+    return h
+
+
+def handle_get_spatial_context(args: dict) -> list:
+    """Build a one-shot spatial context block for session start.
+
+    Combines monitor layout (static), window inventory per monitor (dynamic),
+    user activity state, and inferred safety rules into a compact narrative
+    (~400-600 tokens) that lets the AI understand the full environment
+    without making multiple round-trip calls.
+
+    Call once at session start. Re-call if user adds/removes a monitor.
+    For dynamic changes (windows opening/closing) use see_now + spatial_state.
+    """
+    # ── 1. Monitor layout ────────────────────────────────────────────────────
+    try:
+        spatial = _api_get("/spatial/state?include_windows=true")
+    except Exception as e:
+        return [{"type": "text", "text": f"Spatial context unavailable: {e}"}]
+
+    monitors_raw = spatial.get("monitors", []) or []
+    active_monitor_id = int(spatial.get("active_monitor_id") or 1)
+    active_window = spatial.get("active_window", {}) or {}
+    cursor = spatial.get("cursor", {}) or {}
+    n_monitors = len(monitors_raw)
+
+    # ── 2. Window inventory per monitor ─────────────────────────────────────
+    try:
+        win_data = _api_get("/windows/list?visible_only=true&exclude_minimized=true&exclude_system=true")
+        all_windows = win_data.get("windows", []) or []
+    except Exception:
+        all_windows = []
+
+    # Group windows by monitor
+    wins_by_monitor: dict[int, list[dict]] = {}
+    for w in all_windows:
+        mid = int(w.get("monitor_id") or 0)
+        wins_by_monitor.setdefault(mid, []).append(w)
+
+    # ── 3. User activity context ──────────────────────────────────────────────
+    try:
+        ctx = _api_get("/context/state")
+        workflow = ctx.get("workflow", "unknown")
+        app = ctx.get("app", "unknown")
+        focus = ctx.get("is_focused", False)
+        time_in_workflow = int(ctx.get("time_in_workflow_seconds", 0) or 0)
+    except Exception:
+        workflow = app = "unknown"
+        focus = False
+        time_in_workflow = 0
+
+    # ── 4. Build narrative ────────────────────────────────────────────────────
+    lines = [
+        "# SPATIAL CONTEXT — Session Start",
+        f"Monitors: {n_monitors} | Active: M{active_monitor_id} | "
+        f"Cursor: ({cursor.get('x', '?')},{cursor.get('y', '?')})",
+        "",
+        "## Monitor Layout",
+    ]
+
+    monitor_zones = {}
+    for m in monitors_raw:
+        mid = int(m.get("id", 0))
+        left = int(m.get("left", 0))
+        top = int(m.get("top", 0))
+        w = int(m.get("width", 1920))
+        h = int(m.get("height", 1080))
+        zone = _spatial_zone(left, top, w, h, monitors_raw)
+        monitor_zones[mid] = zone
+        is_active = (mid == active_monitor_id)
+
+        lines.append(
+            f"  M{mid} [{zone}] {w}x{h} at ({left},{top})"
+            + (" ← ACTIVE" if is_active else "")
+        )
+
+        # Windows on this monitor
+        wins = wins_by_monitor.get(mid, [])
+        if wins:
+            for win in wins[:5]:
+                title = (win.get("title") or "").strip()[:70]
+                handle = win.get("handle")
+                is_aw = (handle == active_window.get("handle"))
+                marker = " ★ USER ACTIVE" if is_aw else ""
+                lines.append(f"    • [{title}] h={handle}{marker}")
+        else:
+            lines.append("    • (no visible windows)")
+
+    # Active window summary
+    lines.append("")
+    lines.append("## Active Window")
+    if active_window:
+        aw_title = (active_window.get("title") or "").strip()[:80]
+        aw_app = (active_window.get("app_name") or "").strip()
+        aw_mon = int(active_window.get("monitor_id") or active_monitor_id)
+        aw_zone = monitor_zones.get(aw_mon, "?")
+        lines.append(f"  App: {aw_app or aw_title}")
+        lines.append(f"  Title: {aw_title}")
+        lines.append(f"  Monitor: M{aw_mon} [{aw_zone}]")
+        lines.append(f"  Handle: {active_window.get('handle')}")
+    else:
+        lines.append("  Unknown")
+
+    # User activity
+    lines.append("")
+    lines.append("## User Activity")
+    if workflow != "unknown":
+        mins = time_in_workflow // 60
+        secs = time_in_workflow % 60
+        duration = f"{mins}m{secs}s" if mins else f"{secs}s"
+        lines.append(f"  Workflow: {workflow} | App: {app} | Duration: {duration}")
+        lines.append(f"  Focus: {'HIGH' if focus else 'LOW'}")
+    else:
+        lines.append("  Not detected yet — call again after 10s of capture")
+
+    # ── 5. Inferred safety rules ──────────────────────────────────────────────
+    lines.append("")
+    lines.append("## Safety Rules (auto-inferred)")
+
+    rules = []
+
+    # Rule 1: active monitor has user content → preserve
+    if active_window:
+        aw_title_low = (active_window.get("title") or "").lower()
+        aw_app_low = (active_window.get("app_name") or "").lower()
+        blob = aw_title_low + " " + aw_app_low
+        # Detect if user is actively consuming content
+        content_apps = ("brave", "chrome", "firefox", "edge", "youtube", "netflix",
+                        "spotify", "vlc", "teams", "zoom", "slack", "discord")
+        if any(k in blob for k in content_apps):
+            aw_zone = monitor_zones.get(active_monitor_id, "ACTIVE")
+            rules.append(
+                f"  ⚠ M{active_monitor_id} [{aw_zone}] has active user content "
+                f"({(active_window.get('app_name') or 'app').strip()}) — "
+                f"DO NOT navigate/close existing tabs. Open new tab or use another monitor."
+            )
+
+    # Rule 2: prefer inactive monitors for agent tasks
+    inactive = [mid for mid in monitor_zones if mid != active_monitor_id]
+    if inactive:
+        zones = ", ".join(f"M{mid} [{monitor_zones[mid]}]" for mid in inactive)
+        rules.append(f"  ✓ Prefer {zones} for agent tasks to avoid disrupting user.")
+
+    # Rule 3: multiple monitors — always specify monitor when clicking
+    if n_monitors > 1:
+        rules.append(
+            f"  ✓ {n_monitors} monitors detected — always pass monitor= param "
+            f"to act/click to target the correct display."
+        )
+
+    # Rule 4: new_tab default
+    rules.append(
+        "  ✓ browser_navigate: always new_tab=True unless explicitly told to replace current page."
+    )
+
+    if rules:
+        lines.extend(rules)
+    else:
+        lines.append("  No special rules inferred.")
+
+    # ── 6. Quick reference ────────────────────────────────────────────────────
+    lines.append("")
+    lines.append("## Quick Reference")
+    lines.append("  Before acting:  call see_now to get current screen state")
+    lines.append("  After acting:   call what_changed to verify result")
+    lines.append("  To re-orient:   call get_spatial_context again")
+    lines.append(f"  Total windows visible: {len(all_windows)}")
+
+    return [{"type": "text", "text": "\n".join(lines)}]
 
 
 def handle_spatial_state(args: dict) -> list:
@@ -3238,77 +2412,6 @@ def handle_spatial_state(args: dict) -> list:
             f"- Monitor {mon.get('id')}: ({mon.get('left')},{mon.get('top')}) "
             f"{mon.get('width')}x{mon.get('height')} active={mon.get('is_active')}"
         )
-    return [{"type": "text", "text": "\n".join(lines)}]
-
-
-def handle_workers_status(args: dict) -> list:
-    _ = args
-    try:
-        data = _api_get("/workers/status")
-    except Exception as e:
-        return [{"type": "text", "text": f"Workers status unavailable: {e}"}]
-
-    workers = data.get("workers", {}) or {}
-    arbiter = data.get("arbiter", {}) or {}
-    lines = [
-        "## Workers Status",
-        f"- Enabled: {data.get('enabled', False)}",
-        f"- Active monitor: {data.get('active_monitor_id', 0)}",
-        f"- Monitor count: {data.get('monitor_count', 0)}",
-        f"- Arbiter owner: {arbiter.get('owner')}",
-        f"- Arbiter denied: {arbiter.get('denied_count', 0)}",
-        f"- Arbiter lease remaining: {arbiter.get('lease_remaining_ms', 0)}ms",
-    ]
-    for name, info in workers.items():
-        lines.append(
-            f"- Worker[{name}]: processed={info.get('processed', 0)} "
-            f"errors={info.get('errors', 0)} "
-            f"avg_ms={info.get('avg_latency_ms', 0)} "
-            f"staleness_ms={info.get('staleness_ms', 0)}"
-        )
-    monitors = data.get("monitors", []) or []
-    if monitors:
-        lines.append("### Monitor Digests")
-        for mon in monitors[:8]:
-            lines.append(
-                f"- m{mon.get('monitor_id')}: scene={mon.get('scene_state')} "
-                f"phase={mon.get('task_phase')} ready={mon.get('readiness')} "
-                f"stale={mon.get('staleness_ms')}ms"
-            )
-    return [{"type": "text", "text": "\n".join(lines)}]
-
-
-def handle_workers_monitor(args: dict) -> list:
-    monitor = args.get("monitor")
-    if monitor is None:
-        return [{"type": "text", "text": "Error: monitor is required"}]
-    try:
-        mid = int(monitor)
-    except Exception:
-        return [{"type": "text", "text": "Error: monitor must be an integer"}]
-
-    try:
-        data = _api_get(f"/workers/monitor/{mid}")
-    except Exception as e:
-        return [{"type": "text", "text": f"Worker monitor {mid} unavailable: {e}"}]
-
-    lines = [
-        f"## Worker Monitor {mid}",
-        f"- Tick: {data.get('tick_id', 0)}",
-        f"- Scene: {data.get('scene_state', 'unknown')} (conf={data.get('scene_confidence', 0)})",
-        f"- Change: {data.get('change_score', 0)}",
-        f"- Direction: {data.get('dominant_direction', 'none')}",
-        f"- Phase: {data.get('task_phase', 'unknown')}",
-        f"- Surface: {data.get('active_surface', 'unknown')}",
-        f"- Readiness: {data.get('readiness', False)} | uncertainty={data.get('uncertainty', 1.0)}",
-        f"- Staleness: {data.get('staleness_ms', 0)}ms",
-    ]
-    targets = data.get("attention_targets", []) or []
-    if targets:
-        lines.append(f"- Attention: {', '.join([str(t) for t in targets[:6]])}")
-    vf = data.get("visual_facts", []) or []
-    if vf:
-        lines.append(f"- Visual facts: {len(vf)}")
     return [{"type": "text", "text": "\n".join(lines)}]
 
 
@@ -3597,91 +2700,166 @@ def handle_audio_interrupt_status(args: dict) -> list:
     return [{"type": "text", "text": f"Audio interrupt: blocked={data.get('blocked')} reason={data.get('reason')} remaining_ms={data.get('remaining_ms', 0)} events={data.get('events_count', 0)}"}]
 
 
-def handle_audio_interrupt_ack(args: dict) -> list:
-    _ = args
+def handle_see_now(args: dict) -> list:
+    """Current frame as image + IPA v3 motion/scene context.
+
+    This is the primary vision tool for RT agent loops.
+    Returns the actual screen image so Claude/GPT-4o can SEE it directly,
+    plus a compact IPA v3 narrative (~100 tokens) of what's happening.
+    """
+    monitor = args.get("monitor")
+    mode = args.get("mode", "low_res")   # low_res default — ~5K tokens with real image
+
+    # Get frame image from server
+    query = f"/vision/smart?mode={mode}"
+    if monitor is not None:
+        query += f"&monitor_id={int(monitor)}"
     try:
-        data = _api_post("/audio/interrupt/ack", body={})
+        data = _api_get(query)
     except Exception as e:
-        return [{"type": "text", "text": f"Audio interrupt ack failed: {e}"}]
-    return [{"type": "text", "text": f"Audio interrupt acknowledged={data.get('acknowledged', False)}"}]
+        return [{"type": "text", "text": f"see_now failed: {e}"}]
+
+    result = []
+
+    # IPA v3 context from bridge (if running)
+    ipa_context = ""
+    try:
+        ipa_data = _api_get("/ipa/context")
+        if ipa_data and not ipa_data.get("error"):
+            motion = ipa_data.get("motion", {}) or {}
+            scene = ipa_data.get("scene_state", "unknown")
+            gate = ipa_data.get("gate_event") or {}
+            parts = [f"[Scene: {scene}]"]
+            if motion.get("motion_type") and motion["motion_type"] != "static":
+                parts.append(f"[Motion: {motion['motion_type']} | {motion.get('detail', '')}]")
+            if gate.get("description"):
+                import time as _t
+                age = round(_t.time() - gate.get("timestamp", _t.time()), 1)
+                parts.append(f"[Event {age}s ago: {gate['description']}]")
+            if ipa_data.get("ocr_hint"):
+                parts.append(f"[OCR: {ipa_data['ocr_hint'][:200]}]")
+            ipa_context = " ".join(parts)
+    except Exception:
+        pass
+
+    # Perception context fallback
+    perception_text = data.get("ai_prompt", "")
+    header = ipa_context or perception_text or "Screen capture"
+
+    result.append({"type": "text", "text": header})
+
+    if "image_base64" in data:
+        result.append({
+            "type": "image",
+            "data": data["image_base64"],
+            "mimeType": data.get("mime_type", "image/webp"),
+        })
+    else:
+        # text_only fallback — include OCR
+        if data.get("ocr_text"):
+            result.append({"type": "text", "text": f"OCR:\n{data['ocr_text'][:2000]}"})
+
+    return result
+
+
+def handle_what_changed(args: dict) -> list:
+    """What changed on screen since last time + image of the key moment.
+
+    Combines IPA v3 gate events with a frame image of the most significant change.
+    Use after actions to verify the result, or when resuming after a pause.
+    """
+    seconds = float(args.get("seconds", 15))
+    monitor = args.get("monitor")
+
+    result_parts = []
+
+    # IPA v3 gate events
+    try:
+        ipa_data = _api_get(f"/ipa/events?seconds={seconds}")
+        events = ipa_data.get("events", []) if ipa_data else []
+        if events:
+            lines = [f"## What changed (last {seconds:.0f}s)"]
+            import time as _t
+            now = _t.time()
+            for evt in events[-8:]:
+                age = round(now - evt.get("timestamp", now), 1)
+                lines.append(f"• [{age}s ago] {evt.get('description', '')} "
+                             f"(patches={evt.get('n_changed_patches', 0)}, "
+                             f"motion={evt.get('motion_type', '?')})")
+            result_parts.append({"type": "text", "text": "\n".join(lines)})
+        else:
+            result_parts.append({"type": "text", "text": f"No significant events in last {seconds:.0f}s."})
+    except Exception as e:
+        result_parts.append({"type": "text", "text": f"IPA events unavailable: {e}"})
+
+    # Frame image of the most recent significant moment
+    try:
+        query = f"/frames?seconds={min(seconds, 30)}&include_images=true"
+        if monitor is not None:
+            query += f"&monitor_id={int(monitor)}"
+        frames_data = _api_get(query)
+        frames = frames_data.get("frames", [])
+        # Pick frame with highest change_score
+        if frames:
+            best = max(frames, key=lambda f: f.get("change_score", 0))
+            if best.get("image_base64"):
+                change = best.get("change_score", 0)
+                ts = best.get("timestamp_iso", "?")
+                result_parts.append({"type": "text", "text": f"Key frame — {ts} (change={change:.3f})"})
+                result_parts.append({
+                    "type": "image",
+                    "data": best["image_base64"],
+                    "mimeType": "image/webp",
+                })
+    except Exception:
+        pass
+
+    return result_parts if result_parts else [{"type": "text", "text": f"No changes detected in last {seconds:.0f}s."}]
 
 
 HANDLERS = {
+    # ── Vision (IPA v3 + OCR) ──
     "see_screen": handle_see_screen,
+    "see_now": handle_see_now,
+    "what_changed": handle_what_changed,
+    "see_changes": handle_see_changes,
+    "see_monitor": handle_see_monitor,
+    "read_screen_text": handle_read_text,
+    "vision_query": handle_vision_query,
+    # ── Perception / context ──
     "perception": handle_perception,
     "perception_world": handle_perception_world,
-    "perception_trace": handle_perception_trace,
-    "domain_pack_list": handle_domain_pack_list,
-    "domain_pack_override": handle_domain_pack_override,
-    "vision_query": handle_vision_query,
-    "describe_screen": handle_describe_screen,
-    "grounding_status": handle_grounding_status,
-    "grounding_resolve": handle_grounding_resolve,
-    "click_grounded": handle_click_grounded,
-    "type_grounded": handle_type_grounded,
-    "watch_screen": handle_watch_screen,
-    "see_changes": handle_see_changes,
-    "annotate_screen": handle_annotate,
-    "read_screen_text": handle_read_text,
-    "screen_status": handle_status,
     "get_context": handle_context,
-    "get_audio_level": handle_audio_level,
-    # v1.0: Computer Use
+    "get_spatial_context": handle_get_spatial_context,
+    "spatial_state": handle_spatial_state,
+    # ── Grounding ──
+    # ── Computer Use ──
     "do_action": handle_do_action,
-    "action_intent": handle_action_intent,
-    "raw_action": handle_raw_action,
-    "action_precheck": handle_action_precheck,
-    "verify_action": handle_verify_action,
     "operate_cycle": handle_operate_cycle,
     "set_operating_mode": handle_set_operating_mode,
-    "click_element": handle_click_element,
-    "type_text": handle_type_text,
-    "run_command": handle_run_command,
+    "act": handle_act,
+    "drag_screen": handle_drag_screen,
+    # ── Windows ──
     "list_windows": handle_list_windows,
+    "focus_window": handle_focus_window,
     "window_minimize": handle_window_minimize,
     "window_maximize": handle_window_maximize,
     "window_close": handle_window_close,
     "move_window": handle_move_window,
-    "find_ui_element": handle_find_ui_element,
+    # ── Browser ──
+    "browser_navigate": handle_browser_navigate,
+    "browser_tabs": handle_browser_tabs,
+    # ── Files / system ──
+    "run_command": handle_run_command,
     "read_file": handle_read_file,
     "write_file": handle_write_file,
     "get_clipboard": handle_get_clipboard,
+    # ── Status ──
+    "screen_status": handle_status,
     "agent_status": handle_agent_status,
-    # Human-like navigation
-    "focus_window": handle_focus_window,
-    "browser_navigate": handle_browser_navigate,
-    "browser_tabs": handle_browser_tabs,
-    "act": handle_act,
-    "click_screen": handle_click_screen,
-    "drag_screen": handle_drag_screen,
-    "keyboard": handle_keyboard,
-    "scroll": handle_scroll,
-    "monitor_info": handle_monitor_info,
-    "see_monitor": handle_see_monitor,
-    "spatial_state": handle_spatial_state,
-    "workers_status": handle_workers_status,
-    "workers_monitor": handle_workers_monitor,
-    "workers_claim_action": handle_workers_claim_action,
-    "workers_release_action": handle_workers_release_action,
-    "workers_schedule": handle_workers_schedule,
-    "workers_set_subgoal": handle_workers_set_subgoal,
-    "workers_clear_subgoal": handle_workers_clear_subgoal,
-    "workers_route": handle_workers_route,
-    "behavior_stats": handle_behavior_stats,
-    "behavior_recent": handle_behavior_recent,
-    "behavior_suggest": handle_behavior_suggest,
-    "runtime_profile": handle_runtime_profile,
-    "host_telemetry": handle_host_telemetry,
-    "os_notifications": handle_os_notifications,
-    "os_tray": handle_os_tray,
+    "get_audio_level": handle_audio_level,
     "os_dialog_status": handle_os_dialog_status,
     "os_dialog_resolve": handle_os_dialog_resolve,
-    "audio_interrupt_status": handle_audio_interrupt_status,
-    "audio_interrupt_ack": handle_audio_interrupt_ack,
-    # Token management
-    "token_status": handle_token_status,
-    "set_token_mode": handle_set_token_mode,
-    "set_token_budget": handle_set_token_budget,
 }
 
 

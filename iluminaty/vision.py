@@ -35,8 +35,10 @@ logger = logging.getLogger(__name__)
 # ─── OCR Engine (RapidOCR -> Tesseract -> None fallback chain) ───
 
 def _try_import_rapidocr():
-    """Intenta importar RapidOCR (ONNX, rapido, cross-platform)."""
+    """RapidOCR forzando CPU — DirectML solo en ocr_worker.py (thread dedicado)."""
     try:
+        import os
+        os.environ.setdefault('ORT_DISABLE_DML', '1')
         from rapidocr import RapidOCR
         return RapidOCR()
     except Exception:

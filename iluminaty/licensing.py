@@ -55,42 +55,32 @@ class Plan(str, Enum):
 
 # Unregistered: demo mode — perception only, no actions
 UNREGISTERED_MCP_TOOLS = {
-    "see_screen", "read_screen_text", "perception",
+    "see_screen", "see_now", "get_spatial_context", "read_screen_text", "perception",
     "perception_world", "spatial_state", "screen_status",
-    "get_context", "token_status",
-    "set_token_mode", "set_token_budget",
+    "get_context",
 }
 
 # Free (registered): full perception + basic act
 FREE_MCP_TOOLS = UNREGISTERED_MCP_TOOLS | {
-    "act",
-    "see_changes", "perception_trace",
+    "act", "what_changed",
+    "see_changes", "see_monitor",
+ "vision_query",
     "set_operating_mode",
-    "vision_query",
     "window_minimize", "window_maximize", "window_close",
     "move_window", "drag_screen",
-    "host_telemetry",
     "get_audio_level",
-    "verify_action", "action_precheck",
 }
 
-# Pro (registered, free): everything
+# Pro (registered): everything
 PRO_MCP_TOOLS = FREE_MCP_TOOLS | {
-    "describe_screen",
-    "domain_pack_list", "domain_pack_override",
-    "workers_status", "workers_monitor",
-    "workers_claim_action", "workers_release_action",
-    "workers_schedule", "workers_set_subgoal", "workers_clear_subgoal", "workers_route",
-    "behavior_stats", "behavior_recent", "behavior_suggest",
-    "runtime_profile",
-    "os_notifications", "os_tray", "os_dialog_status", "os_dialog_resolve",
-    "audio_interrupt_status", "audio_interrupt_ack",
-    "watch_screen", "focus_window", "browser_navigate", "browser_tabs",
-    "click_screen", "keyboard", "scroll",
-    "monitor_info", "see_monitor",
-    "annotate_screen", "click_element", "type_text", "run_command",
-    "list_windows", "find_ui_element", "read_file", "write_file",
+    "see_now",
+    "os_dialog_status", "os_dialog_resolve",
+    "focus_window", "browser_navigate", "browser_tabs",
+ "run_command",
+    "list_windows",
+ "read_file", "write_file",
     "get_clipboard", "agent_status",
+    "do_action", "operate_cycle",
 }
 
 # Custom: everything (same as Pro but with golden key validation)

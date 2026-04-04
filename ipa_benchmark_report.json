@@ -1,0 +1,146 @@
+{
+  "timestamp": "2026-04-03T20:35:25.995683",
+  "system": {
+    "platform": "Windows-11-10.0.26200-SP0",
+    "cpu": "Intel64 Family 6 Model 165 Stepping 3, GenuineIntel",
+    "ram_total_gb": 15.9,
+    "python": "3.14.3",
+    "cpu_count": 8,
+    "gpu": "NVIDIA GeForce RTX 3070",
+    "gpu_vram_mb": 8192,
+    "cuda_version": "12.6"
+  },
+  "results": {
+    "realtime": {
+      "fps_target": 3,
+      "fps_actual": 2.2,
+      "duration_s": 30,
+      "device": "cuda",
+      "frames_processed": 65,
+      "frames_dropped": 25,
+      "latency": {
+        "mean_ms": 262.9,
+        "median_ms": 129.2,
+        "p95_ms": 165.1,
+        "min_ms": 103.3,
+        "max_ms": 8705.7,
+        "count": 65
+      },
+      "motion_histogram": {
+        "video": 18
+      },
+      "scene_transitions": 1,
+      "buffer_memory_kb": 2223.3,
+      "motion_log": [
+        {
+          "t": 8.8,
+          "motion": "video",
+          "speed": 1.0,
+          "patches": 148
+        },
+        {
+          "t": 10.0,
+          "motion": "video",
+          "speed": 0.71,
+          "patches": 196
+        },
+        {
+          "t": 11.3,
+          "motion": "video",
+          "speed": 0.66,
+          "patches": 105
+        },
+        {
+          "t": 12.7,
+          "motion": "video",
+          "speed": 0.61,
+          "patches": 106
+        },
+        {
+          "t": 14.0,
+          "motion": "video",
+          "speed": 0.71,
+          "patches": 135
+        },
+        {
+          "t": 15.3,
+          "motion": "video",
+          "speed": 0.75,
+          "patches": 104
+        },
+        {
+          "t": 16.3,
+          "motion": "video",
+          "speed": 0.73,
+          "patches": 114
+        },
+        {
+          "t": 17.3,
+          "motion": "video",
+          "speed": 0.69,
+          "patches": 100
+        },
+        {
+          "t": 18.7,
+          "motion": "video",
+          "speed": 0.63,
+          "patches": 87
+        },
+        {
+          "t": 20.0,
+          "motion": "video",
+          "speed": 0.77,
+          "patches": 95
+        },
+        {
+          "t": 21.0,
+          "motion": "video",
+          "speed": 0.55,
+          "patches": 102
+        },
+        {
+          "t": 22.3,
+          "motion": "video",
+          "speed": 0.63,
+          "patches": 129
+        },
+        {
+          "t": 23.3,
+          "motion": "video",
+          "speed": 0.79,
+          "patches": 102
+        },
+        {
+          "t": 24.7,
+          "motion": "video",
+          "speed": 0.81,
+          "patches": 107
+        },
+        {
+          "t": 25.7,
+          "motion": "video",
+          "speed": 0.83,
+          "patches": 112
+        },
+        {
+          "t": 27.0,
+          "motion": "video",
+          "speed": 0.78,
+          "patches": 122
+        },
+        {
+          "t": 28.0,
+          "motion": "video",
+          "speed": 0.77,
+          "patches": 150
+        },
+        {
+          "t": 29.3,
+          "motion": "video",
+          "speed": 0.7,
+          "patches": 91
+        }
+      ]
+    }
+  }
+}

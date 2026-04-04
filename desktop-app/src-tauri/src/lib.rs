@@ -20,7 +20,7 @@ const DEFAULT_VLM_MODEL: &str = "HuggingFaceTB/SmolVLM2-500M-Instruct";
 
 // ─── Shared State ───────────────────────────────────────────────────────────────
 
-struct ServerProcess(Mutex<Option<Child>>);
+struct ServerProcess(Arc<Mutex<Option<Child>>>);
 
 struct DesktopSettingsState(Arc<Mutex<DesktopSettings>>);
 
@@ -254,13 +254,79 @@ fn command_ok(mut cmd: Command) -> Result<String, String> {
 
 fn python_candidates() -> Vec<String> {
     let mut out = Vec::new();
+
     if let Ok(local) = std::env::var("LOCALAPPDATA") {
-        out.push(format!(r"{}\Microsoft\WindowsApps\python3.13.exe", local));
-        out.push(format!(r"{}\Microsoft\WindowsApps\python3.12.exe", local));
-        out.push(format!(r"{}\Programs\Python\Python313\python.exe", local));
-        out.push(format!(r"{}\Programs\Python\Python312\python.exe", local));
+        // 1. Scan %LOCALAPPDATA%\Python\pythoncore-*\python.exe (py.exe installs here)
+        //    Sort descending so newest version is tried first.
+        let py_dir = PathBuf::from(&local).join("Python");
+        if let Ok(entries) = fs::read_dir(&py_dir) {
+            let mut versioned: Vec<PathBuf> = entries
+                .flatten()
+                .map(|e| e.path().join("python.exe"))
+                .filter(|p| p.exists())
+                .collect();
+            versioned.sort_by(|a, b| b.cmp(a)); // descending = newest first
+            for p in versioned {
+                out.push(p.to_string_lossy().to_string());
+            }
+        }
+        // 2. Also check %LOCALAPPDATA%\Python\bin\python*.exe
+        let bin_dir = PathBuf::from(&local).join("Python").join("bin");
+        for name in &["python3.14.exe", "python3.13.exe", "python3.12.exe"] {
+            let p = bin_dir.join(name);
+            if p.exists() { out.push(p.to_string_lossy().to_string()); }
+        }
+        // 3. WindowsApps (may work depending on context)
+        for name in &["python3.14.exe", "python3.13.exe", "python3.12.exe"] {
+            out.push(format!(r"{}\Microsoft\WindowsApps\{}", local, name));
+        }
+        // 4. Classic installer paths
+        for name in &["Python314", "Python313", "Python312", "Python311"] {
+            out.push(format!(r"{}\Programs\Python\{}\python.exe", local, name));
+        }
     }
-    out.push("py".to_string());
+
+    // 5. System-wide installs
+    for root in &[r"C:\Python314", r"C:\Python313", r"C:\Python312"] {
+        out.push(format!(r"{}\python.exe", root));
+    }
+    if let Ok(pf) = std::env::var("ProgramFiles") {
+        for name in &["Python314", "Python313", "Python312"] {
+            out.push(format!(r"{}\Python\{}\python.exe", pf, name));
+        }
+    }
+
+    // 6. MSYS2 / MinGW paths (common dev setup)
+    for msys_root in &[r"C:\msys64", r"C:\msys2", r"D:\msys64", r"D:\msys2"] {
+        for sub in &[r"mingw64\bin\python.exe", r"mingw32\bin\python.exe",
+                     r"ucrt64\bin\python.exe", r"usr\bin\python3.exe",
+                     r"usr\bin\python.exe"] {
+            let p = PathBuf::from(msys_root).join(sub);
+            if p.exists() { out.push(p.to_string_lossy().to_string()); }
+        }
+    }
+
+    // 7. Resolve `python` / `python3` from PATH (handles conda, pyenv, etc.)
+    //    Use `where` command on Windows to find the real path.
+    for cmd in &["python", "python3"] {
+        let mut c = std::process::Command::new("where");
+        c.arg(cmd)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        #[cfg(target_os = "windows")]
+        { c.creation_flags(0x08000000); }
+        if let Ok(o) = c.output() {
+            let stdout = String::from_utf8_lossy(&o.stdout);
+            for line in stdout.lines() {
+                let p = line.trim();
+                if !p.is_empty() && PathBuf::from(p).exists() {
+                    out.push(p.to_string());
+                }
+            }
+        }
+    }
+
+    // 8. Bare names as absolute last resort
     out.push("python3".to_string());
     out.push("python".to_string());
     out
@@ -278,6 +344,38 @@ fn find_bootstrap_python() -> Option<String> {
     python_candidates()
         .into_iter()
         .find(|candidate| python_smoke(candidate))
+}
+
+/// Find a Python interpreter that can run the iluminaty server.
+/// iluminaty lives in the source tree (not installed as a package), so
+/// we check for it by running the check from project_root() as cwd.
+/// We also require uvicorn + fastapi + mss to be installed.
+fn find_python_with_iluminaty() -> Option<String> {
+    let root = project_root();
+    let root_path = PathBuf::from(&root);
+
+    // The project root must actually exist with iluminaty/main.py
+    if !root_path.join("iluminaty").join("main.py").exists() {
+        return None;
+    }
+
+    // Check that server dependencies are installed (uvicorn/fastapi/mss).
+    // iluminaty itself is found via cwd (source tree), not site-packages.
+    let check = r#"import importlib.util as u
+ok = all(u.find_spec(m) is not None for m in ["uvicorn","fastapi","mss"])
+print("ok" if ok else "missing")"#;
+
+    python_candidates().into_iter().find(|candidate| {
+        let mut c = command_hidden(candidate);
+        c.arg("-c").arg(check);
+        c.current_dir(&root_path); // iluminaty importable via cwd
+        match c.output() {
+            Ok(o) if o.status.success() => {
+                String::from_utf8_lossy(&o.stdout).trim() == "ok"
+            }
+            _ => false,
+        }
+    })
 }
 
 fn runtime_missing_modules(python: &Path, modules: &[&str]) -> Result<Vec<String>, String> {
@@ -587,8 +685,55 @@ fn start_vlm_download(
 fn start_server(
     server_state: State<ServerProcess>,
     settings_state: State<DesktopSettingsState>,
+    app: tauri::AppHandle,
 ) -> Result<String, String> {
-    start_server_internal(&server_state, &settings_state)
+    // Check if already running (fast, no blocking)
+    {
+        let proc = server_state.0.lock().map_err(|e| e.to_string())?;
+        if proc.is_some() {
+            return Ok("Server already running".into());
+        }
+    }
+
+    let settings = settings_state.0.lock().map_err(|e| e.to_string())?.clone();
+    let server_arc = server_state.0.clone();
+
+    // Spawn background thread — keeps UI responsive
+    std::thread::spawn(move || {
+        // Fast path: system Python with iluminaty already installed
+        let result: Result<String, String> = (|| {
+            if let Some(sys_python) = find_python_with_iluminaty() {
+                let python = PathBuf::from(&sys_python);
+                let child = spawn_server(&python, &settings)?;
+                let pid = child.id();
+                let mut proc = server_arc.lock().map_err(|e| e.to_string())?;
+                *proc = Some(child);
+                return Ok(format!("Server started (PID: {})", pid));
+            }
+            // Slow path: venv bootstrap
+            let runtime = ensure_runtime(&settings, settings.vlm_enabled)?;
+            if !runtime.ready {
+                return Err(format!(
+                    "Runtime not ready: {}\n\nRun: pip install -e .[ocr]",
+                    runtime.message
+                ));
+            }
+            let python = PathBuf::from(&runtime.python);
+            let child = spawn_server(&python, &settings)?;
+            let pid = child.id();
+            let mut proc = server_arc.lock().map_err(|e| e.to_string())?;
+            *proc = Some(child);
+            Ok(format!("Server started via venv (PID: {})", pid))
+        })();
+
+        // Emit result back to frontend
+        match &result {
+            Ok(msg) => { let _ = app.emit("server-start-ok", msg.clone()); }
+            Err(err) => { let _ = app.emit("server-start-error", err.clone()); }
+        }
+    });
+
+    Ok("starting".into()) // Returns immediately — result comes via event
 }
 
 #[tauri::command]
@@ -961,20 +1106,24 @@ fn spawn_server(python: &Path, settings: &DesktopSettings) -> Result<Child, Stri
 }
 
 fn project_root() -> String {
+    // Helper: check if a dir is a valid iluminaty source root
+    fn is_valid_root(p: &Path) -> bool {
+        p.join("iluminaty").join("main.py").exists()
+    }
+
+    // 1. Explicit override env var
     if let Ok(root) = std::env::var("ILUMINATY_ROOT") {
         let p = PathBuf::from(&root);
-        if p.join("iluminaty").join("main.py").exists() {
+        if is_valid_root(&p) {
             return root;
         }
     }
 
+    // 2. Walk up from the exe location
     let exe = std::env::current_exe().unwrap_or_default();
-    let mut path = exe
-        .parent()
-        .unwrap_or(std::path::Path::new("."))
-        .to_path_buf();
-    for _ in 0..7 {
-        if path.join("iluminaty").join("main.py").exists() {
+    let mut path = exe.parent().unwrap_or(Path::new(".")).to_path_buf();
+    for _ in 0..8 {
+        if is_valid_root(&path) {
             return path.to_string_lossy().to_string();
         }
         if let Some(parent) = path.parent() {
@@ -984,9 +1133,10 @@ fn project_root() -> String {
         }
     }
 
+    // 3. Walk up from cwd
     let mut cwd = std::env::current_dir().unwrap_or_default();
     for _ in 0..5 {
-        if cwd.join("iluminaty").join("main.py").exists() {
+        if is_valid_root(&cwd) {
             return cwd.to_string_lossy().to_string();
         }
         if let Some(parent) = cwd.parent() {
@@ -996,6 +1146,36 @@ fn project_root() -> String {
         }
     }
 
+    // 4. Common user paths (Desktop, Documents, home) — catches installed app scenario
+    let search_names = ["iluminaty", "ILUMINATY", "Iluminaty"];
+    let base_dirs: Vec<PathBuf> = [
+        std::env::var("USERPROFILE").ok(),
+        std::env::var("HOME").ok(),
+    ]
+    .into_iter()
+    .flatten()
+    .map(PathBuf::from)
+    .flat_map(|base| {
+        vec![
+            base.join("Desktop"),
+            base.join("Documents"),
+            base.join("Projects"),
+            base.join("dev"),
+            base.clone(),
+        ]
+    })
+    .collect();
+
+    for dir in &base_dirs {
+        for name in &search_names {
+            let candidate = dir.join(name);
+            if is_valid_root(&candidate) {
+                return candidate.to_string_lossy().to_string();
+            }
+        }
+    }
+
+    // 5. Fallback: return cwd (best effort)
     std::env::current_dir()
         .unwrap_or_default()
         .to_string_lossy()
@@ -1012,15 +1192,31 @@ fn start_server_internal(
     }
 
     let settings = settings_state.0.lock().map_err(|e| e.to_string())?.clone();
+
+    // ── Fast path: system Python already has iluminaty + deps installed ──────
+    // Skips venv creation, pip install, and any blocking setup.
+    // This is the normal case for developers running from source.
+    if let Some(sys_python) = find_python_with_iluminaty() {
+        let python = PathBuf::from(&sys_python);
+        let child = spawn_server(&python, &settings)?;
+        let pid = child.id();
+        *proc = Some(child);
+        return Ok(format!("Server started via system Python (PID: {})", pid));
+    }
+
+    // ── Slow path: bootstrap a venv and install iluminaty ───────────────────
     let runtime = ensure_runtime(&settings, settings.vlm_enabled)?;
     if !runtime.ready {
-        return Err(runtime.message);
+        return Err(format!(
+            "Runtime not ready: {}\n\nFix: run `pip install -e .[ocr]` in the iluminaty source folder.",
+            runtime.message
+        ));
     }
     let python = PathBuf::from(runtime.python.clone());
     let child = spawn_server(&python, &settings)?;
     let pid = child.id();
     *proc = Some(child);
-    Ok(format!("Server started (PID: {})", pid))
+    Ok(format!("Server started via venv (PID: {})", pid))
 }
 
 fn stop_server_internal(server_state: &State<ServerProcess>) -> Result<(), String> {
@@ -1044,7 +1240,7 @@ pub fn run() {
     };
 
     tauri::Builder::default()
-        .manage(ServerProcess(Mutex::new(None)))
+        .manage(ServerProcess(Arc::new(Mutex::new(None))))
         .manage(DesktopSettingsState(Arc::new(Mutex::new(settings))))
         .manage(VlmDownloadState(Arc::new(Mutex::new(dl_status))))
         .plugin(tauri_plugin_opener::init())

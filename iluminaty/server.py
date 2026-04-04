@@ -44,7 +44,7 @@ from .monitors import MonitorManager
 from .memory import TemporalMemory
 from .watchdog import Watchdog
 from .router import AIRouter
-from .collab import CollaborativeManager
+from .ipa_bridge import IPABridge
 
 # v1.0 imports: Computer Use capas
 from .actions import ActionBridge
@@ -67,6 +67,8 @@ from .autonomy import AutonomyManager, AutonomyLevel
 from .audit import AuditLog
 from .licensing import LicenseManager, get_license, init_license
 from .grounding import GroundingEngine
+from .smart_locate import SmartLocateEngine, LocateResult
+from .ocr_worker import OCRWorker, init_ocr_worker, get_ocr_worker
 from .ui_semantics import UISemanticsEngine
 from .host_telemetry import HostTelemetry
 from .os_surface import OSSurfaceSignals
@@ -78,6 +80,14 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as StarletteRequest
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_operating_mode(mode) -> str:
+    """Normalize operating mode string. Defined early so _ServerState can use it."""
+    value = (mode or "SAFE").strip().upper()
+    if value not in {"SAFE", "RAW", "HYBRID"}:
+        value = "SAFE"
+    return value
 
 
 # ─── Server State (BUG-005 fix: single state object with lock) ───
@@ -102,7 +112,7 @@ class _ServerState:
         self.memory: Optional[TemporalMemory] = None
         self.watchdog: Optional[Watchdog] = None
         self.router: Optional[AIRouter] = None
-        self.collab: Optional[CollaborativeManager] = None
+        self.ipa_bridge: Optional[IPABridge] = None
         self.ws_clients: set = set()
         # v1.0: Computer Use capas
         self.actions: Optional[ActionBridge] = None
@@ -126,6 +136,8 @@ class _ServerState:
         self.license: Optional[LicenseManager] = None
         self.perception = None  # PerceptionEngine (lazy import)
         self.grounding: Optional[GroundingEngine] = None
+        self.smart_locator: Optional[SmartLocateEngine] = None
+        self.ocr_worker: Optional[OCRWorker] = None
         self.ui_semantics: Optional[UISemanticsEngine] = None
         self.host_telemetry: Optional[HostTelemetry] = None
         self.os_surface: Optional[OSSurfaceSignals] = None
@@ -561,11 +573,7 @@ def _is_system_noise_window(payload: dict) -> bool:
     return False
 
 
-def _normalize_operating_mode(mode: Optional[str]) -> str:
-    value = (mode or "SAFE").strip().upper()
-    if value not in {"SAFE", "RAW", "HYBRID"}:
-        value = "SAFE"
-    return value
+# _normalize_operating_mode defined near top of file (before _ServerState)
 
 
 def _mode_requires_safety(mode: str, category: str) -> bool:
@@ -2332,16 +2340,8 @@ def init_server(
     with _state.lock:
         _state.bootstrap_warnings = []
         # ─── License validation ───
-        import asyncio
+        # init_license() already calls validate() internally — no asyncio needed
         _state.license = init_license(api_key=iluminaty_key)
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                asyncio.ensure_future(_state.license.validate())
-            else:
-                loop.run_until_complete(_state.license.validate())
-        except RuntimeError:
-            asyncio.run(_state.license.validate())
         try:
             plan_value = str(_state.license.plan.value if _state.license else "free")
             if plan_value == "enterprise":
@@ -2432,7 +2432,15 @@ def init_server(
             _state.os_surface = None
             _state.bootstrap_warnings.append(f"os_surface_init_failed: {e}")
         _state.router = AIRouter()
-        _state.collab = CollaborativeManager()
+        # IPA v3 bridge — connect to ring buffer after capture is initialized
+        try:
+            if _state.buffer is not None:
+                import os as _os
+                fps = float(_os.environ.get('ILUMINATY_IPA_FPS', '3.0'))
+                _state.ipa_bridge = IPABridge(_state.buffer, fps=fps)
+                _state.ipa_bridge.start()
+        except Exception as _e:
+            _state.bootstrap_warnings.append(f'ipa_bridge_init_failed: {_e}')
 
         # ─── v1.0: Computer Use capas ───
 
@@ -2470,6 +2478,55 @@ def init_server(
         # Conectar UI Tree al ActionBridge
         if _state.ui_tree.available:
             _state.actions.set_ui_tree(_state.ui_tree)
+
+        # SmartLocateEngine — fusiona UITree + OCR para coordenadas exactas
+        def _ocr_blocks_for_monitor(monitor_id=None):
+            """OCR callback: devuelve bloques con coords para smart_locate."""
+            try:
+                slot, resolved_mid = _latest_slot_for_monitor(monitor_id)
+                if not slot or not _state.vision:
+                    return []
+                if not _state.vision.ocr.available:
+                    return []
+                result = _state.vision.ocr.extract_text(slot.frame_bytes)
+                blocks = result.get("blocks", []) if result else []
+                # Translate coords to global desktop space using monitor bounds
+                if monitor_id is not None and _state.monitor_mgr:
+                    mon = _state.monitor_mgr.get_monitor(monitor_id)
+                    if mon:
+                        for b in blocks:
+                            b["x"] = b.get("x", 0) + mon.left
+                            b["y"] = b.get("y", 0) + mon.top
+                return blocks
+            except Exception:
+                return []
+
+        # Build monitor bounds dict for coordinate validation
+        def _monitor_bounds_dict():
+            if not _state.monitor_mgr:
+                return {}
+            return {
+                m.id: {"left": m.left, "top": m.top, "width": m.width, "height": m.height}
+                for m in _state.monitor_mgr.monitors
+            }
+
+        _state.smart_locator = SmartLocateEngine(
+            ui_tree=_state.ui_tree,
+            ocr_fn=_ocr_blocks_for_monitor,
+            monitor_bounds=_monitor_bounds_dict(),
+        )
+
+        # OCR Worker subprocess — runs OCR in a separate process (no GIL blocking)
+        try:
+            _state.ocr_worker = init_ocr_worker()
+            if _state.ocr_worker.available:
+                logger.info("OCR worker subprocess started")
+            else:
+                logger.warning("OCR worker subprocess unavailable -- falling back to in-process OCR")
+                _state.ocr_worker = None
+        except Exception as _e:
+            logger.warning("OCR worker init failed: %s", _e)
+            _state.ocr_worker = None
 
         # Capa 3: App Control
         _state.vscode = VSCodeBridge()
@@ -4208,78 +4265,72 @@ async def ai_router_stats(x_api_key: Optional[str] = Header(None)):
     return _state.router.stats
 
 
-# ─── Collaborative (F17) ───
+# ─── IPA v3 endpoints ────────────────────────────────────────────────────────
 
-@app.post("/collab/create")
-async def collab_create(
-    host_name: str = Query(...),
-    room_name: str = Query(""),
+@app.get("/ipa/status")
+async def ipa_status(x_api_key: Optional[str] = Header(None)):
+    """IPA v3 bridge status and engine stats."""
+    _check_auth(x_api_key)
+    if not _state.ipa_bridge:
+        return {"running": False, "reason": "not_initialized"}
+    return _state.ipa_bridge.stats()
+
+
+@app.get("/ipa/context")
+async def ipa_context(
+    seconds: float = Query(30.0),
     x_api_key: Optional[str] = Header(None),
 ):
-    """Create a collaborative room."""
+    """IPA v3 visual context: motion, scene state, gate events, OCR hint."""
     _check_auth(x_api_key)
-    if not _state.collab:
-        raise HTTPException(503, "Not initialized")
-    return _state.collab.create_room(host_name, room_name)
+    if not _state.ipa_bridge:
+        return {"error": "ipa_bridge_not_initialized"}
+
+    ctx = _state.ipa_bridge.visual_context(seconds=seconds) or {}
+    gate = _state.ipa_bridge.gate_event(max_age_s=seconds)
+    motion = _state.ipa_bridge.motion_now(seconds=5.0) or {}
+
+    # OCR hint from perception engine
+    ocr_hint = ""
+    try:
+        if _state.perception:
+            events = _state.perception.get_events(seconds=10)
+            for evt in reversed(events):
+                txt = evt.details.get("ocr_text", "") if evt.details else ""
+                if txt:
+                    ocr_hint = txt[:300]
+                    break
+    except Exception:
+        pass
+
+    return {
+        **ctx,
+        "gate_event": gate.__dict__ if gate else None,
+        "motion": motion,
+        "ocr_hint": ocr_hint,
+        "bridge_stats": _state.ipa_bridge.stats(),
+    }
 
 
-@app.post("/collab/join")
-async def collab_join(
-    room_id: str = Query(...),
-    viewer_name: str = Query(...),
+@app.get("/ipa/events")
+async def ipa_events(
+    seconds: float = Query(30.0),
     x_api_key: Optional[str] = Header(None),
 ):
-    """Join a collaborative room as viewer."""
+    """Recent IPA v3 gate events — significant visual changes."""
     _check_auth(x_api_key)
-    if not _state.collab:
-        raise HTTPException(503, "Not initialized")
-    result = _state.collab.join_room(room_id, viewer_name)
-    if not result:
-        raise HTTPException(404, "Room not found or full")
-    return result
+    if not _state.ipa_bridge:
+        return {"error": "ipa_bridge_not_initialized", "events": []}
+    events = _state.ipa_bridge.recent_events(seconds=seconds)
+    return {
+        "events": [e.__dict__ for e in events],
+        "count": len(events),
+        "seconds": seconds,
+    }
 
 
-@app.get("/collab/room/{room_id}")
-async def collab_room(room_id: str, x_api_key: Optional[str] = Header(None)):
-    """Get room info."""
-    _check_auth(x_api_key)
-    if not _state.collab:
-        raise HTTPException(503, "Not initialized")
-    room = _state.collab.get_room(room_id)
-    if not room:
-        raise HTTPException(404, "Room not found")
-    return room
-
-
-@app.get("/collab/rooms")
-async def collab_rooms(x_api_key: Optional[str] = Header(None)):
-    """List active rooms."""
-    _check_auth(x_api_key)
-    if not _state.collab:
-        return {"rooms": []}
-    return {"rooms": _state.collab.list_rooms(), "stats": _state.collab.stats}
-
-
-@app.post("/collab/annotate")
-async def collab_annotate(
-    room_id: str = Query(...),
-    author_id: str = Query(...),
-    type: str = Query("rect"),
-    x: int = Query(...),
-    y: int = Query(...),
-    width: int = Query(100),
-    height: int = Query(50),
-    text: str = Query(""),
     x_api_key: Optional[str] = Header(None),
-):
-    """Add shared annotation in a collab room."""
-    _check_auth(x_api_key)
-    if not _state.collab:
-        raise HTTPException(503, "Not initialized")
-    result = _state.collab.add_annotation(room_id, author_id, type, x, y, width, height, text)
-    if not result:
-        raise HTTPException(404, "Room or author not found")
-    return result
+
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -4946,6 +4997,89 @@ async def ui_find_all(
     return {"elements": _state.ui_tree.find_all(name=name, role=role) if _state.ui_tree else []}
 
 
+@app.get("/locate")
+async def smart_locate_endpoint(
+    query: str = Query(..., description="Natural language target description"),
+    monitor_id: Optional[int] = Query(None),
+    role: Optional[str] = Query(None, description="Role hint: button|edit|link|checkbox|combobox"),
+    x_api_key: Optional[str] = Header(None),
+):
+    """Smart coordinate resolver — UITree + OCR fusion.
+
+    Returns exact (x,y) coordinates for any visible UI element without
+    asking the AI to guess. Used internally by act() when target= is provided.
+
+    Latency: UITree ~2ms, OCR ~5ms (uses cached last frame, no new capture).
+    Response: {found, x, y, w, h, source, confidence, label, method_detail}
+    """
+    _check_auth(x_api_key)
+    if not _state.smart_locator:
+        return {"found": False, "reason": "smart_locator_not_initialized"}
+
+    # Refresh monitor bounds
+    if _state.monitor_mgr:
+        _state.smart_locator.update_monitor_bounds({
+            m.id: {"left": m.left, "top": m.top, "width": m.width, "height": m.height}
+            for m in _state.monitor_mgr.monitors
+        })
+
+    # Get active window PID for UITree filtering
+    active_pid = None
+    try:
+        if _state.perception:
+            win_info = _state.perception._last_window_info or {}
+            active_pid = win_info.get("pid") or None
+    except Exception:
+        pass
+
+    # Inject OCR blocks from perception pipeline — ZERO extra OCR computation
+    # Perception runs OCR every few seconds in background; we just read the results
+    try:
+        if _state.perception and _state.monitor_mgr:
+            import time as _t
+            now = _t.perf_counter()
+            for mon in _state.monitor_mgr.monitors:
+                mid = mon.id
+                mon_state = _state.perception._get_monitor_state(mid)
+                if not mon_state:
+                    continue
+                blocks = list(getattr(mon_state, 'last_ocr_blocks', []))
+                if not blocks:
+                    continue  # no OCR yet — will find via UITree or return not-found
+                # Translate from monitor-relative to global desktop coords
+                global_blocks = []
+                for b in blocks:
+                    gb = dict(b)
+                    gb["x"] = b.get("x", 0) + mon.left
+                    gb["y"] = b.get("y", 0) + mon.top
+                    global_blocks.append(gb)
+                _state.smart_locator._ocr_cache[mid] = {
+                    "ts": now,
+                    "blocks": global_blocks,
+                    "text": mon_state.last_ocr_text,
+                }
+    except Exception:
+        pass
+
+    # Execute locate synchronously
+    # UITree is disabled if no OCR blocks available to keep latency <50ms
+    has_ocr = bool(_state.smart_locator._ocr_cache)
+    result = _state.smart_locator.locate(
+        query=query,
+        monitor_id=monitor_id,
+        prefer_role=role,
+        # Pass "skip_tree" when OCR not ready to avoid blocking PowerShell spawn
+        active_window_pid=active_pid if has_ocr else "skip_tree",
+    )
+
+    if result is None:
+        # If no OCR data yet, include a hint so the AI knows to try again later
+        hint = "" if has_ocr else " OCR not ready yet — retry after 10s or use see_now."
+        return {"found": False, "reason": "not_found", "query": query, "hint": hint}
+
+    return {"found": True, **result.to_dict()}
+
+
 @app.post("/ui/click")
 async def ui_click(
     name: str = Query(...),
@@ -5307,7 +5441,7 @@ async def system_overview(x_api_key: Optional[str] = Header(None)):
         "monitors": _state.monitor_mgr.to_dict() if _state.monitor_mgr else {},
         "watchdog": _state.watchdog.stats if _state.watchdog else {},
         "router": _state.router.stats if _state.router else {},
-        "collab": _state.collab.stats if _state.collab else {},
+        "ipa_bridge": _state.ipa_bridge.stats() if _state.ipa_bridge else {},
         "memory": _state.memory.stats if _state.memory else {},
         "plugins": len(_state.plugin_mgr.loaded) if _state.plugin_mgr else 0,
         # v1.0: Computer Use
@@ -5350,9 +5484,9 @@ async def license_status():
         "is_pro": lic.is_pro,
         "user": lic.user,
         "actions": {
-            "available": sorted(lic.available_actions),
-            "total": len(lic.available_actions),
-            "max": len(lic.available_actions) if lic.is_pro else 7,
+            "available": sorted(lic.available_mcp_tools),
+            "total": len(lic.available_mcp_tools),
+            "max": len(lic.available_mcp_tools) if lic.is_pro else 7,
         },
         "mcp_tools": {
             "available": sorted(lic.available_mcp_tools),

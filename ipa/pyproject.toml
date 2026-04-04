@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ipa-vision"
+version = "3.0.0"
+description = "IPA v3 — Compressed Visual Stream for AI perception"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+    "Pillow>=9.0",
+    "imagehash>=4.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "mss>=9.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["ipa*"]

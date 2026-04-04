@@ -174,8 +174,12 @@ async function refreshRuntimeStatus() {
 }
 
 function startRuntimePolling() {
+  // Only poll runtime when in Settings view — avoids spawning Python every 4s at idle
   if (runtimeTimer) return;
   runtimeTimer = setInterval(async () => {
+    // Skip expensive Python probe if not on settings page
+    const settingsView = document.getElementById("view-settings");
+    if (!settingsView || !settingsView.classList.contains("active")) return;
     await refreshRuntimeStatus();
     if (!isTauri || !invoke) return;
     try {
@@ -186,7 +190,7 @@ function startRuntimePolling() {
       else if (status.status === "error") setVlmDownloadStatusText(status.message || "download error", "var(--red)");
       else setVlmDownloadStatusText(status.message || "idle", "var(--text-dim)");
     } catch {}
-  }, 4000);
+  }, 15000); // 15s instead of 4s — and only when Settings is visible
 }
 
 function stopRuntimePolling() {
@@ -252,23 +256,23 @@ function clearSession() {
 }
 
 async function logout() {
-  // Stop server first
-  if (isTauri && invoke) {
-    try { await invoke("stop_server"); } catch {}
-  }
-  serverOnline = false;
-  updateServerUI();
-  stopPolling();
-  stopVisionPolling();
-  stopTokenPolling();
-  stopRuntimePolling();
   clearSession();
-  // Show login screen
-  $("#onboarding").classList.remove("hidden");
+  // Server keeps running — just return to login screen
   $("#sidebar-user").style.display = "none";
-  const upgradeBtn = $("#btn-upgrade");
-  if (upgradeBtn) upgradeBtn.classList.remove("hidden");
+  $("#onboarding").classList.remove("hidden");
   addLog("system", "Signed out", "ok");
+}
+
+function showSignInPanel() {
+  // Show the onboarding as a modal over the main UI
+  const panel = $("#onboarding");
+  panel.classList.remove("hidden");
+  panel.style.position = "fixed";
+  panel.style.zIndex = "999";
+}
+
+function hideSignInPanel() {
+  $("#onboarding").classList.add("hidden");
 }
 
 // ─── API Key masking ───
@@ -283,6 +287,11 @@ function showSidebarUser(session) {
   const el = $("#sidebar-user");
   if (!el) return;
   el.style.display = "flex";
+  // Hide Sign In button once logged in
+  const signinBtn = $("#btn-signin");
+  if (signinBtn) signinBtn.style.display = "none";
+  // Close sign-in panel if open
+  hideSignInPanel();
   const u = session.user;
   const isPro = u.plan === "pro" || u.plan === "enterprise";
   $("#sidebar-avatar").textContent = (u.name || u.email || "U")[0].toUpperCase();
@@ -339,8 +348,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
 function initOnboarding() {
   const session = getSession();
+
+  // If already logged in — skip onboarding, go straight to app
   if (session && session.api_key) {
-    // Already logged in — skip onboarding, update all UI
     $("#onboarding").classList.add("hidden");
     showSidebarUser(session);
     updateApiKeyCard(session);
@@ -348,7 +358,10 @@ function initOnboarding() {
     return;
   }
 
-  // Show onboarding
+  // No session — show login (required to start)
+  // Server starts after successful login or if session already exists
+
+  // Wire up the optional sign-in modal (triggered from sidebar)
   let isSignUp = false;
   const form = $("#onboard-form");
   const error = $("#onboard-error");
@@ -399,22 +412,25 @@ function initOnboarding() {
       initSplash();
       startServerAfterLogin();
     } catch (err) {
-      // Auth server unreachable — allow dev bypass
-      const DEV_ACCOUNTS = { "dev@iluminaty.dev": "iluminaty2026" };
-      if (DEV_ACCOUNTS[email] && DEV_ACCOUNTS[email] === password) {
-        const devSession = {
-          user: { name: "Developer", email, plan: "pro" },
-          api_key: "ILUM-dev-godo-master-key-2026",
+      // Auth server unreachable — allow offline dev login
+      const OFFLINE_ACCOUNTS = {
+        "godo@iluminaty.dev": { password: "iluminaty2026", name: "Godo", plan: "pro" },
+      };
+      const match = OFFLINE_ACCOUNTS[email.toLowerCase()];
+      if (match && match.password === password) {
+        const offlineSession = {
+          user: { name: match.name, email: email.toLowerCase(), plan: match.plan },
+          api_key: "ILUM-pro-godo-dev-2026",
         };
-        setSession(devSession);
-        showSidebarUser(devSession);
-        updatePlanBanner(devSession);
-        updateApiKeyCard(devSession);
+        setSession(offlineSession);
+        showSidebarUser(offlineSession);
+        updatePlanBanner(offlineSession);
+        updateApiKeyCard(offlineSession);
         $("#onboarding").classList.add("hidden");
         initSplash();
         startServerAfterLogin();
       } else {
-        error.textContent = "Cannot reach auth server. Please try again later.";
+        error.textContent = "Auth server offline. Use dev credentials or try later.";
       }
     } finally {
       submit.disabled = false;
@@ -640,16 +656,9 @@ async function checkPlanUpgrade() {
 
 // ─── Post-Login Server Start ───
 async function startServerAfterLogin() {
-  // Start server via Tauri (if inside desktop app)
-  if (isTauri && invoke) {
-    try {
-      await invoke("start_server");
-      addLog("system", "Server starting...", "ok");
-    } catch {}
-  }
-  // Start health check polling — detects when server is ready
-  checkServer();
-  setInterval(checkServer, 5000);
+  // Server is NOT auto-started — user clicks "Start Server" button.
+  // This function just ensures UI is in correct post-login state.
+  addLog("system", "Logged in — click Start Server to launch", "ok");
 }
 
 // ─── Splash Screen ───
@@ -692,8 +701,7 @@ function initNav() {
       // Update topbar title
       const titles = {
         dashboard: "DASHBOARD",
-        actions: "ACTIONS",
-        layers: "7 LAYERS",
+        actions: "ACTIONS & MCP",
         logs: "ACTION LOG",
         settings: "SETTINGS",
       };
@@ -780,10 +788,12 @@ function updateServerUI() {
     dot.classList.add("online");
     text.textContent = "Server online";
     btn.textContent = "Stop Server";
+    btn.disabled = false;
   } else {
     dot.classList.remove("online");
     text.textContent = "Server offline";
     btn.textContent = "Start Server";
+    btn.disabled = false;
   }
 }
 
@@ -878,12 +888,36 @@ async function toggleServer() {
       stopVisionPolling();
       addLog("system", "Server stopped", "ok");
     } else {
-      const result = await invoke("start_server");
-      addLog("system", result, "ok");
-      // Give it a moment to start
-      setTimeout(checkServer, 2000);
+      // Disable button while starting
+      const btn = $("#server-toggle");
+      if (btn) { btn.disabled = true; btn.textContent = "Starting..."; }
+      addLog("system", "Starting server...", "ok");
+
+      // Listen for async result from Tauri background thread
+      const listen = window.__TAURI__?.event?.listen;
+      if (listen) {
+        const unlistenOk = await listen("server-start-ok", (evt) => {
+          addLog("system", evt.payload || "Server started", "ok");
+          unlistenOk();
+          unlistenErr();
+          if (btn) { btn.disabled = false; }
+          setTimeout(checkServer, 1500);
+        });
+        const unlistenErr = await listen("server-start-error", (evt) => {
+          addLog("system", "Server failed: " + (evt.payload || "unknown error"), "error");
+          if ($("#logs-nav")) $("#logs-nav").click();
+          unlistenOk();
+          unlistenErr();
+          if (btn) { btn.disabled = false; btn.textContent = "Start Server"; }
+        });
+      }
+
+      // Fire the command (returns immediately with "starting")
+      await invoke("start_server");
     }
   } catch (err) {
+    const btn = $("#server-toggle");
+    if (btn) { btn.disabled = false; }
     addLog("system", "Server error: " + (err.message || err), "fail");
   }
 }
@@ -985,7 +1019,7 @@ async function pollData() {
 // ─── Vision Polling ───
 function startVisionPolling() {
   if (visionTimer) return;
-  visionTimer = setInterval(pollVision, 1000);
+  visionTimer = setInterval(pollVision, 1500);
   pollVision();
 }
 
@@ -1262,6 +1296,17 @@ function init() {
     renderLogs();
   });
 
+  // Copy all logs to clipboard
+  $("#btn-copy-logs").addEventListener("click", () => {
+    const text = logs.map(l => `[${l.time}] [${l.status || ""}] ${l.action} — ${l.detail || ""}`).join("\n");
+    navigator.clipboard.writeText(text || "(no logs)").then(() => {
+      const btn = $("#btn-copy-logs");
+      const orig = btn.textContent;
+      btn.textContent = "Copied!";
+      setTimeout(() => { btn.textContent = orig; }, 1500);
+    });
+  });
+
   // J11: Settings save
   const saveSettings = async () => {
     const previousPort = Number(
@@ -1298,8 +1343,20 @@ function init() {
       try {
         await invoke("stop_server");
         await new Promise((r) => setTimeout(r, 300));
+        // start_server is async — listen for result event
+        const listen = window.__TAURI__?.event?.listen;
+        if (listen) {
+          const unOk = await listen("server-start-ok", (evt) => {
+            addLog("settings", `Server restarted on port ${newPort}`, "ok");
+            unOk(); unErr();
+            setTimeout(checkServer, 1500);
+          });
+          const unErr = await listen("server-start-error", (evt) => {
+            addLog("settings", `Port restart failed: ${evt.payload}`, "fail");
+            unOk(); unErr();
+          });
+        }
         await invoke("start_server");
-        await new Promise((r) => setTimeout(r, 700));
       } catch (e) {
         addLog("settings", `Port restart failed: ${e?.message || e}`, "fail");
       }
@@ -1367,12 +1424,13 @@ function init() {
     }
   });
 
-  // Server does NOT start until login — see startServerAfterLogin()
-  // Only start polling/server if already logged in (session restored)
-  const existingSession = getSession();
-  if (existingSession && existingSession.api_key) {
-    startServerAfterLogin();
-  }
+  // Wire logout button
+  const logoutBtn2 = $("#btn-logout");
+  if (logoutBtn2) logoutBtn2.addEventListener("click", logout);
+
+  // Poll to detect if server is already running (don't auto-start — use Start Server button)
+  checkServer();
+  setInterval(checkServer, 8000);
 
   // Check for plan upgrades every 60s (detects payment)
   setInterval(checkPlanUpgrade, 60000);

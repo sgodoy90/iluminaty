@@ -41,14 +41,12 @@ async function hashPassword(password) {
 }
 
 function generateApiKey(plan) {
-  const prefix = plan === "pro" ? "ILUM-pro" : "ILUM-free";
+  // Format: ILUM-{plan}-{8chars}-{8chars}-{8chars}
+  // licensing.py checks for "ILUM-" prefix when server unreachable (gives PRO benefit of doubt)
+  const prefix = `ILUM-${plan}`;
   const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
-  let key = prefix + "-";
-  for (let i = 0; i < 24; i++) {
-    if (i > 0 && i % 8 === 0) key += "-";
-    key += chars[Math.floor(Math.random() * chars.length)];
-  }
-  return key;
+  const seg = () => Array.from({ length: 8 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
+  return `${prefix}-${seg()}-${seg()}-${seg()}`;
 }
 
 // ─── Route handlers ───
@@ -182,13 +180,17 @@ async function handleValidate(request, env) {
     .bind(row.user_id, today)
     .run();
 
+  const limits = {
+    custom: { act_actions: 7, mcp_tools: 64, rate_limit: null },
+    pro:    { act_actions: 7, mcp_tools: 64, rate_limit: null },
+    free:   { act_actions: 7, mcp_tools: 24, rate_limit: null },
+  }[plan] || { act_actions: 0, mcp_tools: 10, rate_limit: "demo" };
+
   return json({
     valid: true,
     plan,
     user: { id: row.user_id, email: row.email, name: row.name },
-    limits: plan === "pro"
-      ? { actions: 42, mcp_tools: 17, rate_limit: null }
-      : { actions: 7, mcp_tools: 7, rate_limit: "10/hour" },
+    limits,
   });
 }
 
@@ -211,6 +213,25 @@ async function handleUsage(request, env) {
     .all();
 
   return json({ usage: rows.results || [] });
+}
+
+async function handleUpgrade(request, env) {
+  // Free upgrade from free → pro (no payment required)
+  const authHeader = request.headers.get("Authorization");
+  const apiKey = authHeader?.replace("Bearer ", "").trim();
+  if (!apiKey) return error("API key required", 401);
+
+  const row = await env.DB.prepare(
+    "SELECT user_id FROM api_keys WHERE key = ?"
+  ).bind(apiKey).first();
+  if (!row) return error("Invalid API key", 401);
+
+  await env.DB.batch([
+    env.DB.prepare("UPDATE users SET plan = 'pro' WHERE id = ?").bind(row.user_id).run(),
+    env.DB.prepare("UPDATE api_keys SET plan = 'pro' WHERE user_id = ?").bind(row.user_id).run(),
+  ]);
+
+  return json({ ok: true, plan: "pro", message: "Upgraded to Pro. All 64 MCP tools unlocked." });
 }
 
 async function handleLemonWebhook(request, env) {
@@ -286,9 +307,11 @@ async function handleMe(request, env) {
       actions: usage?.action_count || 0,
       mcp_calls: usage?.mcp_count || 0,
     },
-    limits: row.plan === "pro"
-      ? { actions: "unlimited", mcp_tools: 17, rate_limit: null }
-      : { actions: 7, mcp_tools: 7, rate_limit: "10/hour" },
+    limits: {
+      custom: { act_actions: 7, mcp_tools: 64, rate_limit: null },
+      pro:    { act_actions: 7, mcp_tools: 64, rate_limit: null },
+      free:   { act_actions: 7, mcp_tools: 24, rate_limit: null },
+    }[row.plan] || { act_actions: 0, mcp_tools: 10, rate_limit: "demo" },
   });
 }
 
@@ -311,6 +334,7 @@ export default {
       if (path === "/auth/validate" && request.method === "GET") return handleValidate(request, env);
       if (path === "/auth/me" && request.method === "GET") return handleMe(request, env);
       if (path === "/auth/usage" && request.method === "GET") return handleUsage(request, env);
+      if (path === "/auth/upgrade" && request.method === "POST") return handleUpgrade(request, env);
 
       // Billing webhook
       if (path === "/billing/webhook" && request.method === "POST") return handleLemonWebhook(request, env);

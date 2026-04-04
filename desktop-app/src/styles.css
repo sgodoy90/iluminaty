@@ -376,7 +376,7 @@ a { color: var(--green); text-decoration: none; }
 .layer-status.off { background: rgba(255, 68, 102, 0.1); color: var(--red); }
 
 /* ─── LOG ENTRIES ─── */
-.log-list { display: flex; flex-direction: column; gap: 4px; }
+.log-list { display: flex; flex-direction: column; gap: 4px; user-select: text; }
 .log-entry {
   display: flex;
   align-items: flex-start;
@@ -387,10 +387,12 @@ a { color: var(--green); text-decoration: none; }
   font-size: 12px;
   background: var(--surface);
   border: 1px solid var(--border);
+  user-select: text;
+  cursor: text;
 }
-.log-time { color: var(--text-muted); white-space: nowrap; }
-.log-action { color: var(--green); font-weight: 500; min-width: 100px; }
-.log-detail { color: var(--text-dim); flex: 1; }
+.log-time { color: var(--text-muted); white-space: nowrap; user-select: text; }
+.log-action { color: var(--green); font-weight: 500; min-width: 100px; user-select: text; }
+.log-detail { color: var(--text-dim); flex: 1; user-select: text; word-break: break-all; }
 .log-status { font-weight: 600; }
 .log-status.ok { color: var(--green); }
 .log-status.fail { color: var(--red); }
@@ -546,6 +548,7 @@ select.setting-input option { background: var(--bg3); color: var(--text); }
   font-weight: 900; letter-spacing: 4px; color: var(--text);
   margin-bottom: 4px;
 }
+.onboard-logo .y { color: var(--green); text-shadow: 0 0 20px var(--green-glow); }
 .onboard-sub {
   font-family: var(--font-display); font-size: 12px;
   letter-spacing: 8px; color: var(--green); opacity: 0.7;

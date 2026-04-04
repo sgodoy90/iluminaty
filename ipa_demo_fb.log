@@ -1,0 +1,19 @@
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+`torch_dtype` is deprecated! Use `dtype` instead!
+
+  IPA v3 — Real Eyes Demo
+  Device: cuda | FPS: 3 | Port: 8450
+  Target window: 'facebook'
+  Dashboard: http://localhost:8450
+  Keyframe API: http://localhost:8450/ipa/keyframe
+  Describe API: POST http://localhost:8450/ipa/describe
+
+Loading weights:   0%|          | 0/408 [00:00<?, ?it/s]Loading weights:  51%|#####1    | 209/408 [00:00<00:00, 2041.73it/s]Loading weights: 100%|##########| 408/408 [00:00<00:00, 2132.57it/s]
+C:\Users\jgodo\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\numpy\_core\fromnumeric.py:3824: RuntimeWarning: Mean of empty slice
+  return _methods._mean(a, axis=axis, dtype=dtype,
+C:\Users\jgodo\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\numpy\_core\_methods.py:142: RuntimeWarning: invalid value encountered in scalar divide
+  ret = ret.dtype.type(ret / rcount)
+C:\Users\jgodo\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\numpy\lib\_function_base_impl.py:3023: RuntimeWarning: invalid value encountered in divide
+  c /= stddev[:, None]
+C:\Users\jgodo\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\numpy\lib\_function_base_impl.py:3024: RuntimeWarning: invalid value encountered in divide
+  c /= stddev[None, :]
