@@ -249,7 +249,7 @@ class AutonomyManager:
     def stats(self) -> dict:
         self._cleanup_expired()
         return {
-            "default_level": self.default_level.value,
+            "default_level": self.default_level.value if hasattr(self.default_level, 'value') else str(self.default_level),
             "app_overrides": {k: v.level.value for k, v in self._app_overrides.items()},
             "pending_count": len([p for p in self._pending.values() if p.approved is None]),
             "total_decisions": len(self._history),

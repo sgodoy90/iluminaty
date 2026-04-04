@@ -1,8 +1,8 @@
 """
 ILUMINATY - Dashboard v3
 ===========================
-Modern web dashboard aligned with desktop app + current architecture.
-Live Vision, IPA WorldState, act tool, VLM on-demand.
+Live dashboard — real-time vision, perception state, OCR.
+No VLM dependency. Clean sidebar.
 """
 
 DASHBOARD_HTML = '''<!DOCTYPE html>
@@ -14,132 +14,150 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
 :root {
-  --bg: #06060b; --surface: #0a0a12; --card: #0f0f1a; --hover: #1a1a2e;
-  --border: #1e1e35; --text: #e8e8f0; --muted: #8888a8; --dim: #555570;
-  --accent: #00ff88; --purple: #7b61ff; --danger: #ff4466; --warn: #ffaa22;
-  --mono: 'JetBrains Mono', monospace; --sans: 'Inter', sans-serif;
+  --bg:#06060b; --surface:#0a0a12; --card:#0f0f1a; --hover:#1a1a2e;
+  --border:#1e1e35; --text:#e8e8f0; --muted:#8888a8; --dim:#555570;
+  --accent:#00ff88; --purple:#7b61ff; --danger:#ff4466; --warn:#ffaa22;
+  --mono:'JetBrains Mono',monospace; --sans:'Inter',sans-serif;
 }
-* { margin:0; padding:0; box-sizing:border-box; }
-body { background:var(--bg); color:var(--text); font-family:var(--sans); font-size:14px; overflow-x:hidden; }
-a { color:var(--accent); text-decoration:none; }
+*{margin:0;padding:0;box-sizing:border-box;}
+body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14px;overflow-x:hidden;}
 
-.header { display:flex; align-items:center; justify-content:space-between; padding:12px 20px; background:var(--surface); border-bottom:1px solid var(--border); }
-.logo { display:flex; align-items:center; gap:10px; font-family:var(--mono); font-weight:700; font-size:16px; letter-spacing:2px; }
-.logo .dot { width:8px; height:8px; border-radius:50%; background:var(--danger); }
-.logo .dot.on { background:var(--accent); box-shadow:0 0 8px var(--accent); }
-.stats-bar { display:flex; gap:16px; font-size:12px; color:var(--muted); }
-.stats-bar .val { color:var(--text); font-family:var(--mono); }
+/* ── Header ── */
+.header{display:flex;align-items:center;justify-content:space-between;padding:10px 20px;background:var(--surface);border-bottom:1px solid var(--border);height:44px;}
+.logo{display:flex;align-items:center;gap:10px;font-family:var(--mono);font-weight:700;font-size:15px;letter-spacing:2px;}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--danger);transition:background 0.3s;}
+.dot.on{background:var(--accent);box-shadow:0 0 8px var(--accent);}
+.sub{font-size:11px;color:var(--muted);font-weight:400;}
+.hstats{display:flex;gap:20px;font-size:12px;color:var(--muted);}
+.hstats .v{color:var(--text);font-family:var(--mono);}
+.mode-badge{padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;font-family:var(--mono);background:rgba(0,255,136,0.1);color:var(--accent);}
 
-.main { display:grid; grid-template-columns:1fr 340px; gap:0; height:calc(100vh - 50px); }
-.vision { background:#000; position:relative; display:flex; align-items:center; justify-content:center; overflow:hidden; }
-.vision img { max-width:100%; max-height:100%; object-fit:contain; }
-.vision .overlay { position:absolute; top:12px; left:12px; background:rgba(0,0,0,0.7); padding:6px 12px; border-radius:6px; font-size:11px; font-family:var(--mono); color:var(--accent); }
-.vision .empty { color:var(--dim); font-size:18px; }
+/* ── Layout ── */
+.main{display:grid;grid-template-columns:1fr 320px;height:calc(100vh - 44px);}
 
-.sidebar { background:var(--surface); border-left:1px solid var(--border); overflow-y:auto; padding:12px; display:flex; flex-direction:column; gap:10px; }
-.panel { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:12px; }
-.panel-title { font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1.5px; color:var(--muted); margin-bottom:8px; }
-.panel-row { display:flex; justify-content:space-between; font-size:12px; padding:3px 0; }
-.panel-row .label { color:var(--muted); }
-.panel-row .value { font-family:var(--mono); color:var(--text); }
-.panel-row .value.green { color:var(--accent); }
-.panel-row .value.warn { color:var(--warn); }
-.panel-row .value.red { color:var(--danger); }
+/* ── Vision panel ── */
+.vision{background:#000;position:relative;display:flex;align-items:center;justify-content:center;overflow:hidden;}
+#vision-img{max-width:100%;max-height:100%;object-fit:contain;}
+.v-overlay{position:absolute;bottom:0;left:0;right:0;background:linear-gradient(transparent,rgba(0,0,0,0.8));padding:10px 14px;font-size:11px;font-family:var(--mono);color:var(--accent);display:none;}
+.v-empty{color:var(--dim);font-size:16px;}
 
-.badge { display:inline-block; padding:2px 8px; border-radius:4px; font-size:10px; font-weight:700; font-family:var(--mono); }
-.badge.safe { background:rgba(0,255,136,0.1); color:var(--accent); }
-.badge.hybrid { background:rgba(255,170,34,0.1); color:var(--warn); }
-.badge.raw { background:rgba(255,68,102,0.1); color:var(--danger); }
+/* ── Sidebar ── */
+.sidebar{background:var(--surface);border-left:1px solid var(--border);overflow-y:auto;padding:10px;display:flex;flex-direction:column;gap:8px;}
+.panel{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:10px 12px;}
+.ptitle{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;color:var(--muted);margin-bottom:8px;}
+.row{display:flex;justify-content:space-between;align-items:center;font-size:12px;padding:3px 0;}
+.row .lbl{color:var(--muted);}
+.row .val{font-family:var(--mono);color:var(--text);text-align:right;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.val.green{color:var(--accent);}
+.val.warn{color:var(--warn);}
+.val.red{color:var(--danger);}
 
-.ocr-box { background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:8px; font-family:var(--mono); font-size:11px; color:var(--muted); max-height:200px; overflow-y:auto; white-space:pre-wrap; word-break:break-all; }
-.facts-list { font-size:11px; }
-.facts-list .fact { padding:4px 0; border-bottom:1px solid var(--border); }
-.facts-list .fact:last-child { border:none; }
-.fact-kind { color:var(--purple); font-family:var(--mono); font-size:10px; }
+/* ── Scene badge ── */
+.scene-badge{display:inline-block;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700;font-family:var(--mono);background:rgba(123,97,255,0.15);color:var(--purple);margin-bottom:6px;}
 
-.btn { background:var(--card); border:1px solid var(--border); color:var(--text); padding:6px 14px; border-radius:6px; cursor:pointer; font-size:12px; font-family:var(--sans); transition:all 0.15s; }
-.btn:hover { background:var(--hover); border-color:var(--accent); }
-.btn.accent { background:rgba(0,255,136,0.1); border-color:var(--accent); color:var(--accent); }
-.btn-row { display:flex; gap:6px; flex-wrap:wrap; }
+/* ── OCR ── */
+.ocr-box{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:8px;font-family:var(--mono);font-size:10px;color:var(--muted);max-height:160px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;line-height:1.5;}
+
+/* ── Monitor mini-map ── */
+.monitor-grid{display:flex;flex-direction:column;gap:4px;}
+.monitor-item{background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:5px 8px;font-size:11px;font-family:var(--mono);}
+.monitor-item.active{border-color:var(--accent);}
+.monitor-label{color:var(--accent);font-weight:700;margin-right:6px;}
+.monitor-win{color:var(--muted);font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+
+/* ── Controls ── */
+.btn{background:var(--card);border:1px solid var(--border);color:var(--text);padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px;font-family:var(--sans);transition:all 0.15s;}
+.btn:hover{background:var(--hover);border-color:var(--accent);}
+.btn-row{display:flex;gap:6px;}
+
+/* Scrollbar */
+::-webkit-scrollbar{width:4px;} ::-webkit-scrollbar-track{background:transparent;} ::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px;}
 </style>
 </head>
 <body>
 
+<!-- Header -->
 <div class="header">
   <div class="logo">
     <span class="dot" id="status-dot"></span>
     ILUMINATY
-    <span style="font-size:11px;color:var(--muted);font-weight:400">v1.0 &middot; IPA v3</span>
+    <span class="sub">v1.0 &middot; IPA v3</span>
   </div>
-  <div class="stats-bar">
-    <span>FPS <span class="val" id="h-fps">--</span></span>
-    <span>RAM <span class="val" id="h-ram">--</span></span>
-    <span>Frames <span class="val" id="h-frames">--</span></span>
-    <span>Mode <span class="val" id="h-mode">SAFE</span></span>
+  <div class="hstats">
+    <span>FPS <span class="v" id="h-fps">--</span></span>
+    <span>RAM <span class="v" id="h-ram">--</span></span>
+    <span>Frames <span class="v" id="h-frames">--</span></span>
+    <span class="mode-badge" id="h-mode">SAFE</span>
   </div>
 </div>
 
 <div class="main">
-  <div class="vision" id="vision-area">
-    <img id="vision-img" style="display:none" />
-    <div class="empty" id="vision-empty">Awaiting vision...</div>
-    <div class="overlay" id="vision-overlay" style="display:none">
-      <span id="v-res">--</span> &middot; <span id="v-monitor">--</span> &middot; <span id="v-window">--</span>
+
+  <!-- Live Vision -->
+  <div class="vision">
+    <img id="vision-img" style="display:none"/>
+    <div class="v-empty" id="vision-empty">Awaiting vision...</div>
+    <div class="v-overlay" id="v-overlay">
+      <span id="v-res">--</span> &nbsp;&middot;&nbsp;
+      Mon <span id="v-mon">--</span> &nbsp;&middot;&nbsp;
+      <span id="v-win">--</span>
     </div>
   </div>
 
+  <!-- Sidebar -->
   <div class="sidebar">
-    <!-- IPA WorldState -->
+
+    <!-- 1. Active Context (most useful at top) -->
     <div class="panel">
-      <div class="panel-title">IPA WorldState</div>
-      <div class="panel-row"><span class="label">Phase</span><span class="value" id="ws-phase">--</span></div>
-      <div class="panel-row"><span class="label">Surface</span><span class="value" id="ws-surface">--</span></div>
-      <div class="panel-row"><span class="label">Readiness</span><span class="value" id="ws-ready">--</span></div>
-      <div class="panel-row"><span class="label">Uncertainty</span><span class="value" id="ws-uncertainty">--</span></div>
-      <div class="panel-row"><span class="label">Staleness</span><span class="value" id="ws-staleness">--</span></div>
-      <div class="panel-row"><span class="label">Domain</span><span class="value" id="ws-domain">--</span></div>
-      <div class="panel-row"><span class="label">Tick</span><span class="value" id="ws-tick">--</span></div>
+      <div class="ptitle">Active Context</div>
+      <div class="row"><span class="lbl">Surface</span><span class="val" id="ctx-surface">--</span></div>
+      <div class="row"><span class="lbl">Phase</span><span class="val" id="ctx-phase">--</span></div>
+      <div class="row"><span class="lbl">Domain</span><span class="val" id="ctx-domain">--</span></div>
+      <div class="row"><span class="lbl">Active window</span><span class="val" id="ctx-window">--</span></div>
     </div>
 
-    <!-- Scene + Perception -->
+    <!-- 2. Scene & Perception -->
     <div class="panel">
-      <div class="panel-title">Perception</div>
-      <div class="panel-row"><span class="label">Scene</span><span class="value" id="p-scene">--</span></div>
-      <div class="panel-row"><span class="label">Attention</span><span class="value" id="p-attention">--</span></div>
-      <div class="panel-row"><span class="label">Events</span><span class="value" id="p-events">--</span></div>
-      <div class="panel-row"><span class="label">FPS Advice</span><span class="value" id="p-fps-advice">--</span></div>
+      <div class="ptitle">Perception</div>
+      <div id="p-scene-badge" class="scene-badge">--</div>
+      <div class="row"><span class="lbl">Attention</span><span class="val" id="p-attention">--</span></div>
+      <div class="row"><span class="lbl">Events buffered</span><span class="val" id="p-events">--</span></div>
+      <div class="row"><span class="lbl">Readiness</span><span class="val" id="p-ready">--</span></div>
+      <div class="row"><span class="lbl">Uncertainty</span><span class="val" id="p-uncertainty">--</span></div>
     </div>
 
-    <!-- Visual Facts -->
+    <!-- 3. Monitors -->
     <div class="panel">
-      <div class="panel-title">Visual Facts</div>
-      <div class="facts-list" id="facts-list"><span style="color:var(--dim)">No facts yet</span></div>
+      <div class="ptitle">Monitors (<span id="mon-count">--</span>)</div>
+      <div class="monitor-grid" id="mon-grid">
+        <div class="monitor-item"><span class="monitor-label">--</span></div>
+      </div>
     </div>
 
-    <!-- OCR Text -->
+    <!-- 4. OCR Text -->
     <div class="panel">
-      <div class="panel-title">OCR Text</div>
+      <div class="ptitle">Screen Text (OCR)</div>
       <div class="ocr-box" id="ocr-text">Waiting for capture...</div>
     </div>
 
-    <!-- System -->
+    <!-- 5. System (technical, at bottom) -->
     <div class="panel">
-      <div class="panel-title">System</div>
-      <div class="panel-row"><span class="label">Buffer</span><span class="value" id="s-buffer">--</span></div>
-      <div class="panel-row"><span class="label">Capture FPS</span><span class="value" id="s-fps">--</span></div>
-      <div class="panel-row"><span class="label">CPU</span><span class="value" id="s-cpu">--</span></div>
-      <div class="panel-row"><span class="label">GPU</span><span class="value" id="s-gpu">--</span></div>
-      <div class="panel-row"><span class="label">VLM</span><span class="value" id="s-vlm">--</span></div>
+      <div class="ptitle">System</div>
+      <div class="row"><span class="lbl">Buffer</span><span class="val" id="s-buffer">--</span></div>
+      <div class="row"><span class="lbl">Capture FPS</span><span class="val" id="s-fps">--</span></div>
+      <div class="row"><span class="lbl">OCR</span><span class="val" id="s-ocr">--</span></div>
+      <div class="row"><span class="lbl">GPU</span><span class="val" id="s-gpu">CPU</span></div>
     </div>
 
-    <!-- Controls -->
+    <!-- 6. Controls -->
     <div class="panel">
-      <div class="panel-title">Controls</div>
+      <div class="ptitle">Controls</div>
       <div class="btn-row">
-        <button class="btn accent" onclick="describeScreen()">Describe (VLM)</button>
         <button class="btn" onclick="refreshAll()">Refresh</button>
+        <button class="btn" onclick="copyApiUrl()">Copy API URL</button>
       </div>
     </div>
+
   </div>
 </div>
 
@@ -147,136 +165,153 @@ a { color:var(--accent); text-decoration:none; }
 const API = location.origin;
 const TOKEN = new URLSearchParams(location.search).get('token') || '';
 const HEADERS = TOKEN ? {'X-API-Key': TOKEN} : {};
-let pollId = null;
-let visionId = null;
 
 async function get(path) {
-  try { const r = await fetch(API + path, {headers: HEADERS}); return r.ok ? await r.json() : null; } catch { return null; }
-}
-async function post(path, body) {
-  try { const r = await fetch(API + path, {method:'POST',headers:{...HEADERS,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined}); return r.ok ? await r.json() : null; } catch { return null; }
+  try { const r = await fetch(API+path,{headers:HEADERS}); return r.ok ? await r.json() : null; } catch { return null; }
 }
 
 function $(id) { return document.getElementById(id); }
-function setText(id, v) { const el = $(id); if(el) el.textContent = v; }
+function setText(id, v) { const el=$(id); if(el) el.textContent=v; }
+function setClass(id, cls) { const el=$(id); if(el) el.className='val '+cls; }
 
-// ─── Live Vision ───
+// ── Vision ────────────────────────────────────────────────────────────────────
 async function pollVision() {
-  const d = await get("/vision/snapshot?ocr=true&include_image=true");
+  const d = await get('/vision/snapshot?ocr=true&include_image=true');
   if (!d) return;
-  const img = $("vision-img");
-  const empty = $("vision-empty");
-  const overlay = $("vision-overlay");
   if (d.image_base64) {
-    img.src = "data:" + (d.mime_type||"image/webp") + ";base64," + d.image_base64;
-    img.style.display = "block";
-    empty.style.display = "none";
-    overlay.style.display = "block";
-    setText("v-res", (d.width||"?") + "x" + (d.height||"?"));
-    setText("v-monitor", "Mon " + (d.monitor_id||"?"));
-    setText("v-window", (d.active_window?.title || d.active_window?.name || "").substring(0,40));
+    const img = $('vision-img');
+    img.src = 'data:'+(d.mime_type||'image/webp')+';base64,'+d.image_base64;
+    img.style.display = 'block';
+    $('vision-empty').style.display = 'none';
+    $('v-overlay').style.display = 'block';
+    setText('v-res', (d.width||'?')+'x'+(d.height||'?'));
+    setText('v-mon', d.monitor_id||'?');
+    const win = (d.active_window?.title || d.active_window?.name || '').substring(0,45);
+    setText('v-win', win);
+    // Also update active window in ctx panel
+    if (win) setText('ctx-window', win);
   }
-  if (d.ocr_text) setText("ocr-text", d.ocr_text.substring(0,2000));
+  if (d.ocr_text) setText('ocr-text', d.ocr_text.substring(0,2000));
 }
 
-// ─── IPA WorldState ───
+// ── World State ───────────────────────────────────────────────────────────────
 async function pollWorld() {
-  const d = await get("/perception/world");
+  const d = await get('/perception/world');
   if (!d) return;
-  setText("ws-phase", d.task_phase || "--");
-  setText("ws-surface", (d.active_surface || "--").substring(0,50));
-  setText("ws-ready", d.readiness ? "YES" : "NO");
-  $("ws-ready").className = "value " + (d.readiness ? "green" : "red");
-  setText("ws-uncertainty", ((d.uncertainty||0)*100).toFixed(0) + "%");
-  $("ws-uncertainty").className = "value " + ((d.uncertainty||0) > 0.5 ? "warn" : "green");
-  setText("ws-staleness", (d.staleness_ms||0) + "ms");
-  setText("ws-domain", d.domain_pack || d.entities?.find(e=>e.startsWith("workflow:"))?.replace("workflow:","") || "--");
-  setText("ws-tick", d.tick_id || "--");
 
-  // Visual facts
-  const facts = d.visual_facts || [];
-  const fl = $("facts-list");
-  if (facts.length) {
-    fl.innerHTML = facts.map(f =>
-      '<div class="fact"><span class="fact-kind">' + (f.kind||"?") + '</span> ' + (f.text||"").substring(0,120) + '</div>'
-    ).join("");
-  } else {
-    fl.innerHTML = '<span style="color:var(--dim)">No facts</span>';
-  }
+  // Surface — strip full exe paths
+  const surface = (d.active_surface||'').replace(/.*[\\/]([^\\/]+)\.exe.*/i,'$1');
+  setText('ctx-surface', surface.substring(0,40) || '--');
+  setText('ctx-phase', d.task_phase || '--');
+  setText('ctx-domain', d.domain_pack || '--');
+
+  setText('p-ready', d.readiness ? 'YES' : 'NO');
+  setClass('p-ready', d.readiness ? 'green' : 'red');
+  const unc = ((d.uncertainty||0)*100).toFixed(0)+'%';
+  setText('p-uncertainty', unc);
+  setClass('p-uncertainty', (d.uncertainty||0) > 0.6 ? 'warn' : 'green');
 }
 
-// ─── Perception ───
+// ── Perception ────────────────────────────────────────────────────────────────
 async function pollPerception() {
-  const d = await get("/perception/state");
+  const d = await get('/perception/state');
   if (!d) return;
-  setText("p-scene", (d.scene_state||"--").toUpperCase() + " (" + ((d.scene_confidence||0)*100).toFixed(0) + "%)");
-  setText("p-attention", d.attention_focus || "--");
-  setText("p-events", d.event_count || 0);
-  setText("p-fps-advice", d.fps_advice?.toFixed(1) || "--");
-  setText("h-mode", d.world?.risk_mode?.toUpperCase() || "SAFE");
+
+  const scene = (d.scene_state||'unknown').toUpperCase();
+  const conf = ((d.scene_confidence||0)*100).toFixed(0);
+  const badge = $('p-scene-badge');
+  if (badge) { badge.textContent = scene+' ('+conf+'%)'; }
+
+  setText('p-attention', d.attention_focus || '--');
+  setText('p-events', d.event_count || 0);
+  setText('h-mode', (d.world?.risk_mode||'SAFE').toUpperCase());
 }
 
-// ─── System ───
+// ── Spatial / Monitors ────────────────────────────────────────────────────────
+async function pollSpatial() {
+  const d = await get('/spatial/state?include_windows=true');
+  if (!d) return;
+
+  const monitors = d.monitors || [];
+  const activeId = d.active_monitor_id;
+  const wins = d.windows || [];
+
+  setText('mon-count', monitors.length);
+
+  const grid = $('mon-grid');
+  if (!grid || !monitors.length) return;
+
+  // Group windows by monitor
+  const byMon = {};
+  for (const w of wins) {
+    const mid = w.monitor_id || 0;
+    if (!byMon[mid]) byMon[mid] = [];
+    byMon[mid].push((w.title||'').substring(0,35));
+  }
+
+  grid.innerHTML = monitors.map(m => {
+    const active = m.id === activeId;
+    const winList = (byMon[m.id]||[]).slice(0,2).join(', ') || 'no windows';
+    return '<div class="monitor-item'+(active?' active':'')+'">'+
+      '<span class="monitor-label">M'+m.id+'</span>'+
+      '<span style="color:var(--muted);font-size:10px">'+m.width+'x'+m.height+'</span>'+
+      '<div class="monitor-win">'+winList+'</div>'+
+    '</div>';
+  }).join('');
+
+  // Active window context
+  if (d.active_window) {
+    const title = (d.active_window.title||'').substring(0,45);
+    if (title) setText('ctx-window', title);
+  }
+}
+
+// ── System ────────────────────────────────────────────────────────────────────
 async function pollSystem() {
-  const b = await get("/buffer/stats");
+  const b = await get('/buffer/stats');
   if (b) {
-    setText("s-buffer", (b.slots_used||0) + "/" + (b.slots_max||0));
-    setText("s-fps", (b.current_fps||b.capture_fps||0).toFixed(1));
-    setText("h-fps", (b.current_fps||b.capture_fps||0).toFixed(1));
-    setText("h-ram", ((b.memory_mb||0)).toFixed(1) + "MB");
-    setText("h-frames", b.total_frames_captured||b.total_frames || 0);
+    setText('s-buffer', (b.slots_used||0)+'/'+(b.slots_max||0));
+    setText('s-fps', (b.current_fps||b.capture_fps||0).toFixed(1));
+    setText('h-fps', (b.current_fps||b.capture_fps||0).toFixed(1));
+    setText('h-ram', ((b.memory_mb||0)).toFixed(1)+'MB');
+    setText('h-frames', b.total_frames_captured||b.total_frames||0);
+    setText('s-ocr', b.ocr_available ? 'active' : 'off');
   }
-  const p = await get("/perception/state");
-  if (p?.visual) {
-    const v = p.visual;
-    const status = v.provider_status || {};
-    setText("s-vlm", v.provider + " (" + (status.status||"?") + ") " + (status.runtime_device||""));
-    setText("s-gpu", status.cuda_available ? status.runtime_device : "CPU");
+  const ipa = await get('/ipa/status');
+  if (ipa) {
+    const hasGpu = ipa.engine?.encoder?.backend && ipa.engine.encoder.backend !== 'cpu';
+    setText('s-gpu', hasGpu ? 'GPU (DirectML)' : 'CPU');
   }
 }
 
-// ─── Describe Screen (VLM on-demand) ───
-async function describeScreen() {
-  setText("ocr-text", "Running VLM inference...");
-  const d = await post("/vision/describe");
-  if (!d) { setText("ocr-text", "VLM failed"); return; }
-  const vlm = (d.facts||[]).find(f => f.kind === "image_caption");
-  setText("ocr-text", vlm ? vlm.text : (d.summary || "No description"));
-}
-
-// ─── Health ───
+// ── Health ────────────────────────────────────────────────────────────────────
 async function checkHealth() {
-  const d = await get("/health");
-  const dot = $("status-dot");
-  if (d && d.status === "alive") {
-    dot.classList.add("on");
-  } else {
-    dot.classList.remove("on");
-  }
+  const d = await get('/health');
+  const dot = $('status-dot');
+  if (d?.status === 'alive') dot.classList.add('on');
+  else dot.classList.remove('on');
 }
 
-// ─── Refresh All ───
+// ── Controls ─────────────────────────────────────────────────────────────────
 function refreshAll() {
-  checkHealth();
-  pollVision();
-  pollWorld();
-  pollPerception();
-  pollSystem();
+  checkHealth(); pollVision(); pollWorld(); pollPerception(); pollSpatial(); pollSystem();
 }
 
-// ─── Start Polling ───
-function start() {
-  refreshAll();
-  visionId = setInterval(pollVision, 1500);
-  pollId = setInterval(() => { pollWorld(); pollPerception(); pollSystem(); checkHealth(); }, 3000);
+function copyApiUrl() {
+  const url = API + (TOKEN ? '?token='+TOKEN : '');
+  navigator.clipboard.writeText(API).then(() => {
+    const btn = document.querySelector('.btn-row .btn');
+    const orig = btn.textContent;
+    btn.textContent = 'Copied!';
+    setTimeout(() => btn.textContent = orig, 1500);
+  });
 }
 
-function stop() {
-  if (visionId) clearInterval(visionId);
-  if (pollId) clearInterval(pollId);
-}
-
-start();
+// ── Start ─────────────────────────────────────────────────────────────────────
+refreshAll();
+setInterval(pollVision, 500);
+setInterval(() => { pollWorld(); pollPerception(); pollSystem(); checkHealth(); }, 2000);
+setInterval(pollSpatial, 5000);   // monitors change rarely
 </script>
 </body>
 </html>'''
