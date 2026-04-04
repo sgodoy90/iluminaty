@@ -1919,9 +1919,45 @@ async def lifespan(app: FastAPI):
             except Exception:
                 pass
 
+    # Watchdog: detect if capture stalls and restart it
+    _watchdog_log = logging.getLogger("iluminaty.watchdog")
+    async def _watchdog_loop():
+        last_frame_count = 0
+        stall_count = 0
+        while True:
+            await asyncio.sleep(30)
+            try:
+                if not _state.buffer:
+                    continue
+                current = getattr(_state.buffer, '_frame_count', 0)
+                if current == last_frame_count and last_frame_count > 0:
+                    stall_count += 1
+                    _watchdog_log.warning(
+                        "Capture stall detected (%dx) — frame_count=%d", stall_count, current
+                    )
+                    if stall_count >= 3:  # stalled for 90s
+                        _watchdog_log.error("Capture stalled 90s — attempting restart")
+                        try:
+                            if _state.capture and hasattr(_state.capture, 'stop'):
+                                _state.capture.stop()
+                            await asyncio.sleep(2)
+                            if _state.capture and hasattr(_state.capture, 'start'):
+                                _state.capture.start()
+                            stall_count = 0
+                            _watchdog_log.info("Capture restarted by watchdog")
+                        except Exception as e:
+                            _watchdog_log.error("Watchdog restart failed: %s", e)
+                else:
+                    stall_count = 0
+                last_frame_count = current
+            except Exception:
+                pass
+
     reap_task = asyncio.create_task(_reap_agents_loop())
+    watchdog_task = asyncio.create_task(_watchdog_loop())
     yield
     reap_task.cancel()
+    watchdog_task.cancel()
     # Cleanup
     if _state.cursor_tracker:
         try:
@@ -2674,6 +2710,7 @@ async def vision_snapshot(
     ocr: bool = Query(True),
     include_image: bool = Query(True),
     monitor_id: Optional[int] = Query(None, description="Optional monitor id. Defaults to active monitor."),
+    monitor: Optional[int] = Query(None, description="Alias for monitor_id (MCP compatibility)."),
     x_api_key: Optional[str] = Header(None),
 ):
     """
@@ -2690,9 +2727,11 @@ async def vision_snapshot(
     if not _state.buffer or not _state.vision:
         raise HTTPException(503, "Not initialized")
 
-    slot, resolved_mid = _latest_slot_for_monitor(monitor_id)
+    # Accept both ?monitor_id= and ?monitor= (MCP sends ?monitor=)
+    effective_monitor_id = monitor_id if monitor_id is not None else monitor
+    slot, resolved_mid = _latest_slot_for_monitor(effective_monitor_id)
     if not slot:
-        _raise_no_frame_available(monitor_id)
+        _raise_no_frame_available(effective_monitor_id)
 
     enriched = _state.vision.enrich_frame(slot, run_ocr=ocr)
     payload = enriched.to_dict(include_image=include_image)
@@ -5365,7 +5404,13 @@ async def terminal_exec(
     _check_auth(x_api_key)
     if not _state.terminal:
         raise HTTPException(503, "Not initialized")
-    return _state.terminal.run_command(cmd, cwd=cwd, timeout=timeout).to_dict()
+    import asyncio
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(
+        None,
+        lambda: _state.terminal.run_command(cmd, cwd=cwd, timeout=timeout)
+    )
+    return result.to_dict()
 
 
 @app.post("/terminal/background")
