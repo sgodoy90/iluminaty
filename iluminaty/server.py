@@ -5266,6 +5266,91 @@ async def action_raw(
     return await _execute_intent(intent, mode="RAW", verify=verify)
 
 
+@app.post("/actions/act")
+async def actions_act_alias(
+    request_body: dict,
+    x_api_key: Optional[str] = Header(None),
+):
+    """
+    Simple action endpoint for dashboard and SDK.
+    Accepts flat body: {action, target?, text?, key?, x?, y?, monitor?}
+    Routes to the correct low-level endpoint internally.
+
+    action=click  + target="Save button" → smart_locate → click
+    action=click  + x=100 + y=200        → direct click
+    action=type   + text="hello"         → type_text
+    action=key    + key="ctrl+s"         → hotkey
+    action=scroll + x=960 + y=540        → scroll
+    """
+    _check_auth(x_api_key)
+    if not _state.actions:
+        raise HTTPException(503, "Actions not initialized")
+
+    action  = str(request_body.get("action") or "click").strip().lower()
+    target  = str(request_body.get("target") or "").strip()
+    text    = str(request_body.get("text") or "").strip()
+    key     = str(request_body.get("key") or "").strip()
+    x       = request_body.get("x")
+    y       = request_body.get("y")
+    monitor = request_body.get("monitor")
+
+    try:
+        if action in ("type", "type_text"):
+            if not text:
+                return {"success": False, "message": "text is required for type action"}
+            result = _state.actions.type_text(text)
+            return result.to_dict()
+
+        if action in ("key", "hotkey", "press"):
+            if not key:
+                return {"success": False, "message": "key is required for key action"}
+            import pyautogui as _pag
+            _pag.hotkey(*key.replace(" ", "").split("+"))
+            return {"success": True, "message": f"key: {key}"}
+
+        if action in ("scroll",):
+            sx = int(x or 0)
+            sy = int(y or 0)
+            clicks = int(request_body.get("clicks", -3))
+            import pyautogui as _pag
+            _pag.scroll(clicks, x=sx, y=sy)
+            return {"success": True, "message": f"scroll {clicks} at ({sx},{sy})"}
+
+        # click / double_click / right_click — resolve target or use coords
+        if target and not (x and y):
+            # Smart locate by name
+            if not _state.smart_locator:
+                return {"success": False, "message": "smart_locate not available — provide x,y"}
+            monitor_id = int(monitor) if monitor is not None else None
+            loc = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: _state.smart_locator.locate(target, monitor_id=monitor_id)
+            )
+            if not loc:
+                return {"success": False, "message": f"'{target}' not found on screen"}
+            cx, cy = loc.x, loc.y
+        elif x is not None and y is not None:
+            cx, cy = int(x), int(y)
+        else:
+            return {"success": False, "message": "Provide target name or x,y coordinates"}
+
+        if action == "double_click":
+            result = _state.actions.double_click(cx, cy)
+        elif action == "right_click":
+            result = _state.actions.click(cx, cy, "right")
+        else:
+            result = _state.actions.click(cx, cy)
+
+        d = result.to_dict()
+        d["resolved_x"] = cx
+        d["resolved_y"] = cy
+        if target:
+            d["target"] = target
+        return d
+
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+
 @app.post("/action/verify")
 async def action_verify(
     request_body: dict,
