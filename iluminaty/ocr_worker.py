@@ -58,6 +58,13 @@ def _ocr_subprocess_main(req_q: mp.Queue, res_q: mp.Queue) -> None:
 
     hash_cache: dict[str, dict] = {}
 
+    # Minimum interval between inferences — prevents CPU saturation on burst queues
+    # DirectML/ONNX can peg CPU at 300%+ if fed frames faster than it processes them
+    _min_inference_interval_s = float(
+        __import__("os").environ.get("ILUMINATY_OCR_MIN_INFERENCE_INTERVAL_S", "0.5")
+    )
+    _last_inference_ts = 0.0
+
     while True:
         try:
             item = req_q.get(timeout=5.0)
@@ -81,6 +88,13 @@ def _ocr_subprocess_main(req_q: mp.Queue, res_q: mp.Queue) -> None:
                 "ts": _time.time(),
             })
             continue
+
+        # Rate-limit inference to avoid CPU saturation
+        now_ts = _time.time()
+        elapsed_since_last = now_ts - _last_inference_ts
+        if elapsed_since_last < _min_inference_interval_s:
+            _time.sleep(_min_inference_interval_s - elapsed_since_last)
+        _last_inference_ts = _time.time()
 
         # Run inference
         try:

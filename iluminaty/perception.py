@@ -677,6 +677,7 @@ class MonitorPerceptionState:
     loading_detected: bool = False
     scene_stable_since: float = field(default_factory=time.time)
     consecutive_high: int = 0
+    consecutive_unchanged: int = 0  # frames with change_score < 0.01 (idle detection)
     motion_reported: bool = False
     video_reported: bool = False
     change_history: deque = field(default_factory=lambda: deque(maxlen=20))
@@ -968,8 +969,10 @@ class PerceptionEngine:
         self._visual.start()
         self._thread = threading.Thread(target=self._loop, daemon=True, name="perception-fast-loop")
         self._deep_thread = threading.Thread(target=self._deep_loop, daemon=True, name="perception-deep-loop")
+        self._cpu_throttle_thread = threading.Thread(target=self._cpu_throttle_loop, daemon=True, name="perception-cpu-throttle")
         self._thread.start()
         self._deep_thread.start()
+        self._cpu_throttle_thread.start()
 
     def stop(self):
         self._running = False
@@ -977,7 +980,56 @@ class PerceptionEngine:
             self._thread.join(timeout=3)
         if self._deep_thread:
             self._deep_thread.join(timeout=3)
+        if hasattr(self, "_cpu_throttle_thread") and self._cpu_throttle_thread:
+            self._cpu_throttle_thread.join(timeout=2)
         self._visual.stop()
+
+    def _cpu_throttle_loop(self):
+        """
+        Background thread: monitors system CPU every 10s.
+        If CPU > ILUMINATY_MAX_CPU_PCT threshold, temporarily slows the fast loop
+        by injecting extra sleep into _fast_loop_interval.
+
+        This is a soft throttle — it doesn't stop perception, just slows it down
+        to prevent saturating laptops and low-power CPUs with 4+ monitors.
+        """
+        import os as _os
+        try:
+            import psutil as _psutil
+            _has_psutil = True
+        except Exception:
+            _has_psutil = False
+
+        max_cpu_pct = float(_os.environ.get("ILUMINATY_MAX_CPU_PCT", "80"))
+        _original_interval = self._fast_loop_interval
+        _throttled = False
+
+        while self._running:
+            time.sleep(10)
+            if not self._running:
+                break
+            if not _has_psutil:
+                continue
+            try:
+                cpu = _psutil.cpu_percent(interval=1)
+                if cpu > max_cpu_pct and not _throttled:
+                    # CPU too high — slow down fast loop by 2x
+                    self._fast_loop_interval = min(self._fast_loop_interval * 2.0, 1.0)
+                    _throttled = True
+                    logger.warning(
+                        "CPU throttle engaged: %.0f%% > %.0f%% — fast_loop slowed to %.2fs interval",
+                        cpu, max_cpu_pct, self._fast_loop_interval,
+                    )
+                elif cpu < (max_cpu_pct * 0.7) and _throttled:
+                    # CPU recovered — restore original interval
+                    self._fast_loop_interval = _original_interval
+                    _throttled = False
+                    logger.info(
+                        "CPU throttle released: %.0f%% — fast_loop restored to %.2fs interval",
+                        cpu, self._fast_loop_interval,
+                    )
+            except Exception as e:
+                logger.debug("CPU throttle check failed: %s", e)
 
     def _add_event(self, event_type: str, description: str,
                    importance: float = 0.5, monitor: int = 0,
@@ -1052,6 +1104,23 @@ class PerceptionEngine:
                     prev_ts = last_ts_per_monitor.get(monitor_id, 0.0)
                     if slot.timestamp <= prev_ts:
                         continue
+
+                    # Skip idle inactive monitors every other cycle to reduce CPU load.
+                    # An inactive monitor with change_score==0 for 3+ consecutive frames
+                    # is almost certainly a static screen — no need to analyze at full rate.
+                    is_active = (monitor_id == active_monitor_id)
+                    if not is_active:
+                        mon_state = self._monitor_states.get(monitor_id)
+                        if (mon_state is not None
+                                and getattr(mon_state, "consecutive_unchanged", 0) >= 3
+                                and slot.change_score < 0.01):
+                            # Skip every other cycle for this monitor
+                            _skip_key = f"_skip_inactive_{monitor_id}"
+                            _prev_skip = getattr(self, _skip_key, False)
+                            setattr(self, _skip_key, not _prev_skip)
+                            if _prev_skip:
+                                continue  # skip this cycle
+
                     last_ts_per_monitor[monitor_id] = slot.timestamp
                     self._analyze_frame(slot, active_monitor_id=active_monitor_id)
                     analyzed_any = True
@@ -1372,6 +1441,7 @@ class PerceptionEngine:
         if change < 0.005:
             # Truly identical — skip everything
             mon_state.consecutive_high = 0
+            mon_state.consecutive_unchanged += 1
             self._attention.decay()
             if not mon_state.idle_reported and (now - mon_state.last_change_time) > 15:
                 self._add_event("idle", f"Screen stable for {now - mon_state.last_change_time:.0f}s",
@@ -1552,10 +1622,12 @@ class PerceptionEngine:
         elif change > 0.03:
             # MINOR CHANGE — Gate 1 threshold, update attention only
             mon_state.consecutive_high = 0
+            mon_state.consecutive_unchanged = 0
             mon_state.motion_reported = False
 
         else:
             mon_state.consecutive_high = 0
+            mon_state.consecutive_unchanged += 1
             mon_state.motion_reported = False
 
         # ── Gate 4: OCR diff (expensive, only on major changes, max every 3s) ──
