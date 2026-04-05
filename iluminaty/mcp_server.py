@@ -446,7 +446,8 @@ def _execute_cycle_action(action: dict, focus_handle: int | None, monitor_hint: 
         ex = int(action.get("end_x", 0))
         ey = int(action.get("end_y", 0))
         duration = float(action.get("duration", 0.35))
-        coord_space = str(action.get("coord_space", "global")).strip().lower()
+        default_space = "monitor" if monitor is not None else "global"
+        coord_space = str(action.get("coord_space", default_space)).strip().lower()
         query = (
             f"/action/drag?start_x={sx}&start_y={sy}&end_x={ex}&end_y={ey}"
             f"&duration={duration}{focus_suffix}"
@@ -2296,7 +2297,8 @@ def handle_drag_screen(args: dict) -> list:
     end_y = int(args.get("end_y", 0))
     duration = float(args.get("duration", 0.35))
     monitor = args.get("monitor")
-    coord_space = str(args.get("coord_space", "global")).strip().lower()
+    default_space = "monitor" if monitor is not None else "global"
+    coord_space = str(args.get("coord_space", default_space)).strip().lower()
     focus_title = (args.get("focus_title") or "").strip()
     focus_handle = args.get("focus_handle")
     query = (
