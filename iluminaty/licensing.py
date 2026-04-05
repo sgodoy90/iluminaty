@@ -45,6 +45,8 @@ ALL_MCP_TOOLS = {
     "browser_navigate", "browser_tabs",
     # Files / system
     "run_command", "read_file", "write_file", "get_clipboard",
+    # Pipeline / workspace
+    "open_on_monitor",
     # Recording
     "screen_record",
     # Multi-agent coordination

@@ -1013,6 +1013,110 @@ def _cursor_drift_check(intent: Intent) -> dict:
     }
 
 
+def _user_activity_check(intent: Intent, mode: str) -> dict:
+    """
+    Guard: block actions that would interrupt the user's active work.
+
+    Rules (SAFE mode only):
+    1. If the user is TYPING on the active monitor AND the action involves
+       type/key → block with reason="user_typing_active"
+       Rationale: typing text into a terminal/editor while the AI also types
+       produces garbled output (exactly what happened with the terminal bug).
+
+    2. If the action targets the SAME monitor the user is actively using
+       (active monitor) AND safe_mode is not explicitly opted out → require
+       the action to specify a non-active target monitor.
+       Rationale: respects user's workspace without interfering.
+
+    Only applies in SAFE mode. RAW / HYBRID bypass this check.
+    Does NOT apply to read-only actions (scroll, move_mouse, screenshots).
+    """
+    mode_norm = _normalize_operating_mode(mode)
+    if mode_norm == "RAW":
+        return {"allowed": True, "applies": False, "reason": "raw_mode_bypass"}
+
+    action = (intent.action or "").strip().lower()
+    params = intent.params or {}
+
+    # Read-only actions never interrupt the user
+    READ_ONLY = {"scroll", "move_mouse", "screenshot_region", "get_mouse_position",
+                 "screenshot", "read_text", "get_elements", "find_element"}
+    if action in READ_ONLY:
+        return {"allowed": True, "applies": False, "reason": "read_only_action"}
+
+    # Get current perception state
+    scene_state = "unknown"
+    active_monitor_id = None
+    try:
+        if _state.perception:
+            readiness = _state.perception.get_readiness()
+            scene_state = str(readiness.get("scene_state") or readiness.get("task_phase") or "unknown")
+            active_monitor_id = _resolve_active_monitor_id()
+    except Exception:
+        pass
+
+    # Also read scene directly from perception state
+    try:
+        if _state.perception and hasattr(_state.perception, "_monitor_states"):
+            if active_monitor_id and active_monitor_id in _state.perception._monitor_states:
+                mon = _state.perception._monitor_states[active_monitor_id]
+                if hasattr(mon, "scene") and mon.scene:
+                    scene_state = str(mon.scene.state.value if hasattr(mon.scene.state, "value") else mon.scene.state)
+    except Exception:
+        pass
+
+    is_typing = scene_state in ("typing", "TYPING")
+
+    # Rule 1: user is typing + action wants to type/key
+    TYPE_ACTIONS = {"type", "type_text", "key", "hotkey", "press_key"}
+    if is_typing and action in TYPE_ACTIONS:
+        # Check if a safe_interrupt override was explicitly requested
+        if not bool(params.get("safe_interrupt_ok", False)):
+            return {
+                "allowed": False,
+                "applies": True,
+                "reason": "user_typing_active",
+                "scene_state": scene_state,
+                "active_monitor_id": active_monitor_id,
+                "hint": (
+                    "User is currently typing. Pass safe_interrupt_ok=true to override, "
+                    "or target a different monitor with the 'monitor' param."
+                ),
+            }
+
+    # Rule 2: action targets the user's active monitor (writing actions only)
+    WRITING_ACTIONS = {"type", "type_text", "key", "hotkey", "click", "double_click"}
+    if action in WRITING_ACTIONS and active_monitor_id is not None:
+        action_monitor = params.get("monitor_id") or params.get("monitor")
+        if action_monitor is not None:
+            try:
+                action_monitor_int = int(action_monitor)
+                if action_monitor_int == int(active_monitor_id) and is_typing:
+                    if not bool(params.get("safe_interrupt_ok", False)):
+                        return {
+                            "allowed": False,
+                            "applies": True,
+                            "reason": "action_targets_active_monitor_while_typing",
+                            "scene_state": scene_state,
+                            "active_monitor_id": int(active_monitor_id),
+                            "action_monitor_id": action_monitor_int,
+                            "hint": (
+                                f"User is typing on M{active_monitor_id}. "
+                                f"Target a different monitor or pass safe_interrupt_ok=true."
+                            ),
+                        }
+            except Exception:
+                pass
+
+    return {
+        "allowed": True,
+        "applies": True,
+        "reason": "user_not_interrupted",
+        "scene_state": scene_state,
+        "active_monitor_id": active_monitor_id,
+    }
+
+
 def _cursor_snapshot() -> dict:
     if _state.cursor_tracker:
         try:
@@ -1521,6 +1625,7 @@ def _build_precheck(
     )
     orientation_check = _orientation_check(intent, mode_norm, target_check=target_check)
     cursor_drift_check = _cursor_drift_check(intent)
+    user_activity_check = _user_activity_check(intent, mode_norm)
 
     blocked = (
         not kill_check["allowed"]
@@ -1535,6 +1640,7 @@ def _build_precheck(
         or not ui_semantics_check["allowed"]
         or not target_check["allowed"]
         or not cursor_drift_check["allowed"]
+        or not user_activity_check["allowed"]
     )
     payload = {
         "mode": mode_norm,
@@ -1560,6 +1666,7 @@ def _build_precheck(
         "ui_semantics_check": ui_semantics_check,
         "target_check": target_check,
         "cursor_drift_check": cursor_drift_check,
+        "user_activity_check": user_activity_check,
         "blocked": blocked,
     }
     payload["navigation_cycle"] = _build_navigation_cycle_precheck(payload)
@@ -1609,6 +1716,7 @@ async def _execute_intent(
             precheck.get("ui_semantics_check", {}).get("reason") if not precheck.get("ui_semantics_check", {}).get("allowed", True) else
             precheck.get("cursor_drift_check", {}).get("reason") if not precheck.get("cursor_drift_check", {}).get("allowed", True) else
             precheck.get("target_check", {}).get("reason") if not precheck.get("target_check", {}).get("allowed", True) else
+            precheck.get("user_activity_check", {}).get("reason") if not precheck.get("user_activity_check", {}).get("allowed", True) else
             precheck.get("grounding_check", {}).get("reason", "grounding_blocked")
         )
         if _state.audit:
@@ -3885,6 +3993,125 @@ async def agent_report(
         "from_agent": from_agent,
         "to_agent": to_agent,
         "status": status,
+    }
+
+
+# ─── open_on_monitor — launch app on specific monitor ───
+
+@app.post("/windows/open_on_monitor")
+async def open_on_monitor(
+    request_body: dict,
+    x_api_key: Optional[str] = Header(None),
+):
+    """
+    Launch an application and move it to a specific monitor.
+
+    This is the key tool for pipeline-aware execution:
+    the AI can open a browser/terminal/editor on a non-active monitor
+    without interfering with the user's current workspace.
+
+    Body:
+      app         : app path or name (e.g. "notepad.exe", "C:\\Program Files\\...\\brave.exe")
+      monitor_id  : target monitor (1, 2, 3...)
+      title_hint  : partial title to identify the window after launch (optional)
+      wait_s      : seconds to wait for window to appear (default: 8)
+      url         : if provided, navigates browser to this URL after launch
+      x, y, w, h  : explicit position/size override (optional, defaults to monitor bounds)
+    """
+    _check_auth(x_api_key)
+    if not _state.windows or not _state.actions:
+        raise HTTPException(503, "Window manager or actions not initialized")
+
+    app_path   = str(request_body.get("app") or "").strip()
+    monitor_id = int(request_body.get("monitor_id", 1) or 1)
+    title_hint = str(request_body.get("title_hint") or "").strip()
+    wait_s     = min(float(request_body.get("wait_s", 8) or 8), 30.0)
+    url        = str(request_body.get("url") or "").strip()
+    override_x = request_body.get("x")
+    override_y = request_body.get("y")
+    override_w = request_body.get("w")
+    override_h = request_body.get("h")
+
+    if not app_path:
+        raise HTTPException(400, "app is required")
+
+    # Resolve target monitor bounds
+    target_mon = None
+    if _state.monitor_mgr:
+        target_mon = _state.monitor_mgr.get_monitor(monitor_id)
+
+    if target_mon is None:
+        raise HTTPException(404, f"Monitor {monitor_id} not found")
+
+    # 1. Launch the app
+    import subprocess as _sp
+    try:
+        _sp.Popen(app_path, shell=True, creationflags=0x00000008)  # DETACHED_PROCESS
+    except Exception as e:
+        return {"success": False, "step": "launch", "error": str(e)}
+
+    # 2. Wait for window to appear (poll every 500ms)
+    deadline = time.time() + wait_s
+    found_handle = None
+    while time.time() < deadline:
+        await asyncio.sleep(0.5)
+        windows = _state.windows.list_windows()
+        for w in reversed(windows):  # newest windows tend to be last
+            if title_hint and title_hint.lower() not in str(w.title or "").lower():
+                continue
+            if app_path:
+                app_stem = app_path.split("\\")[-1].split("/")[-1].replace(".exe", "").lower()
+                if app_stem and app_stem not in str(w.title or "").lower() and app_stem not in str(w.app_name or "").lower():
+                    continue
+            found_handle = w.handle
+            break
+        if found_handle:
+            break
+
+    if not found_handle:
+        return {
+            "success": False,
+            "step": "wait_for_window",
+            "error": f"Window did not appear within {wait_s}s",
+            "monitor_id": monitor_id,
+        }
+
+    await asyncio.sleep(0.2)  # brief settle before moving
+
+    # 3. Move window to target monitor
+    # Default: 90% of monitor size, centered
+    mon_x = int(getattr(target_mon, "left", 0))
+    mon_y = int(getattr(target_mon, "top", 0))
+    mon_w = int(getattr(target_mon, "width", 1920))
+    mon_h = int(getattr(target_mon, "height", 1080))
+
+    dest_x = int(override_x) if override_x is not None else mon_x + int(mon_w * 0.05)
+    dest_y = int(override_y) if override_y is not None else mon_y + int(mon_h * 0.05)
+    dest_w = int(override_w) if override_w is not None else int(mon_w * 0.90)
+    dest_h = int(override_h) if override_h is not None else int(mon_h * 0.90)
+
+    move_ok = _state.windows.move_window(
+        handle=found_handle,
+        x=dest_x, y=dest_y,
+        width=dest_w, height=dest_h,
+    )
+
+    # 4. Optional: navigate browser to URL
+    nav_result = None
+    if url and _state.browser:
+        try:
+            await asyncio.sleep(0.5)
+            nav_result = _state.browser.navigate(url)
+        except Exception as e:
+            nav_result = {"success": False, "error": str(e)}
+
+    return {
+        "success": True,
+        "handle": found_handle,
+        "monitor_id": monitor_id,
+        "position": {"x": dest_x, "y": dest_y, "w": dest_w, "h": dest_h},
+        "move_ok": move_ok,
+        "url_nav": nav_result,
     }
 
 

@@ -1566,6 +1566,52 @@ def handle_operate_cycle(args: dict) -> list:
             if not focus_error:
                 focus_error = str(e)
 
+    # 3.5) FOCUS VERIFY — confirm focus landed on expected target before acting
+    # Without this, if the user changed focus between step 3 and step 5,
+    # the typed text goes to the wrong window (the terminal bug scenario).
+    focus_verified = False
+    focus_verify_reason = "not_checked"
+    if focus_ok and focus_handle is not None and isinstance(target, dict):
+        try:
+            # Re-read active window after focus attempt
+            _post_focus_win = _api_get("/vision/window")
+            _post_handle = int(_post_focus_win.get("handle", 0) or 0)
+            _post_title  = str(_post_focus_win.get("title", "") or "")
+            _target_title_for_verify = str(target.get("title", "") or "")
+            _target_handle_for_verify = int(target.get("handle", 0) or 0)
+
+            if _post_handle and _target_handle_for_verify and _post_handle == _target_handle_for_verify:
+                focus_verified = True
+                focus_verify_reason = "handle_match"
+            elif _post_title and _target_title_for_verify:
+                # Fuzzy title match (handles title suffix changes like "* unsaved")
+                _short_target = _target_title_for_verify[:40].lower().strip()
+                _short_post   = _post_title[:40].lower().strip()
+                if _short_target and _short_target in _short_post or _short_post in _short_target:
+                    focus_verified = True
+                    focus_verify_reason = "title_fuzzy_match"
+                else:
+                    focus_verified = False
+                    focus_verify_reason = f"title_mismatch: expected='{_target_title_for_verify[:60]}' got='{_post_title[:60]}'"
+            else:
+                focus_verified = True  # can't verify — assume ok
+                focus_verify_reason = "unverifiable_assume_ok"
+        except Exception as _fv_err:
+            focus_verified = True  # verify failed — don't block on verify error
+            focus_verify_reason = f"verify_error_assume_ok: {_fv_err}"
+    elif not focus_ok:
+        focus_verified = False
+        focus_verify_reason = "focus_failed_skip_verify"
+    else:
+        focus_verified = True
+        focus_verify_reason = "no_target_skip_verify"
+
+    # Abort action if focus didn't land on expected window
+    # This is the guard that prevents typing into the wrong app
+    _focus_verify_failed = (not focus_verified and
+                            focus_verify_reason.startswith("title_mismatch") and
+                            action is not None)
+
     # 4) READING / COMPREHENSION
     window_info = {}
     try:
@@ -1633,9 +1679,15 @@ def handle_operate_cycle(args: dict) -> list:
     # 5) ACTION
     action_kind = "none"
     action_result = None
-    if action is not None and (not interrupt_detect.get("detected") or interrupt_resolution.get("resolved") or (not resolve_interrupts)):
+    if _focus_verify_failed:
+        action_kind = str(action.get("kind") or action.get("type") or "none") if action else "none"
+        action_result = {
+            "success": False,
+            "message": f"focus_verify_failed: {focus_verify_reason}. Action aborted to prevent wrong-window input.",
+        }
+    elif action is not None and (not interrupt_detect.get("detected") or interrupt_resolution.get("resolved") or (not resolve_interrupts)):
         action_kind, action_result = _execute_cycle_action(action, focus_handle, monitor_hint=ocr_monitor)
-    elif action is not None and interrupt_detect.get("detected") and resolve_interrupts and (not interrupt_resolution.get("resolved")):
+    elif not _focus_verify_failed and action is not None and interrupt_detect.get("detected") and resolve_interrupts and (not interrupt_resolution.get("resolved")):
         action_kind = str(action.get("kind") or action.get("type") or "none")
         action_result = {"success": False, "message": "blocking_interrupt_unresolved"}
 
@@ -1696,6 +1748,10 @@ def handle_operate_cycle(args: dict) -> list:
         (
             f"4) Read: window='{window_info.get('title', '')[:90]}' "
             f"ocr_chars={len(ocr_text)} excerpt='{read_excerpt}'"
+        ),
+        (
+            f"3.5) FocusVerify: verified={focus_verified} reason={focus_verify_reason}"
+            + (" ⚠ ACTION ABORTED" if _focus_verify_failed else "")
         ),
         (
             f"4.5) Interrupt: detected={interrupt_detect.get('detected')} "
@@ -2097,10 +2153,42 @@ def handle_act(args: dict) -> list:
       exact coordinates via UITree + OCR. No guessing needed.
     - If x,y are provided, uses them directly.
     - target= takes priority over x,y.
+
+    SAFE MODE (safe=True, default):
+    - Checks if user is currently typing before sending type/key actions.
+    - If user is typing on the same monitor → action is blocked with explanation.
+    - Pass safe=False or safe_interrupt_ok=True to bypass.
+
+    PIPELINE MODE (use operate_cycle for full Analyze→Plan→Execute→Verify):
+    - operate_cycle() adds focus verification (step 3.5) before acting.
+    - Prevents the terminal bug: typed text going to wrong window.
     """
     action = str(args.get("action", "")).strip().lower()
     if not action:
         return [{"type": "text", "text": "Error: action is required (click/type/key/scroll/focus/move_mouse)"}]
+
+    # Safe mode: lightweight user activity check before destructive actions
+    safe = _as_bool(args.get("safe"), True)  # default True
+    safe_interrupt_ok = _as_bool(args.get("safe_interrupt_ok"), False)
+    if safe and not safe_interrupt_ok and action in ("type", "key"):
+        try:
+            scene = ""
+            if action in ("type", "key"):
+                spatial = _api_get("/spatial/state")
+                active_mon = spatial.get("active_monitor_id")
+                action_mon = args.get("monitor")
+                # Only check if acting on same monitor as user (or unspecified)
+                if action_mon is None or (active_mon is not None and int(action_mon) == int(active_mon)):
+                    perception = _api_get("/perception/state")
+                    scene = str(perception.get("scene_state", "")).lower()
+                    if scene in ("typing",):
+                        return [{"type": "text", "text": (
+                            f"act blocked: user is currently typing (scene={scene}). "
+                            f"Pass safe_interrupt_ok=true to override, "
+                            f"or use monitor= to target a different monitor."
+                        )}]
+        except Exception:
+            pass  # if check fails, proceed — don't block on check errors
 
     # ── Smart locate: resolve target name → exact coordinates ────────────────
     target = (args.get("target") or "").strip()
@@ -2995,6 +3083,56 @@ def handle_save_session_memory(args: dict) -> list:
     return [{"type": "text", "text": "Memory save failed — will retry on server shutdown."}]
 
 
+def handle_open_on_monitor(args: dict) -> list:
+    """Open an application on a specific monitor without disturbing user's active workspace.
+
+    This is the safe way to launch apps when the user is working:
+    the new window appears on the target monitor, not on top of what the user is doing.
+
+    Args:
+      app       : app path or name (e.g. "notepad.exe", "brave", "code")
+      monitor   : target monitor ID (1, 2, 3...)
+      title     : partial window title to identify it after launch
+      wait      : seconds to wait for window (default 8)
+      url       : URL to navigate to if launching a browser
+    """
+    app        = str(args.get("app") or "").strip()
+    monitor    = args.get("monitor", 2)
+    title_hint = str(args.get("title") or "").strip()
+    wait_s     = float(args.get("wait", 8))
+    url        = str(args.get("url") or "").strip()
+
+    if not app:
+        return [{"type": "text", "text": "Error: app is required"}]
+
+    body = {
+        "app": app,
+        "monitor_id": int(monitor),
+        "title_hint": title_hint,
+        "wait_s": wait_s,
+    }
+    if url:
+        body["url"] = url
+
+    try:
+        data = _api_post("/windows/open_on_monitor", body=body)
+    except Exception as e:
+        return [{"type": "text", "text": f"open_on_monitor failed: {e}"}]
+
+    if data.get("success"):
+        pos = data.get("position", {})
+        return [{"type": "text", "text": (
+            f"Opened '{app}' on M{monitor}: "
+            f"handle={data.get('handle')} "
+            f"pos=({pos.get('x')},{pos.get('y')}) "
+            f"size={pos.get('w')}x{pos.get('h')}"
+            + (f" → navigated to {url}" if url and data.get("url_nav") else "")
+        )}]
+    return [{"type": "text", "text": (
+        f"open_on_monitor failed at step={data.get('step','?')}: {data.get('error','?')}"
+    )}]
+
+
 def handle_screen_record(args: dict) -> list:
     """Record screen to local disk (opt-in). Zero-disk by default.
 
@@ -3193,6 +3331,8 @@ HANDLERS = {
     "read_file": handle_read_file,
     "write_file": handle_write_file,
     "get_clipboard": handle_get_clipboard,
+    # ── Pipeline / workspace management ──
+    "open_on_monitor":  handle_open_on_monitor,
     # ── Recording (opt-in) ──
     "screen_record":    handle_screen_record,
     # ── Multi-agent coordination ──
