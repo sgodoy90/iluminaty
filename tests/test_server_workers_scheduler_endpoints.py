@@ -45,9 +45,9 @@ def test_workers_scheduler_endpoints():
     original_api_key = server._state.api_key
     original_perception = server._state.perception
     try:
-        server._state.api_key = None
+        server._state.api_key = "test-key"
         server._state.perception = _PerceptionWorkersSchedulerStub()
-        client = TestClient(server.app)
+        client = TestClient(server.app, headers={"x-api-key": "test-key"})
 
         schedule = client.get("/workers/schedule")
         assert schedule.status_code == 200

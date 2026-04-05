@@ -29,9 +29,9 @@ def test_workers_status_and_monitor_endpoints():
     original_perception = server._state.perception
     original_api_key = server._state.api_key
     try:
-        server._state.api_key = None
+        server._state.api_key = "test-key"
         server._state.perception = _PerceptionWorkersStub()
-        client = TestClient(server.app)
+        client = TestClient(server.app, headers={"x-api-key": "test-key"})
 
         status = client.get("/workers/status")
         assert status.status_code == 200
@@ -53,9 +53,9 @@ def test_workers_action_claim_release_endpoints():
     original_api_key = server._state.api_key
     try:
         stub = _PerceptionWorkersStub()
-        server._state.api_key = None
+        server._state.api_key = "test-key"
         server._state.perception = stub
-        client = TestClient(server.app)
+        client = TestClient(server.app, headers={"x-api-key": "test-key"})
 
         claim = client.post("/workers/action/claim", json={"owner": "tester", "ttl_ms": 1200})
         assert claim.status_code == 200

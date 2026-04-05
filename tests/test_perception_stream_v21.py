@@ -48,11 +48,11 @@ class _PerceptionStreamStub:
 
 
 def test_perception_stream_includes_tick_and_visual_delta():
-    server._state.api_key = None
+    server._state.api_key = "test-key"
     server._state.perception = _PerceptionStreamStub()
 
     client = TestClient(server.app)
-    with client.websocket_connect("/perception/stream?interval_ms=100&include_events=false") as ws:
+    with client.websocket_connect("/perception/stream?interval_ms=100&include_events=false&token=test-key") as ws:
         payload = ws.receive_json()
 
     assert payload["type"] == "perception_world"

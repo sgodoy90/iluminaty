@@ -23,9 +23,9 @@ class _PerceptionDomainStub:
 
 
 def test_domain_pack_endpoints_list_reload_and_override():
-    server._state.api_key = None
+    server._state.api_key = "test-key"
     server._state.perception = _PerceptionDomainStub()
-    client = TestClient(server.app)
+    client = TestClient(server.app, headers={"x-api-key": "test-key"})
 
     listed = client.get("/domain-packs")
     assert listed.status_code == 200

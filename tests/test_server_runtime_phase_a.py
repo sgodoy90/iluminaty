@@ -31,10 +31,10 @@ def test_runtime_phase_a_endpoints():
     original_cursor = server._state.cursor_tracker
     original_watcher = server._state.action_watcher
     try:
-        server._state.api_key = None
+        server._state.api_key = "test-key"
         server._state.cursor_tracker = _CursorStub()
         server._state.action_watcher = _WatcherStub()
-        client = TestClient(server.app)
+        client = TestClient(server.app, headers={"x-api-key": "test-key"})
 
         cursor = client.get("/runtime/cursor")
         assert cursor.status_code == 200

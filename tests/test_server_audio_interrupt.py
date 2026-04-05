@@ -48,7 +48,7 @@ class _IntentStub:
 
 
 def _setup_state():
-    server._state.api_key = None
+    server._state.api_key = "test-key"
     server._state.perception = _PerceptionReadyStub()
     server._state.safety = _SafetyStub()
     server._state.intent = _IntentStub()
@@ -59,7 +59,7 @@ def _setup_state():
 def test_precheck_blocks_when_audio_interrupt_active():
     _setup_state()
     server._state.audio_interrupt.ingest_transcript("stop", source="test")
-    client = TestClient(server.app)
+    client = TestClient(server.app, headers={"x-api-key": "test-key"})
     response = client.post("/action/precheck", json={"instruction": "click save", "mode": "SAFE"})
     payload = response.json()
     assert response.status_code == 200
@@ -70,7 +70,7 @@ def test_precheck_blocks_when_audio_interrupt_active():
 def test_precheck_raw_skips_audio_interrupt_block():
     _setup_state()
     server._state.audio_interrupt.ingest_transcript("stop", source="test")
-    client = TestClient(server.app)
+    client = TestClient(server.app, headers={"x-api-key": "test-key"})
     response = client.post("/action/precheck", json={"instruction": "click save", "mode": "RAW"})
     payload = response.json()
     assert response.status_code == 200
@@ -81,7 +81,7 @@ def test_precheck_raw_skips_audio_interrupt_block():
 def test_audio_interrupt_status_and_ack_endpoints():
     _setup_state()
     server._state.audio_interrupt.ingest_transcript("stop", source="test")
-    client = TestClient(server.app)
+    client = TestClient(server.app, headers={"x-api-key": "test-key"})
 
     status = client.get("/audio/interrupt/status")
     assert status.status_code == 200

@@ -100,7 +100,7 @@ class _ResolverStub:
 
 
 def _setup_state(perception_ready: bool, safe_staleness_ms: int = 1500):
-    server._state.api_key = None
+    server._state.api_key = "test-key"
     server._state.perception = _PerceptionStub(ready=perception_ready, safe_staleness_ms=safe_staleness_ms)
     server._state.safety = _SafetyStub()
     server._state.intent = _IntentStub()
@@ -112,7 +112,7 @@ def _setup_state(perception_ready: bool, safe_staleness_ms: int = 1500):
 
 
 def _setup_state_with_perception(perception):
-    server._state.api_key = None
+    server._state.api_key = "test-key"
     server._state.perception = perception
     server._state.safety = _SafetyStub()
     server._state.intent = _IntentStub()
@@ -125,7 +125,7 @@ def _setup_state_with_perception(perception):
 
 def test_safe_precheck_blocks_when_not_ready():
     _setup_state(perception_ready=False)
-    client = TestClient(server.app)
+    client = TestClient(server.app, headers={"x-api-key": "test-key"})
 
     response = client.post(
         "/action/precheck",
@@ -140,7 +140,7 @@ def test_safe_precheck_blocks_when_not_ready():
 
 def test_raw_precheck_skips_readiness_block():
     _setup_state(perception_ready=False)
-    client = TestClient(server.app)
+    client = TestClient(server.app, headers={"x-api-key": "test-key"})
 
     response = client.post(
         "/action/precheck",
@@ -156,7 +156,7 @@ def test_raw_precheck_skips_readiness_block():
 def test_token_endpoints_require_auth_when_api_key_enabled():
     _setup_state(perception_ready=True)
     server._state.api_key = "secret"
-    client = TestClient(server.app)
+    client = TestClient(server.app, headers={"x-api-key": "test-key"})
 
     unauth = client.get("/tokens/status")
     auth = client.get("/tokens/status", headers={"x-api-key": "secret"})
@@ -167,7 +167,7 @@ def test_token_endpoints_require_auth_when_api_key_enabled():
 
 def test_execute_blocks_when_context_stale_in_safe_mode():
     _setup_state(perception_ready=True)
-    client = TestClient(server.app)
+    client = TestClient(server.app, headers={"x-api-key": "test-key"})
     response = client.post(
         "/action/execute",
         json={
@@ -186,7 +186,7 @@ def test_execute_blocks_when_context_stale_in_safe_mode():
 
 def test_precheck_uses_domain_policy_staleness_when_not_provided():
     _setup_state(perception_ready=True, safe_staleness_ms=10)
-    client = TestClient(server.app)
+    client = TestClient(server.app, headers={"x-api-key": "test-key"})
     response = client.post(
         "/action/precheck",
         json={
@@ -204,7 +204,7 @@ def test_precheck_uses_domain_policy_staleness_when_not_provided():
 
 def test_execute_returns_arbiter_busy_when_worker_lease_denied():
     _setup_state_with_perception(_PerceptionBusyArbiterStub(ready=True))
-    client = TestClient(server.app)
+    client = TestClient(server.app, headers={"x-api-key": "test-key"})
     response = client.post(
         "/action/execute",
         json={
@@ -224,7 +224,7 @@ def test_execute_returns_arbiter_busy_when_worker_lease_denied():
 
 def test_precheck_blocks_click_target_outside_monitor(monkeypatch):
     _setup_state(perception_ready=True)
-    client = TestClient(server.app)
+    client = TestClient(server.app, headers={"x-api-key": "test-key"})
 
     monkeypatch.setattr(
         server,
@@ -260,7 +260,7 @@ def test_precheck_blocks_click_target_outside_monitor(monkeypatch):
 
 def test_precheck_blocks_when_cursor_drift_exceeded(monkeypatch):
     _setup_state(perception_ready=True)
-    client = TestClient(server.app)
+    client = TestClient(server.app, headers={"x-api-key": "test-key"})
 
     monkeypatch.setattr(
         server,
@@ -307,7 +307,7 @@ def test_precheck_blocks_when_cursor_drift_exceeded(monkeypatch):
 
 def test_precheck_allows_when_cursor_unavailable(monkeypatch):
     _setup_state(perception_ready=True)
-    client = TestClient(server.app)
+    client = TestClient(server.app, headers={"x-api-key": "test-key"})
 
     monkeypatch.setattr(
         server,
@@ -354,7 +354,7 @@ def test_precheck_allows_when_cursor_unavailable(monkeypatch):
 
 def test_execute_reports_cursor_drift_block_reason(monkeypatch):
     _setup_state(perception_ready=True)
-    client = TestClient(server.app)
+    client = TestClient(server.app, headers={"x-api-key": "test-key"})
 
     monkeypatch.setattr(
         server,
@@ -401,7 +401,7 @@ def test_execute_reports_cursor_drift_block_reason(monkeypatch):
 
 def test_precheck_blocks_high_risk_when_orientation_window_unknown(monkeypatch):
     _setup_state(perception_ready=True)
-    client = TestClient(server.app)
+    client = TestClient(server.app, headers={"x-api-key": "test-key"})
 
     monkeypatch.setattr(
         server,
@@ -444,7 +444,7 @@ def test_precheck_blocks_high_risk_when_orientation_window_unknown(monkeypatch):
 
 def test_precheck_blocks_high_risk_when_active_and_target_monitor_mismatch(monkeypatch):
     _setup_state(perception_ready=True)
-    client = TestClient(server.app)
+    client = TestClient(server.app, headers={"x-api-key": "test-key"})
 
     monkeypatch.setattr(
         server,
@@ -497,7 +497,7 @@ def test_precheck_blocks_high_risk_when_active_and_target_monitor_mismatch(monke
 
 def test_precheck_skips_orientation_for_normal_actions(monkeypatch):
     _setup_state(perception_ready=True)
-    client = TestClient(server.app)
+    client = TestClient(server.app, headers={"x-api-key": "test-key"})
 
     monkeypatch.setattr(
         server,
@@ -540,7 +540,7 @@ def test_precheck_skips_orientation_for_normal_actions(monkeypatch):
 
 def test_precheck_includes_navigation_cycle_contract():
     _setup_state(perception_ready=True)
-    client = TestClient(server.app)
+    client = TestClient(server.app, headers={"x-api-key": "test-key"})
 
     response = client.post(
         "/action/precheck",
@@ -558,7 +558,7 @@ def test_precheck_includes_navigation_cycle_contract():
 
 def test_execute_includes_navigation_cycle_contract():
     _setup_state(perception_ready=True)
-    client = TestClient(server.app)
+    client = TestClient(server.app, headers={"x-api-key": "test-key"})
 
     response = client.post(
         "/action/execute",
@@ -576,7 +576,7 @@ def test_execute_includes_navigation_cycle_contract():
 
 def test_precheck_blocks_when_ui_semantics_denies_target(monkeypatch):
     _setup_state(perception_ready=True)
-    client = TestClient(server.app)
+    client = TestClient(server.app, headers={"x-api-key": "test-key"})
     monkeypatch.setattr(
         server,
         "_ui_semantics_check",

@@ -1241,22 +1241,6 @@ def handle_perception_world(args: dict) -> list:
     except Exception as e:
         return [{"type": "text", "text": f"WorldState not available: {e}"}]
 
-
-def handle_describe_screen(args: dict) -> list:
-    monitor = args.get("monitor")
-    path = "/vision/describe"
-    if monitor is not None:
-        path += f"?monitor_id={int(monitor)}"
-    try:
-        data = _api_post(path)
-    except Exception as e:
-        return [{"type": "text", "text": f"Describe failed: {e}"}]
-    facts = data.get("facts", [])
-    vlm_fact = next((f for f in facts if f.get("kind") == "image_caption"), None)
-    caption = vlm_fact["text"] if vlm_fact else data.get("summary", "No VLM description available")
-    return [{"type": "text", "text": f"## Screen Description\n{caption}\n\nConfidence: {data.get('confidence', 0)}\nMonitor: {data.get('monitor', '?')}\nLatency: {data.get('latency_ms', '?')}ms"}]
-
-
 def handle_vision_query(args: dict) -> list:
     question = (args.get("question") or "").strip()
     if not question:
@@ -1282,40 +1266,6 @@ def handle_vision_query(args: dict) -> list:
     if frames:
         lines.append(f"Frame refs: {len(frames)}")
     return [{"type": "text", "text": "\n".join(lines)}]
-
-
-def handle_token_status(args: dict) -> dict:
-    data = _api_get("/tokens/status")
-    lines = [
-        "## ILUMINATY Token Status",
-        f"**Mode**: {data['mode']} (~{data['mode_cost']['tokens']} tokens/call)",
-        f"**Used**: {data['used']} tokens",
-        f"**Budget**: {'unlimited' if data['budget'] == 0 else data['budget']}",
-        f"**Remaining**: {'unlimited' if data['remaining'] == -1 else data['remaining']}",
-        "",
-        "### Available Modes",
-    ]
-    for name, info in data["all_modes"].items():
-        marker = " <<<" if name == data["mode"] else ""
-        lines.append(f"  - **{name}**: ~{info['tokens']} tokens — {info['desc']}{marker}")
-    if data["last_5"]:
-        lines.append("\n### Recent Usage")
-        for entry in data["last_5"]:
-            lines.append(f"  - {entry['action']}: {entry['tokens']} tokens")
-    return [{"type": "text", "text": "\n".join(lines)}]
-
-
-def handle_set_token_mode(args: dict) -> dict:
-    mode = args.get("mode", "text_only")
-    data = _api_post(f"/tokens/mode?mode={urllib.parse.quote(str(mode))}")
-    return [{"type": "text", "text": f"Vision mode set to **{data['mode']}** (~{data['estimated_tokens_per_call']} tokens/call)"}]
-
-
-def handle_set_token_budget(args: dict) -> dict:
-    limit = args.get("limit", 0)
-    data = _api_post(f"/tokens/budget?limit={limit}")
-    return [{"type": "text", "text": f"Token budget: {data['budget']} | Used: {data['used']} | Remaining: {'unlimited' if data['budget']==0 else data['remaining']}"}]
-
 
 def handle_see_changes(args: dict) -> list:
     seconds = args.get("seconds", 10)
@@ -1359,22 +1309,6 @@ def handle_see_changes(args: dict) -> list:
             })
 
     return result
-
-
-def handle_annotate(args: dict) -> dict:
-    ann_type = args.get("type", "rect")
-    x = args.get("x", 0)
-    y = args.get("y", 0)
-    w = args.get("width", 100)
-    h = args.get("height", 100)
-    color = args.get("color", "#FF0000")
-    text = args.get("text", "")
-
-    params = f"type={ann_type}&x={x}&y={y}&width={w}&height={h}&color={color}&text={text}"
-    data = _api_post(f"/annotations/add?{params}")
-
-    return [{"type": "text", "text": f"Annotation added: {ann_type} at ({x},{y}) id={data.get('id', '?')}"}]
-
 
 def handle_read_text(args: dict) -> dict:
     params = []
@@ -1488,119 +1422,6 @@ def handle_do_action(args: dict) -> list:
             f"({verification.get('method', 'n/a')})"
         )
     return [{"type": "text", "text": "\n".join(lines)}]
-
-
-def handle_action_intent(args: dict) -> list:
-    instruction = args.get("instruction", "")
-    if not instruction:
-        return [{"type": "text", "text": "Error: instruction is required"}]
-    payload = {"instruction": instruction}
-    for key in (
-        "mode",
-        "verify",
-        "context_tick_id",
-        "max_staleness_ms",
-        "use_grounding",
-        "target_query",
-        "target_role",
-        "monitor_id",
-    ):
-        if key in args and args[key] is not None:
-            payload[key] = args[key]
-    data = _api_post("/action/intent", body=payload)
-    result = data.get("result", {})
-    precheck = data.get("precheck", {})
-    lines = [
-        f"Intent mode: {precheck.get('mode', '?')} | blocked: {precheck.get('blocked', False)}",
-        f"Execution: {'SUCCESS' if result.get('success') else 'FAILED'} - {result.get('message', '')}",
-    ]
-    if precheck.get("grounding_applies"):
-        grd = precheck.get("grounding_check", {})
-        lines.append(
-            f"Grounding: {'OK' if grd.get('allowed') else 'BLOCKED'} "
-            f"reason={grd.get('reason', 'n/a')} conf={grd.get('confidence', 0)}"
-        )
-    return [{"type": "text", "text": "\n".join(lines)}]
-
-
-def handle_raw_action(args: dict) -> list:
-    payload = {}
-    if args.get("instruction"):
-        payload["instruction"] = args.get("instruction")
-    if args.get("action"):
-        payload["action"] = args.get("action")
-    if args.get("params") is not None:
-        payload["params"] = args.get("params")
-    payload["verify"] = bool(args.get("verify", False))
-    if not payload:
-        return [{"type": "text", "text": "Error: provide instruction or action"}]
-
-    data = _api_post("/action/raw", body=payload)
-    result = data.get("result", {})
-    return [{
-        "type": "text",
-        "text": (
-            f"RAW action: {'SUCCESS' if result.get('success') else 'FAILED'} - "
-            f"{result.get('message', '')}"
-        ),
-    }]
-
-
-def handle_action_precheck(args: dict) -> list:
-    payload = {}
-    for key in (
-        "instruction",
-        "action",
-        "params",
-        "category",
-        "mode",
-        "context_tick_id",
-        "max_staleness_ms",
-        "use_grounding",
-        "target_query",
-        "target_role",
-        "monitor_id",
-    ):
-        if key in args and args[key] is not None:
-            payload[key] = args[key]
-    if not payload:
-        return [{"type": "text", "text": "Error: provide instruction or action"}]
-
-    data = _api_post("/action/precheck", body=payload)
-    readiness = data.get("readiness", {})
-    safety = data.get("safety_check", {})
-    lines = [
-        f"Mode: {data.get('mode', '?')} | blocked: {data.get('blocked', False)}",
-        f"Readiness: {readiness.get('readiness')} | uncertainty: {readiness.get('uncertainty')}",
-        f"Safety: {safety.get('reason', 'n/a')} (applies={data.get('safety_applies')})",
-    ]
-    if data.get("grounding_applies"):
-        grd = data.get("grounding_check", {})
-        lines.append(
-            f"Grounding: {'OK' if grd.get('allowed') else 'BLOCKED'} "
-            f"reason={grd.get('reason', 'n/a')} conf={grd.get('confidence', 0)}"
-        )
-    return [{"type": "text", "text": "\n".join(lines)}]
-
-
-def handle_verify_action(args: dict) -> list:
-    action = args.get("action", "")
-    if not action:
-        return [{"type": "text", "text": "Error: action is required"}]
-    data = _api_post("/action/verify", body={
-        "action": action,
-        "params": args.get("params", {}),
-        "pre_state": args.get("pre_state"),
-    })
-    return [{
-        "type": "text",
-        "text": (
-            f"Verify {action}: {'OK' if data.get('verified') else 'FAILED'} - "
-            f"{data.get('message', '')}"
-        ),
-    }]
-
-
 def handle_operate_cycle(args: dict) -> list:
     goal = (args.get("goal") or "").strip()
     target_window = (args.get("target_window") or "").strip()
@@ -2700,20 +2521,20 @@ def handle_act(args: dict) -> list:
             return [{"type": "text", "text": f"move_mouse ({x},{y}): {'OK' if ok else 'FAIL'}"}]
 
         elif action == "triple_click":
+            # BUG-002 fix: check actual results instead of hardcoding ok=True
             x, y = int(args.get("x", 0)), int(args.get("y", 0))
-            if args.get("monitor") is not None:
-                # Click 3 times with monitor offset
-                for _ in range(3):
-                    _api_post(f"/action/click?x={x}&y={y}&button=left&monitor_id={int(args['monitor'])}&relative_to_monitor=true")
-                    import time as _t; _t.sleep(0.05)
-                ok = True
-            else:
-                for _ in range(3):
-                    _api_post(f"/action/click?x={x}&y={y}&button=left")
-                    import time as _t; _t.sleep(0.05)
-                ok = True
+            results = []
+            import time as _t
+            for _ in range(3):
+                if args.get("monitor") is not None:
+                    r = _api_post(f"/action/click?x={x}&y={y}&button=left&monitor_id={int(args['monitor'])}&relative_to_monitor=true")
+                else:
+                    r = _api_post(f"/action/click?x={x}&y={y}&button=left")
+                results.append(r.get("success", False))
+                _t.sleep(0.05)
+            ok = all(results)
             ctx = _post_action_context(monitor=_mon, action_type="click", result_ok=ok)
-            msg = f"triple_click ({x},{y}): OK{loc_note}"
+            msg = f"triple_click ({x},{y}): {'OK' if ok else 'FAIL'}{loc_note}"
             return [{"type": "text", "text": f"{msg}\n\n[POST-ACTION STATE]\n{ctx}" if ctx else msg}]
 
         elif action == "right_click":
@@ -3099,245 +2920,6 @@ def handle_spatial_state(args: dict) -> list:
             f"{mon.get('width')}x{mon.get('height')} active={mon.get('is_active')}"
         )
     return [{"type": "text", "text": "\n".join(lines)}]
-
-
-def handle_workers_claim_action(args: dict) -> list:
-    owner = str(args.get("owner") or "mcp-executor").strip() or "mcp-executor"
-    body = {
-        "owner": owner,
-        "ttl_ms": args.get("ttl_ms"),
-        "force": bool(args.get("force", False)),
-    }
-    try:
-        data = _api_post("/workers/action/claim", body=body)
-    except Exception as e:
-        return [{"type": "text", "text": f"Workers claim failed: {e}"}]
-    return [{
-        "type": "text",
-        "text": (
-            f"Workers claim owner={owner}: {'GRANTED' if data.get('granted') else 'DENIED'} "
-            f"(held_by={data.get('held_by')}, ttl_ms={data.get('ttl_ms')}, reason={data.get('reason')})"
-        ),
-    }]
-
-
-def handle_workers_release_action(args: dict) -> list:
-    owner = str(args.get("owner") or "mcp-executor").strip() or "mcp-executor"
-    body = {
-        "owner": owner,
-        "success": bool(args.get("success", True)),
-        "message": str(args.get("message") or ""),
-    }
-    try:
-        data = _api_post("/workers/action/release", body=body)
-    except Exception as e:
-        return [{"type": "text", "text": f"Workers release failed: {e}"}]
-    return [{
-        "type": "text",
-        "text": (
-            f"Workers release owner={owner}: {'OK' if data.get('released') else 'FAILED'} "
-            f"(success={data.get('success')}, msg={data.get('message', '')})"
-        ),
-    }]
-
-
-def handle_workers_schedule(args: dict) -> list:
-    _ = args
-    try:
-        data = _api_get("/workers/schedule")
-    except Exception as e:
-        return [{"type": "text", "text": f"Workers schedule unavailable: {e}"}]
-
-    lines = [
-        "## Workers Schedule",
-        f"- Active monitor: {data.get('active_monitor_id', 0)}",
-        f"- Recommended monitor: {data.get('recommended_monitor_id', 0)}",
-        f"- Reason: {data.get('reason', 'n/a')}",
-    ]
-    for row in (data.get("budgets") or [])[:8]:
-        lines.append(
-            f"- m{row.get('monitor_id')}: share={row.get('share')} score={row.get('score')}"
-        )
-    return [{"type": "text", "text": "\n".join(lines)}]
-
-
-def handle_workers_set_subgoal(args: dict) -> list:
-    monitor_id = args.get("monitor_id")
-    goal = str(args.get("goal") or "").strip()
-    if monitor_id is None or not goal:
-        return [{"type": "text", "text": "Error: monitor_id and goal are required"}]
-    body = {
-        "monitor_id": int(monitor_id),
-        "goal": goal,
-        "priority": float(args.get("priority", 0.5)),
-        "risk": str(args.get("risk", "normal")),
-    }
-    if args.get("deadline_ms") is not None:
-        body["deadline_ms"] = int(args.get("deadline_ms"))
-    try:
-        data = _api_post("/workers/subgoals", body=body)
-    except Exception as e:
-        return [{"type": "text", "text": f"Set workers subgoal failed: {e}"}]
-    return [{"type": "text", "text": f"Workers subgoal set: {data.get('subgoal_id', 'unknown')} monitor={data.get('monitor_id')} goal={data.get('goal', '')}"}]
-
-
-def handle_workers_clear_subgoal(args: dict) -> list:
-    subgoal_id = str(args.get("subgoal_id") or "").strip()
-    if not subgoal_id:
-        return [{"type": "text", "text": "Error: subgoal_id is required"}]
-    completed = _as_bool(args.get("completed"), True)
-    try:
-        data = _api_request("DELETE", f"/workers/subgoals/{urllib.parse.quote(subgoal_id)}?completed={'true' if completed else 'false'}")
-    except Exception as e:
-        return [{"type": "text", "text": f"Clear workers subgoal failed: {e}"}]
-    return [{"type": "text", "text": f"Workers subgoal cleared: {subgoal_id} (completed={completed})"}]
-
-
-def handle_workers_route(args: dict) -> list:
-    query = str(args.get("query") or "").strip()
-    if not query:
-        return [{"type": "text", "text": "Error: query is required"}]
-    body = {"query": query}
-    if args.get("preferred_monitor_id") is not None:
-        body["preferred_monitor_id"] = int(args.get("preferred_monitor_id"))
-    try:
-        data = _api_post("/workers/route", body=body)
-    except Exception as e:
-        return [{"type": "text", "text": f"Workers route failed: {e}"}]
-    return [{"type": "text", "text": f"Workers route => monitor {data.get('monitor_id')} (score={data.get('score')})"}]
-
-
-def handle_behavior_stats(args: dict) -> list:
-    _ = args
-    try:
-        data = _api_get("/behavior/stats")
-    except Exception as e:
-        return [{"type": "text", "text": f"Behavior stats unavailable: {e}"}]
-    return [{
-        "type": "text",
-        "text": (
-            "## Behavior Cache\n"
-            f"- Enabled: {data.get('enabled', False)}\n"
-            f"- Entries: {data.get('entries', 0)}\n"
-            f"- Success rate: {data.get('success_rate', 0)}\n"
-            f"- Recovery rate: {data.get('recovery_rate', 0)}\n"
-            f"- Distinct apps: {data.get('distinct_apps', 0)}"
-        ),
-    }]
-
-
-def handle_behavior_recent(args: dict) -> list:
-    limit = int(args.get("limit", 20))
-    try:
-        data = _api_get(f"/behavior/recent?limit={max(1, min(200, limit))}")
-    except Exception as e:
-        return [{"type": "text", "text": f"Behavior recent unavailable: {e}"}]
-    entries = data.get("entries", []) if isinstance(data, dict) else []
-    lines = ["## Behavior Recent"]
-    for row in entries[:12]:
-        lines.append(
-            f"- {row.get('action')} | {row.get('app_name')} | success={row.get('success')} "
-            f"| method={row.get('method_used')} | reason={str(row.get('reason', ''))[:90]}"
-        )
-    if len(lines) == 1:
-        lines.append("- No entries")
-    return [{"type": "text", "text": "\n".join(lines)}]
-
-
-def handle_behavior_suggest(args: dict) -> list:
-    action = str(args.get("action") or "").strip()
-    if not action:
-        return [{"type": "text", "text": "Error: action is required"}]
-    body = {
-        "action": action,
-        "app_name": str(args.get("app_name") or "unknown"),
-        "window_title": str(args.get("window_title") or ""),
-    }
-    try:
-        data = _api_post("/behavior/suggest", body=body)
-    except Exception as e:
-        return [{"type": "text", "text": f"Behavior suggest failed: {e}"}]
-    return [{"type": "text", "text": f"Behavior suggest: found={data.get('found')} success_rate={data.get('success_rate')} retries={data.get('recommended_retries')} pre_delay_ms={data.get('recommended_pre_delay_ms')} focus_before_action={data.get('focus_before_action')}"}]
-
-
-def handle_runtime_profile(args: dict) -> list:
-    target = args.get("set")
-    try:
-        if target is None:
-            data = _api_get("/runtime/profile")
-        else:
-            data = _api_post("/runtime/profile", body={"profile": str(target)})
-    except Exception as e:
-        return [{"type": "text", "text": f"Runtime profile API failed: {e}"}]
-    return [{"type": "text", "text": f"Runtime profile: {data.get('profile')} | policy={data.get('policy')}"}]
-
-
-def handle_host_telemetry(args: dict) -> list:
-    _ = args
-    try:
-        data = _api_get("/system/telemetry")
-    except Exception as e:
-        return [{"type": "text", "text": f"Host telemetry unavailable: {e}"}]
-    if not bool(data.get("available", False)):
-        return [{"type": "text", "text": "Host telemetry: unavailable"}]
-    gpu = data.get("gpu") or {}
-    temps = data.get("temperatures") or {}
-    return [{
-        "type": "text",
-        "text": (
-            "## Host Telemetry\n"
-            f"- CPU: {data.get('cpu_percent')}%\n"
-            f"- Memory: {data.get('memory_percent')}%\n"
-            f"- Swap: {data.get('swap_percent')}%\n"
-            f"- Disk: {data.get('disk_percent')}%\n"
-            f"- Temp max: {temps.get('max_c')}\n"
-            f"- GPU util: {gpu.get('utilization_percent')}\n"
-            f"- Overloaded: {data.get('overloaded', False)} {data.get('overload_reasons', [])}"
-        ),
-    }]
-
-
-def handle_os_notifications(args: dict) -> list:
-    limit = int(args.get("limit", 20))
-    limit = max(1, min(200, limit))
-    try:
-        data = _api_get(f"/os/notifications?limit={limit}")
-    except Exception as e:
-        return [{"type": "text", "text": f"OS notifications unavailable: {e}"}]
-    lines = [
-        "## OS Notifications",
-        f"- Count: {data.get('count', 0)}",
-        f"- Sources: {', '.join(data.get('sources', [])) if data.get('sources') else 'none'}",
-    ]
-    for item in (data.get("items") or [])[:12]:
-        lines.append(
-            f"- [{item.get('source')}] {item.get('severity', 'info')} "
-            f"{item.get('timestamp_ms', 0)}: {str(item.get('message', ''))[:120]}"
-        )
-    return [{"type": "text", "text": "\n".join(lines)}]
-
-
-def handle_os_tray(args: dict) -> list:
-    _ = args
-    try:
-        data = _api_get("/os/tray")
-    except Exception as e:
-        return [{"type": "text", "text": f"OS tray unavailable: {e}"}]
-    lines = [
-        "## OS Tray",
-        f"- Available: {data.get('available', False)}",
-        f"- Supported: {data.get('supported', False)}",
-        f"- Detected: {data.get('detected', False)}",
-        f"- Platform: {data.get('platform', 'unknown')}",
-    ]
-    for win in (data.get("windows") or [])[:8]:
-        lines.append(
-            f"- {win.get('class_name')}: h={win.get('handle')} "
-            f"({win.get('x')},{win.get('y')}) {win.get('width')}x{win.get('height')}"
-        )
-    return [{"type": "text", "text": "\n".join(lines)}]
-
-
 def handle_os_dialog_status(args: dict) -> list:
     monitor_id = args.get("monitor_id")
     path = "/os/dialog/status"
@@ -3375,17 +2957,6 @@ def handle_os_dialog_resolve(args: dict) -> list:
             f"reason={data.get('reason', 'n/a')}"
         ),
     }]
-
-
-def handle_audio_interrupt_status(args: dict) -> list:
-    _ = args
-    try:
-        data = _api_get("/audio/interrupt/status")
-    except Exception as e:
-        return [{"type": "text", "text": f"Audio interrupt status unavailable: {e}"}]
-    return [{"type": "text", "text": f"Audio interrupt: blocked={data.get('blocked')} reason={data.get('reason')} remaining_ms={data.get('remaining_ms', 0)} events={data.get('events_count', 0)}"}]
-
-
 
 def _scan_prompt_injection(text: str) -> dict:
     """
@@ -4125,9 +3696,27 @@ def run_mcp_stdio():
     if _debug_enabled:
         _logf = open(os.path.join(os.path.dirname(__file__), "..", "mcp_debug.log"), "a")
 
+    # Patterns to redact from debug logs (M-4 fix)
+    _REDACT_PATTERNS = [
+        "password", "passwd", "secret", "api_key", "apikey",
+        "token", "key", "credential", "auth", "bearer",
+    ]
+
+    def _redact_for_log(text: str) -> str:
+        """Redact sensitive-looking key/value pairs from log output."""
+        import re
+        for pat in _REDACT_PATTERNS:
+            text = re.sub(
+                rf'("{pat}"[\s:]+")[^"{{}}]{{1,80}}(")',
+                rf'\1***\2',
+                text,
+                flags=re.IGNORECASE,
+            )
+        return text
+
     def _log(msg):
         if _logf:
-            _logf.write(f"{msg}\n")
+            _logf.write(f"{_redact_for_log(msg)}\n")
             _logf.flush()
 
     def send(msg: dict):

@@ -18,9 +18,9 @@ class _PerceptionQueryStub:
 
 
 def test_perception_query_endpoint():
-    server._state.api_key = None
+    server._state.api_key = "test-key"
     server._state.perception = _PerceptionQueryStub()
-    client = TestClient(server.app)
+    client = TestClient(server.app, headers={"x-api-key": "test-key"})
 
     response = client.post(
         "/perception/query",

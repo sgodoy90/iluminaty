@@ -39,11 +39,11 @@ def test_runtime_profile_enterprise_requires_raw_ack_for_destructive():
     original_safety = server._state.safety
     original_profile = server._state.runtime_profile
     try:
-        server._state.api_key = None
+        server._state.api_key = "test-key"
         server._state.perception = _PerceptionReadyStub()
         server._state.safety = _SafetyStub()
         server._state.runtime_profile = "standard"
-        client = TestClient(server.app)
+        client = TestClient(server.app, headers={"x-api-key": "test-key"})
 
         set_profile = client.post("/runtime/profile", json={"profile": "enterprise"})
         assert set_profile.status_code == 200

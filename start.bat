@@ -46,7 +46,7 @@ goto parse
 echo.
 echo  ILUMINATY starting...
 echo  Port: %PORT%  FPS: %FPS%  Monitor: %MONITOR%
-echo  Key:  %ILUMINATY_KEY%
+echo  Key:  %ILUMINATY_KEY:~0,4%...[redacted]
 echo.
 
 %PYTHON% -u main.py start ^

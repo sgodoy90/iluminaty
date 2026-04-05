@@ -69,7 +69,7 @@ class _ResolverStub:
 
 
 def _setup_state(db_path: Path):
-    server._state.api_key = None
+    server._state.api_key = "test-key"
     server._state.perception = _PerceptionReadyStub()
     server._state.safety = _SafetyStub()
     server._state.intent = _IntentStub()
@@ -86,7 +86,7 @@ def _setup_state(db_path: Path):
 def test_execute_persists_behavior_outcome_and_exposes_hint(tmp_path: Path):
     db_path = tmp_path / "behavior.sqlite3"
     _setup_state(db_path)
-    client = TestClient(server.app)
+    client = TestClient(server.app, headers={"x-api-key": "test-key"})
 
     # First call creates history.
     first = client.post("/action/execute", json={"instruction": "click save", "mode": "SAFE"})

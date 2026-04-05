@@ -303,7 +303,7 @@ class _ResolverStressStub:
 
 
 def _setup_server_state() -> None:
-    server._state.api_key = None
+    server._state.api_key = "test-key"
     server._state.perception = _PerceptionStressStub(monitors=3)
     server._state.safety = _SafetyStub()
     server._state.intent = _IntentStub()

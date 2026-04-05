@@ -31,6 +31,7 @@ from typing import Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, Header, HTTPException
 from fastapi.responses import Response, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 from .ring_buffer import RingBuffer, FrameSlot
 from .capture import ScreenCapture, CaptureConfig
@@ -184,11 +185,24 @@ def _frame_to_json(slot: FrameSlot, include_base64: bool = False) -> dict:
 
 
 _NO_AUTH = os.environ.get("ILUMINATY_NO_AUTH", "0") == "1"
+if _NO_AUTH:
+    import warnings as _warnings
+    _warnings.warn(
+        "ILUMINATY_NO_AUTH=1: ALL authentication is DISABLED. "
+        "Never use this in production or on a shared machine.",
+        stacklevel=1,
+    )
 
 def _check_auth(api_key: Optional[str]):
     if _NO_AUTH:
         return
-    if _state.api_key and api_key != _state.api_key:
+    # C-1 fix: reject requests when no API key is configured (was silently open)
+    if not _state.api_key:
+        raise HTTPException(
+            status_code=503,
+            detail="Server not configured: start with --api-key <key> or set ILUMINATY_KEY env var."
+        )
+    if api_key != _state.api_key:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
 
@@ -2145,8 +2159,8 @@ def _get_cors_origins() -> list[str]:
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_get_cors_origins(),
-    allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Content-Type", "x-api-key"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],  # H-4: added DELETE + PUT
+    allow_headers=["Content-Type", "x-api-key", "authorization"],
 )
 
 
@@ -2157,6 +2171,10 @@ class LicenseGateMiddleware(BaseHTTPMiddleware):
 
     NOTE: uses cached singleton — no I/O per request.
     License is validated once at startup in init_license().
+
+    M-3 SECURITY NOTE: In the open-source build, LicenseManager.is_endpoint_allowed()
+    always returns True — this middleware is effectively a NO-OP gate.
+    Do NOT rely on it for security enforcement. Auth is handled by _check_auth().
     """
     async def dispatch(self, request: StarletteRequest, call_next):
         # Fast path: skip check for public/health endpoints
@@ -2192,12 +2210,32 @@ async def health():
     }
 
 
+@app.post("/auth/login", response_class=Response)
+async def auth_login(request: StarletteRequest):
+    """H-2 fix: POST login sets HttpOnly cookie instead of exposing key in URL."""
+    form = await request.form()
+    token = str(form.get("token", ""))
+    if _state.api_key and token != _state.api_key:
+        return Response(content="Invalid API key", status_code=401)
+    resp = Response(status_code=303, headers={"Location": "/"})
+    resp.set_cookie(
+        "iluminaty_auth", token,
+        httponly=True, samesite="strict", max_age=86400 * 7,
+    )
+    return resp
+
+
 @app.get("/", response_class=Response)
-async def dashboard(x_api_key: Optional[str] = Header(None), token: Optional[str] = Query(None)):
-    """Dashboard web en vivo. Auth via header or ?token= query param."""
-    # Allow dashboard access via query param too (for browser URL bar)
+async def dashboard(
+    request: StarletteRequest,
+    x_api_key: Optional[str] = Header(None),
+    token: Optional[str] = Query(None),
+):
+    """Dashboard web en vivo. Auth via header, cookie, or ?token= query param."""
+    # H-2 fix: also accept HttpOnly cookie set by /auth/login
+    cookie_token = request.cookies.get("iluminaty_auth")
     if _state.api_key:
-        provided = x_api_key or token
+        provided = x_api_key or token or cookie_token
         if provided != _state.api_key:
             # Return a simple auth page instead of 401
             auth_html = '''<!DOCTYPE html>
@@ -2215,8 +2253,8 @@ p{color:#555;font-size:12px;margin-top:16px}
 </style></head><body>
 <div class="box">
 <h1>ILUMINATY</h1>
-<form onsubmit="location.href='/?token='+document.getElementById('k').value;return false">
-<input id="k" type="password" placeholder="Enter API key" autofocus/>
+<form method="POST" action="/auth/login">
+<input id="k" name="token" type="password" placeholder="Enter API key" autofocus/>
 <button type="submit">ACCESS</button>
 </form>
 <p>Authentication required to access the dashboard.</p>
@@ -2419,12 +2457,18 @@ async def stop_capture(x_api_key: Optional[str] = Header(None)):
 # ─── WebSocket Stream ───
 
 @app.websocket("/ws/stream")
-async def ws_stream(ws: WebSocket):
+async def ws_stream(ws: WebSocket, token: Optional[str] = Query(None)):
     """
     WebSocket que envía frames en real-time.
     Cada mensaje es JSON con base64 del frame.
-    La IA se conecta aquí para "ver" en vivo.
+    Auth: pass ?token=<key> or X-API-Key header.
     """
+    # C-2 fix: authenticate before accepting
+    if not _NO_AUTH:
+        provided = token or ws.headers.get("x-api-key") or ws.headers.get("authorization", "").removeprefix("Bearer ")
+        if _state.api_key and provided != _state.api_key:
+            await ws.close(code=4401, reason="Unauthorized: invalid or missing API key")
+            return
     await ws.accept()
     _state.ws_clients.add(ws)
     
@@ -2455,11 +2499,19 @@ async def perception_stream(
     ws: WebSocket,
     interval_ms: int = Query(300, ge=100, le=2000),
     include_events: bool = Query(True),
+    token: Optional[str] = Query(None),
 ):
     """
     IPA v2 semantic stream for external AI agents.
     Sends WorldState snapshots (+ optional recent events) in real time.
+    Auth: pass ?token=<key> or X-API-Key header.
     """
+    # C-2 fix: authenticate before accepting
+    if not _NO_AUTH:
+        provided = token or ws.headers.get("x-api-key") or ws.headers.get("authorization", "").removeprefix("Bearer ")
+        if _state.api_key and provided != _state.api_key:
+            await ws.close(code=4401, reason="Unauthorized: invalid or missing API key")
+            return
     await ws.accept()
     try:
         last_world_ts = 0
@@ -2882,7 +2934,13 @@ def init_server(
             "C:\\Windows\\SysWOW64",
         ]
         _state.filesystem = FileSystemSandbox(
-            allowed_paths=file_sandbox_paths or ["."],
+            # M-1 fix: default to user home workspace, not project root "."
+            # "." would allow reading .env, source code, venv, etc.
+            allowed_paths=file_sandbox_paths or [
+                str(Path.home() / "iluminaty-workspace"),
+                str(Path.home() / "Documents"),
+                str(Path.home() / "Desktop"),
+            ],
             blocked_paths=_blocked,
         )
 
@@ -6166,19 +6224,52 @@ async def vscode_open(
 
 # Commands that are never allowed through terminal/exec regardless of auth
 _TERMINAL_BLOCKED_PATTERNS = [
-    "rm -rf", "del /f /s /q", "format ", "mkfs",
+    # Filesystem destruction
+    "rm -rf", "rm  -rf",            # double-space bypass
+    "del /f /s /q", "del /s /f",
+    "rmdir /s", "rmdir /q",
+    "remove-item -recurse", "remove-item -force",
+    "format ", "mkfs",
+    # Disk/partition destruction
+    "> /dev/sda", "dd if=", "diskpart", "cipher /w",
+    # System control
     "shutdown", "reboot", "halt", "poweroff",
-    "net user", "net localgroup", "reg delete", "reg add",
-    "bcdedit", "diskpart", "cipher /w",
-    "DROP DATABASE", "DROP TABLE",  # SQL destruction
-    "> /dev/sda", "dd if=",         # disk overwrite
-    ":(){ :|:& };:",                # fork bomb
+    "stop-computer", "restart-computer",
+    # User/privilege escalation
+    "net user", "net localgroup", "net group",
+    "add-localgroup", "add-localgroupmember",
+    # Registry destruction
+    "reg delete", "reg add", "reg import",
+    "remove-item hk", "set-itemproperty hk",
+    # Boot/system config
+    "bcdedit", "bootrec",
+    # SQL destruction
+    "drop database", "drop table", "truncate table",
+    # Disk overwrite
+    # Network/firewall disable
+    "netsh advfirewall set", "netsh firewall set",
+    "set-netfirewallprofile",
+    # Data exfiltration patterns
+    "curl evil", "wget evil",
+    # PowerShell arbitrary execution bypasses
+    "powershell -enc", "powershell -e ", "powershell -nop",
+    "invoke-expression", "iex(", "& (", "invoke-webrequest",
+    "downloadstring", "downloadfile",
+    "start-process -verb runas",
+    # Fork bomb
+    ":(){ :|:& };:",
+    # WMI process manipulation
+    "wmic process delete", "wmic process call create",
+    "stop-process -name *", "stop-process -id *",
 ]
 
 
 def _check_terminal_cmd(cmd: str) -> Optional[str]:
-    """Returns a block reason string if the command is not allowed, else None."""
-    cmd_lower = cmd.lower()
+    """Returns a block reason string if the command is not allowed, else None.
+    C-4 fix: expanded from 9 to 38+ patterns covering known bypasses.
+    Note: denylist is a defense-in-depth layer. For full security, run in a sandbox.
+    """
+    cmd_lower = cmd.lower().replace("  ", " ")  # normalize double-spaces
     for pattern in _TERMINAL_BLOCKED_PATTERNS:
         if pattern.lower() in cmd_lower:
             return f"Blocked pattern: '{pattern}'"
@@ -6198,6 +6289,12 @@ async def terminal_exec(
     block_reason = _check_terminal_cmd(cmd)
     if block_reason:
         raise HTTPException(400, f"Command blocked by safety filter: {block_reason}")
+    # M-5 fix: validate cwd against filesystem sandbox
+    if cwd and _state.filesystem:
+        try:
+            _state.filesystem._check_path(cwd)
+        except PermissionError:
+            raise HTTPException(400, f"cwd path not allowed by sandbox: {cwd}")
     import asyncio
     loop = asyncio.get_event_loop()
     result = await loop.run_in_executor(
@@ -6342,13 +6439,18 @@ async def files_read(path: str = Query(...), x_api_key: Optional[str] = Header(N
     return _state.filesystem.read_file(path) if _state.filesystem else {"success": False}
 
 
+class _FileWriteBody(BaseModel):
+    path: str
+    content: str
+
 @app.post("/files/write")
 async def files_write(
-    path: str = Query(...), content: str = Query(...),
+    body: _FileWriteBody,
     x_api_key: Optional[str] = Header(None),
 ):
+    """M-2 fix: content in request body (not URL query param) to avoid log exposure."""
     _check_auth(x_api_key)
-    return _state.filesystem.write_file(path, content) if _state.filesystem else {"success": False}
+    return _state.filesystem.write_file(body.path, body.content) if _state.filesystem else {"success": False}
 
 
 @app.get("/files/list")

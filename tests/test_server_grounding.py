@@ -140,7 +140,7 @@ class _GroundingStub:
 
 
 def _setup_state():
-    server._state.api_key = None
+    server._state.api_key = "test-key"
     server._state.perception = _PerceptionReadyStub()
     server._state.safety = _SafetyStub()
     server._state.intent = _IntentStub()
@@ -155,7 +155,7 @@ def _setup_state():
 
 def test_grounding_status_and_resolve_endpoints():
     _setup_state()
-    client = TestClient(server.app)
+    client = TestClient(server.app, headers={"x-api-key": "test-key"})
 
     status = client.get("/grounding/status")
     resolve = client.post("/grounding/resolve", json={"query": "save", "role": "button"})
@@ -169,7 +169,7 @@ def test_grounding_status_and_resolve_endpoints():
 
 def test_action_execute_with_grounding_injects_coordinates():
     resolver = _setup_state()
-    client = TestClient(server.app)
+    client = TestClient(server.app, headers={"x-api-key": "test-key"})
 
     response = client.post(
         "/action/execute",
@@ -192,7 +192,7 @@ def test_action_execute_with_grounding_injects_coordinates():
 
 def test_action_precheck_with_grounding_reports_block():
     _setup_state()
-    client = TestClient(server.app)
+    client = TestClient(server.app, headers={"x-api-key": "test-key"})
 
     response = client.post(
         "/action/precheck",

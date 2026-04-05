@@ -168,7 +168,7 @@ class _ResolverStub:
 
 
 def _setup_server_state() -> None:
-    server._state.api_key = None
+    server._state.api_key = "test-key"
     server._state.perception = _PerceptionBenchStub()
     server._state.safety = _SafetyStub()
     server._state.intent = _IntentStub()
