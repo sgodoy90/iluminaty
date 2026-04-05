@@ -568,11 +568,16 @@ TOOLS = [
     {
         "name": "see_now",
         "description": (
-            "PRIMARY VISION TOOL. See the current screen right now. "
-            "Returns the actual screen image (Claude/GPT-4o sees it directly) "
-            "plus IPA v3 real-time context: motion type, scene state, recent events. "
-            "Use this before acting and after acting to verify results. "
-            "Modes: low_res (~5K tokens), medium_res (~15K), full_res (~30K)."
+            "PRIMARY VISION TOOL — your eyes. See what is ACTUALLY on screen right now. "
+            "Returns the real screen image that you (the AI) see directly. "
+            "WHEN TO USE: (1) Before any action — confirm current state visually. "
+            "(2) After any action — confirm it worked visually. "
+            "(3) When list_windows or OCR gives unexpected results — see_now is ground truth. "
+            "(4) Before closing any window — check for unsaved content. "
+            "(5) Before typing — confirm focus is on the right element. "
+            "NEVER assume a window is open/closed/focused without seeing it first. "
+            "Modes: low_res (~5K tokens, use for spatial checks), "
+            "medium_res (~15K, use for reading text), full_res (~30K, use for detail)."
         ),
         "inputSchema": {
             "type": "object",
@@ -713,12 +718,13 @@ TOOLS = [
     {
         "name": "get_spatial_context",
         "description": (
-            "ONE-SHOT SESSION CONTEXT. Call this FIRST at the start of every session. "
-            "Returns: physical monitor layout with human labels (LEFT/CENTER/RIGHT/TOP), "
-            "window inventory per monitor, active user window, user activity state, "
-            "and auto-inferred safety rules (e.g. 'user is on Facebook M2 — open new tab'). "
-            "~400-600 tokens. Re-call only if monitors change. "
-            "For dynamic state (windows changing) use see_now + spatial_state."
+            "MANDATORY FIRST CALL — call this before any spatial task. "
+            "Returns: physical monitor layout (which monitor is LEFT/RIGHT/TOP), "
+            "what windows are on each monitor, active user window, user activity, "
+            "and safety rules (e.g. user is coding on M3 — don't touch M3). "
+            "~400-600 tokens. Use TOGETHER with see_now for full situational awareness: "
+            "get_spatial_context gives you the map, see_now gives you the live picture. "
+            "Re-call if the environment changes significantly."
         ),
         "inputSchema": {"type": "object", "properties": {}},
     },
@@ -898,7 +904,15 @@ TOOLS = [
     # ── Windows ───────────────────────────────────────────────────────────────
     {
         "name": "list_windows",
-        "description": "List all visible windows with handle, title, position, size, monitor_id.",
+        "description": (
+            "List visible windows — handles, titles, positions, monitor assignments. "
+            "USE AS METADATA, not as ground truth. Limitations: "
+            "(1) Windows remembers previously open windows — you may see ghost handles from past sessions. "
+            "(2) Multiple handles can exist for the same app (stacked windows look like separate entries). "
+            "(3) A handle present here does NOT mean the window is visible on screen. "
+            "ALWAYS cross-check with see_now(monitor) to confirm visual reality. "
+            "Use list_windows for handle IDs, use see_now for what's actually visible."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -3649,6 +3663,50 @@ def run_mcp_stdio():
                             "name": "iluminaty",
                             "version": "1.0.0",
                         },
+                        "instructions": (
+                            "# ILUMINATY — Decision Pipeline\n\n"
+                            "You have eyes (see_now), spatial awareness (get_spatial_context), "
+                            "and window metadata (list_windows/OCR). USE ALL THREE — never rely on just one.\n\n"
+
+                            "## OBSERVE FIRST — always, before any action\n"
+                            "Run these IN PARALLEL before planning anything:\n"
+                            "  1. get_spatial_context()          — monitor layout, active window, user focus\n"
+                            "  2. see_now(monitor=N)             — what is VISUALLY on each relevant monitor\n"
+                            "  3. list_windows() if needed       — handle/position metadata to cross-check vision\n"
+                            "Cross-reference all three. If list_windows says X but see_now shows Y, trust see_now.\n\n"
+
+                            "## PLAN — based on what you saw, not what you assume\n"
+                            "  - If you see 3 notepads stacked on M1, plan to distribute them — don't open more.\n"
+                            "  - If you see a window is already on the right monitor, skip moving it.\n"
+                            "  - If the user is active on M3, keep your work on M1/M2.\n\n"
+
+                            "## EXECUTE — one step at a time\n"
+                            "  - ONE action per step. Not two. Not three.\n"
+                            "  - After each action: see_now(affected_monitor) to confirm reality.\n"
+                            "  - If see_now shows something unexpected: stop, re-observe, re-plan.\n"
+                            "  - Never chain actions without visual confirmation between them.\n\n"
+
+                            "## SPATIAL RULES\n"
+                            "  - list_windows() returns OS-level handles. Windows remembers previously open windows.\n"
+                            "    Multiple handles for the same app = multiple instances. Verify with see_now.\n"
+                            "  - Before opening a new window: check if one already exists visually.\n"
+                            "  - Before closing a window: see_now to confirm it has no unsaved content.\n"
+                            "  - Before typing: see_now to confirm focus is on the right window.\n\n"
+
+                            "## WHAT GOOD LOOKS LIKE\n"
+                            "  Task: open notepad on each monitor\n"
+                            "  1. see_now(M1)+see_now(M2)+see_now(M3) + list_windows() [parallel]\n"
+                            "  2. Count existing notepads visually. Close extras if stacked.\n"
+                            "  3. Open missing ones one at a time, verify each with see_now.\n"
+                            "  4. Move to correct monitor, verify position with see_now.\n"
+                            "  5. Focus, type, verify text appeared with see_now.\n\n"
+
+                            "## WHAT BAD LOOKS LIKE (avoid)\n"
+                            "  - Opening 3 notepads without looking → all land on same monitor\n"
+                            "  - Closing windows without see_now → data loss\n"
+                            "  - Typing without focus check → text goes to wrong window\n"
+                            "  - Trusting list_windows without see_now → acting on stale/ghost handles\n"
+                        ),
                     },
                 })
 
