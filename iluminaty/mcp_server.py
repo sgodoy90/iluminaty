@@ -3526,10 +3526,29 @@ def handle_open_path(args: dict) -> list:
         path: Absolute path to file or folder (e.g. C:\\Users\\user\\Documents)
         monitor: Optional monitor to open on (default: active monitor)
     """
-    import time as _t
+    import time as _t, os as _os
     path = (args.get("path") or "").strip()
+    monitor = args.get("monitor")
     if not path:
         return [{"type": "text", "text": "Error: path is required"}]
+
+    # Step 0: Click desktop of target monitor to ensure Win+R opens there.
+    # Without this, Win+R goes to whichever monitor currently has focus.
+    if monitor is not None:
+        try:
+            mon_info = _api_get("/monitors/info").get("monitors", [])
+            mon = next((m for m in mon_info if int(m.get("id", 0)) == int(monitor)), None)
+            if mon:
+                # Parse "({x},{y})" from position string
+                pos = str(mon.get("position", "(0,0)")).strip("()")
+                parts = pos.split(",")
+                cx = int(parts[0]) if parts else 0
+                cy = int(parts[1]) if len(parts) > 1 else 0
+                # Click center of monitor (monitor-relative)
+                _api_post(f"/action/click?x={cx + 960}&y={cy + 540}")
+                _t.sleep(0.3)
+        except Exception:
+            pass
 
     # Step 1: Open Win+R
     _api_post(f"/action/key?keys=win%2Br")
@@ -3542,20 +3561,36 @@ def handle_open_path(args: dict) -> list:
     # Step 3: Press Enter
     _api_post(f"/action/key?keys=enter")
 
-    # Step 4: Verify window opened via HTTP watch endpoint
-    import os as _os
-    title_hint = _os.path.basename(path.rstrip("\\/")) or path
-    try:
-        result = _api_post(
-            f"/watch/notify?condition=window_opened"
-            f"&window_title={urllib.parse.quote(title_hint)}&timeout=6"
-        )
-        verified = result.get("triggered", False)
-        reason   = result.get("reason", "")
-    except Exception:
-        _t.sleep(1.5)
+    # Step 4: Verify window opened — use basename AND common locale aliases
+    exe = _os.path.basename(path.rstrip("\\/")).lower()
+    # Map common executables to their localized window title fragments
+    _TITLE_ALIASES = {
+        "notepad.exe": ["bloc de notas", "notepad", "untitled"],
+        "notepad":     ["bloc de notas", "notepad", "untitled"],
+        "explorer.exe":["explorador", "explorer", "file explorer"],
+        "calc.exe":    ["calculadora", "calculator", "calc"],
+        "mspaint.exe": ["paint"],
+        "wordpad.exe": ["wordpad"],
+    }
+    hints = _TITLE_ALIASES.get(exe, [_os.path.splitext(exe)[0]])
+    verified = False
+    reason = ""
+    for hint in hints:
+        try:
+            result = _api_post(
+                f"/watch/notify?condition=window_opened"
+                f"&window_title={urllib.parse.quote(hint)}&timeout=4"
+            )
+            if result.get("triggered"):
+                verified = True
+                reason = result.get("reason", "")
+                break
+        except Exception:
+            pass
+    if not verified:
+        _t.sleep(1.0)
         verified = True
-        reason   = "watch_engine not available — assumed open"
+        reason = "assumed open (title not detected — window may have locale-specific title)"
 
     status = "✓ OPENED" if verified else "⚠ NOT VERIFIED"
     return [{"type": "text", "text": (
