@@ -974,6 +974,30 @@ class PerceptionEngine:
         self._deep_thread.start()
         self._cpu_throttle_thread.start()
 
+    def reinitialize_monitors(self):
+        """
+        Called when the monitor layout changes at runtime (plug/unplug/rotate/resolution).
+        Drops stale per-monitor state so the next loop iteration picks up fresh geometry.
+        The capture engine (mss) re-enumerates displays on every frame — no restart needed.
+        """
+        if not self._monitor_mgr:
+            return
+        # Get current monitor IDs after refresh
+        current_ids = {m.id for m in self._monitor_mgr._monitors}
+        # Remove state for monitors that no longer exist
+        stale = [mid for mid in list(self._monitor_states.keys()) if mid not in current_ids]
+        for mid in stale:
+            del self._monitor_states[mid]
+        # Pre-create state for new monitors so they start clean
+        for mid in current_ids:
+            if mid not in self._monitor_states:
+                self._get_monitor_state(mid)
+        import logging as _log
+        _log.getLogger(__name__).info(
+            "PerceptionEngine: monitor states reinitialized. "
+            "Active: %s, Removed stale: %s", sorted(current_ids), stale
+        )
+
     def stop(self):
         self._running = False
         if self._thread:

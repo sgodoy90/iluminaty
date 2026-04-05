@@ -2580,6 +2580,52 @@ def init_server(
         _state.monitor_mgr = MonitorManager()
         _state.monitor_mgr.refresh()
 
+        # Monitor change watcher — auto-refresh layout when display configuration changes
+        # Polls every 5s comparing monitor count + geometry hash. Cheap: mss enumerate < 1ms.
+        # Triggers on: monitor plug/unplug, resolution change, orientation change.
+        import hashlib as _hl
+        def _monitor_change_watcher():
+            import time as _t
+            def _geo_hash(mgr):
+                s = "|".join(
+                    f"{m.id}:{m.left}:{m.top}:{m.width}:{m.height}"
+                    for m in sorted(mgr._monitors, key=lambda x: x.id)
+                )
+                return _hl.md5(s.encode()).hexdigest()
+
+            last_hash = _geo_hash(_state.monitor_mgr)
+            last_count = len(_state.monitor_mgr._monitors)
+            while True:
+                _t.sleep(5)
+                try:
+                    _state.monitor_mgr.refresh()
+                    new_hash = _geo_hash(_state.monitor_mgr)
+                    new_count = len(_state.monitor_mgr._monitors)
+                    if new_hash != last_hash:
+                        logger.info(
+                            "Monitor layout changed: %d→%d monitors. "
+                            "Spatial context invalidated — agent will be notified on next action.",
+                            last_count, new_count
+                        )
+                        # Signal perception engine to re-initialize capture streams
+                        if _state.perception:
+                            try:
+                                _state.perception.reinitialize_monitors()
+                            except Exception:
+                                pass  # reinitialize is best-effort
+                        last_hash = new_hash
+                        last_count = new_count
+                except Exception:
+                    pass  # never crash the watcher
+
+        import threading as _thr
+        _watcher = _thr.Thread(
+            target=_monitor_change_watcher,
+            daemon=True,
+            name="monitor-change-watcher"
+        )
+        _watcher.start()
+
         # Perception Engine — continuous vision processing (the AI's visual cortex)
         # Wired AFTER monitor_mgr/diff/context are initialized (IPA Phase 1.3)
         try:

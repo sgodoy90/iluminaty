@@ -2659,8 +2659,15 @@ def _spatial_zone(left: int, top: int, width: int, height: int,
     Compares this monitor's center against all others to produce
     a natural label: CENTER, LEFT, RIGHT, TOP-LEFT, etc.
     Works for any number of monitors in any physical arrangement.
+
+    Special cases:
+    - 1 monitor, aspect ratio > 2.1 (ultrawide): labeled ULTRAWIDE
+    - 1 monitor, standard: labeled MAIN
     """
     if len(all_monitors) <= 1:
+        aspect = width / height if height > 0 else 1.0
+        if aspect >= 2.1:
+            return "ULTRAWIDE"
         return "MAIN"
 
     cx = left + width // 2
@@ -2763,6 +2770,17 @@ def handle_get_spatial_context(args: dict) -> list:
             f"  M{mid} [{zone}] {w}x{h} at ({left},{top})"
             + (" ← ACTIVE" if is_active else "")
         )
+
+        # Ultrawide: describe virtual zones so agent knows how to target halves
+        if zone == "ULTRAWIDE":
+            half = w // 2
+            lines.append(
+                f"    ↳ ULTRAWIDE detected (aspect={w/h:.1f}). "
+                f"Virtual zones: LEFT-HALF x={left}..{left+half}, "
+                f"RIGHT-HALF x={left+half}..{left+w}. "
+                f"Use x={left+half//2},y={h//2} for left zone, "
+                f"x={left+half+half//2},y={h//2} for right zone."
+            )
 
         # Windows on this monitor
         wins = wins_by_monitor.get(mid, [])
@@ -3804,7 +3822,11 @@ def run_mcp_stdio():
                             "    Multiple handles for the same app = multiple instances. Verify with see_now.\n"
                             "  - Before opening a new window: check if one already exists visually.\n"
                             "  - Before closing a window: see_now to confirm it has no unsaved content.\n"
-                            "  - Before typing: see_now to confirm focus is on the right window.\n\n"
+                            "  - Before typing: see_now to confirm focus is on the right window.\n"
+                            "  - Monitor layout can change at runtime (plug/unplug/resolution change).\n"
+                            "    POST-ACTION STATE will warn you if this happens. Re-call get_spatial_context.\n"
+                            "  - ULTRAWIDE monitor (aspect > 2.1): treated as LEFT-HALF / RIGHT-HALF zones.\n"
+                            "    get_spatial_context will show virtual zone coordinates for targeting.\n\n"
 
                             "## WHAT GOOD LOOKS LIKE\n"
                             "  Task: open notepad on each monitor\n"
