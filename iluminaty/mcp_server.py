@@ -2429,7 +2429,22 @@ def _post_action_context(monitor=None, action_type="", result_ok=True) -> str:
     except Exception:
         pass
 
-    # 4. Reasoning nudge based on action type
+    # 4. Detect environment drift — warn if monitor count or active monitor changed
+    try:
+        monitors_now = _api_get("/monitors/info").get("monitors", [])
+        n_monitors = len(monitors_now)
+        # Store last known count in a module-level cache (lightweight)
+        last_known = getattr(_post_action_context, "_last_n_monitors", None)
+        if last_known is not None and last_known != n_monitors:
+            parts.append(
+                f"⚠ ENVIRONMENT CHANGED: monitor count changed {last_known}→{n_monitors}. "
+                f"Call get_spatial_context() to re-orient before continuing."
+            )
+        _post_action_context._last_n_monitors = n_monitors
+    except Exception:
+        pass
+
+    # 5. Reasoning nudge based on action type
     nudges = {
         "click":        "Did the click land on the right element? Call see_now if uncertain.",
         "type":         "Did the text appear in the right field? Call see_now to verify.",
