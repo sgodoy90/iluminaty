@@ -55,9 +55,7 @@ def _get_plan() -> str:
     """Check license plan by calling the local server or auth API."""
     if not ILUMINATY_KEY:
         return "free"
-    # Dev/pro keys resolve immediately without a network call
-    if ILUMINATY_KEY.startswith("ILUM-pro") or ILUMINATY_KEY.startswith("ILUM-dev"):
-        return "pro"
+    # Always validate through the local server — no prefix-based shortcuts
     try:
         url = API_BASE + "/license/status"
         req = urllib.request.Request(url, headers={"X-API-Key": ILUMINATY_KEY})
@@ -65,6 +63,7 @@ def _get_plan() -> str:
             data = json.loads(resp.read().decode())
             return data.get("plan", "free")
     except Exception:
+        # Server unreachable — fail safe to free, not pro
         return "free"
 
 
