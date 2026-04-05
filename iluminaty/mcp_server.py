@@ -1458,21 +1458,44 @@ def handle_map_environment(args: dict) -> list:
     draw_grid   = bool(args.get("grid", True))
 
     try:
-        import ctypes
-        import ctypes.wintypes
-        import base64 as _b64
+        import ctypes, base64 as _b64
+        try:
+            import ctypes.wintypes
+        except Exception:
+            pass
         from PIL import Image as _Img, ImageDraw as _Draw, ImageFont as _IFont
         import io as _io
         import mss as _mss
 
-        # ── 1. Cursor position (Windows API — exact, no latency) ──────────────
-        pt = ctypes.wintypes.POINT()
-        ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
-        cx, cy = pt.x, pt.y
+        # ── 1. Cursor position — cross-platform ───────────────────────────────
+        cx, cy = 0, 0
+        try:
+            # Windows: exact, zero-latency Win32 API
+            pt = ctypes.wintypes.POINT()
+            ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
+            cx, cy = pt.x, pt.y
+        except Exception:
+            try:
+                # Fallback: pyautogui (works on Linux/macOS too)
+                import pyautogui as _pag
+                cx, cy = _pag.position()
+            except Exception:
+                # Last resort: ask ILUMINATY runtime
+                _cur = _api_get("/runtime/cursor").get("cursor", {})
+                cx, cy = int(_cur.get("x", 0)), int(_cur.get("y", 0))
 
-        # ── 2. Monitor layout ─────────────────────────────────────────────────
+        # ── 2. Monitor layout — from ILUMINATY API, fallback to mss ──────────
         mons_data = _api_get("/monitors/info").get("monitors", [])
-        mons = [_parse_mon(m) for m in mons_data]  # (id, left, top, w, h)
+        if mons_data:
+            mons = [_parse_mon(m) for m in mons_data]  # (id, left, top, w, h)
+        else:
+            # Fallback: enumerate directly from mss (works on any OS)
+            # mss index 0 = "all monitors" virtual screen, skip it
+            with _mss.mss() as _sct_enum:
+                mons = [
+                    (i, int(m["left"]), int(m["top"]), int(m["width"]), int(m["height"]))
+                    for i, m in enumerate(_sct_enum.monitors[1:], start=1)
+                ]
 
         # ── 3. Cursor monitor membership ──────────────────────────────────────
         cursor_mon = None
