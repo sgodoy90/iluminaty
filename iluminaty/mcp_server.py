@@ -3542,26 +3542,17 @@ def handle_open_path(args: dict) -> list:
     # Step 3: Press Enter
     _api_post(f"/action/key?keys=enter")
 
-    # Step 4: Verify window opened (use tail of path as title hint)
+    # Step 4: Verify window opened via HTTP watch endpoint
     import os as _os
     title_hint = _os.path.basename(path.rstrip("\\/")) or path
-    if _state.watch_engine:
-        import asyncio as _asyncio
-        loop = _asyncio.new_event_loop()
-        result = loop.run_until_complete(
-            _asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: _state.watch_engine.wait(
-                    condition="window_opened",
-                    window_title=title_hint,
-                    timeout=6,
-                )
-            )
+    try:
+        result = _api_post(
+            f"/watch/notify?condition=window_opened"
+            f"&window_title={urllib.parse.quote(title_hint)}&timeout=6"
         )
-        loop.close()
-        verified = result.triggered
-        reason   = result.reason
-    else:
+        verified = result.get("triggered", False)
+        reason   = result.get("reason", "")
+    except Exception:
         _t.sleep(1.5)
         verified = True
         reason   = "watch_engine not available — assumed open"
