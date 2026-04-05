@@ -1881,7 +1881,7 @@ async def _execute_intent(
                     "reason": f"watcher_error:{e}",
                 }
 
-        if verify and _state.verifier and result.success:
+        if verify and _state.verifier and result is not None and result.success:
             verification = _state.verifier.verify(intent.action, intent.params, pre_state)
 
         if result and result.success:
@@ -1910,7 +1910,7 @@ async def _execute_intent(
                     except Exception:
                         recovery_strategy = "unknown"
                 result = _state.resolver.resolve(intent.action, intent.params)
-                if verify and _state.verifier and result.success:
+                if verify and _state.verifier and result is not None and result.success:
                     verification = _state.verifier.verify(intent.action, intent.params, pre_state)
             else:
                 attempts = getattr(recovery, "attempts", None)
@@ -2441,7 +2441,7 @@ async def ws_stream(ws: WebSocket):
                 last_hash = slot.phash
             
             # Enviar al ritmo del FPS actual
-            fps = _state.capture.current_fps if _state.capture else 1.0
+            fps = max(_state.capture.current_fps if _state.capture else 1.0, 0.1)
             await asyncio.sleep(1.0 / fps)
             
     except WebSocketDisconnect:
@@ -5480,6 +5480,66 @@ async def action_move(
         return {"action": "move_mouse", "success": False, "message": "Action bridge not available"}
     result = _state.actions.move_mouse(x, y)
     return {"action": "move_mouse", "success": result.success, "message": result.message, "x": x, "y": y}
+
+
+@app.post("/action/key_down")
+async def action_key_down(
+    key: str = Query(...),
+    x_api_key: Optional[str] = Header(None),
+):
+    """Press and hold a key (for modifier combos and hold_key sequences)."""
+    _check_auth(x_api_key)
+    if not _state.actions or not _state.actions.available:
+        return {"success": False, "message": "Action bridge not available"}
+    result = _state.actions.hold_key(key)
+    return {"success": result.success, "key": key, "message": result.message}
+
+
+@app.post("/action/key_up")
+async def action_key_up(
+    key: str = Query(...),
+    x_api_key: Optional[str] = Header(None),
+):
+    """Release a previously held key."""
+    _check_auth(x_api_key)
+    if not _state.actions or not _state.actions.available:
+        return {"success": False, "message": "Action bridge not available"}
+    result = _state.actions.release_key(key)
+    return {"success": result.success, "key": key, "message": result.message}
+
+
+@app.post("/action/mouse_down")
+async def action_mouse_down(
+    x: int = Query(...), y: int = Query(...),
+    x_api_key: Optional[str] = Header(None),
+):
+    """Press and hold the left mouse button at (x, y). Use /action/mouse_up to release."""
+    _check_auth(x_api_key)
+    if not _state.actions or not _state.actions.available:
+        return {"success": False, "message": "Action bridge not available"}
+    try:
+        import pyautogui as _pag
+        _pag.mouseDown(x=x, y=y, button="left")
+        return {"success": True, "x": x, "y": y, "message": f"Mouse down at ({x},{y})"}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+
+@app.post("/action/mouse_up")
+async def action_mouse_up(
+    x: int = Query(...), y: int = Query(...),
+    x_api_key: Optional[str] = Header(None),
+):
+    """Release the left mouse button at (x, y)."""
+    _check_auth(x_api_key)
+    if not _state.actions or not _state.actions.available:
+        return {"success": False, "message": "Action bridge not available"}
+    try:
+        import pyautogui as _pag
+        _pag.mouseUp(x=x, y=y, button="left")
+        return {"success": True, "x": x, "y": y, "message": f"Mouse up at ({x},{y})"}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
 
 
 @app.post("/action/drag")

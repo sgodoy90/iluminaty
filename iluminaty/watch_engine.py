@@ -104,9 +104,12 @@ class WatchEngine:
         log.info("watch(%s) started, timeout=%.0fs", condition_norm, timeout)
 
         # Snapshot IPA gate events already seen — only react to NEW ones
-        seen_gate_ts: float = time.time()
-        last_motion_type: str = "unknown"
-        last_ocr: str = ""
+        # Use a mutable dict so _check can update state across iterations
+        state = {
+            "seen_gate_ts":    time.time(),
+            "last_motion_type": "unknown",
+            "last_ocr":        "",
+        }
 
         while True:
             elapsed = time.time() - t_start
@@ -123,9 +126,10 @@ class WatchEngine:
                 text=text, window_title=window_title,
                 element=element, idle_seconds=idle_seconds,
                 monitor_id=monitor_id,
-                seen_gate_ts=seen_gate_ts,
-                last_motion_type=last_motion_type,
-                last_ocr=last_ocr,
+                seen_gate_ts=state["seen_gate_ts"],
+                last_motion_type=state["last_motion_type"],
+                last_ocr=state["last_ocr"],
+                state=state,   # pass mutable state for updates
             )
 
             if result is not None:
@@ -148,13 +152,18 @@ class WatchEngine:
         seen_gate_ts: float,
         last_motion_type: str,
         last_ocr: str,
+        state: Optional[dict] = None,  # mutable state updated each iteration
     ) -> Optional[WatchResult]:
         """Single check iteration. Returns WatchResult if triggered, None to continue."""
 
         # ── IPA gate events (fastest path) ───────────────────────────────────
+        new_events = []
         if self._ipa:
             events = self._ipa.recent_events(seconds=self.POLL_INTERVAL * 3)
             new_events = [e for e in events if e.timestamp > seen_gate_ts]
+            # Update seen_gate_ts so next iteration only sees newer events
+            if new_events and state is not None:
+                state["seen_gate_ts"] = max(e.timestamp for e in new_events) + 0.001
 
             for evt in new_events:
                 if condition == "page_loaded" and evt.event_type == "content_loaded":
@@ -183,6 +192,9 @@ class WatchEngine:
         ):
             try:
                 current_ocr = self._ocr_fn(monitor_id) or ""
+                # Update last_ocr so text_disappeared works correctly next iteration
+                if current_ocr and state is not None:
+                    state["last_ocr"] = current_ocr
             except Exception:
                 current_ocr = ""
 

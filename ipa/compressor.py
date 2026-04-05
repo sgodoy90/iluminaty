@@ -152,10 +152,18 @@ class DeltaCompressor:
 
     def _int8_decompress(self, data: bytes) -> np.ndarray:
         """Decompress bytes → (N, D) float32."""
+        if len(data) < 4:
+            raise ValueError(f"Truncated IPA frame header: expected 4B, got {len(data)}B")
         n, d       = struct.unpack("<HH", data[:4])
         mm_size    = n * 2 * 4
+        expected   = 4 + mm_size + n * d
+        if len(data) < expected:
+            raise ValueError(
+                f"Truncated IPA frame: expected {expected}B, got {len(data)}B "
+                f"(n={n}, d={d})"
+            )
         minmax     = np.frombuffer(data[4:4 + mm_size], dtype=np.float32).reshape(n, 2)
-        quantized  = np.frombuffer(data[4 + mm_size:], dtype=np.uint8).reshape(n, d)
+        quantized  = np.frombuffer(data[4 + mm_size:4 + mm_size + n * d], dtype=np.uint8).reshape(n, d)
         vmin, vmax = minmax[:, 0:1], minmax[:, 1:2]
         return vmin + (quantized.astype(np.float32) / 255.0) * (vmax - vmin)
 

@@ -294,6 +294,11 @@ def get_ocr_worker() -> Optional[OCRWorker]:
 def init_ocr_worker() -> OCRWorker:
     global _ocr_worker
     if _ocr_worker is None or not _ocr_worker.available:
+        if _ocr_worker is not None:
+            try:
+                _ocr_worker.stop()  # clean up zombie subprocess and leaked Queue
+            except Exception:
+                pass
         _ocr_worker = OCRWorker()
         _ocr_worker.start()
     return _ocr_worker

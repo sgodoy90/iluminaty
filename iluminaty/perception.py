@@ -849,14 +849,15 @@ class PerceptionEngine:
         self._burst_last_ms: dict[int, int] = {}
 
     def _get_monitor_state(self, monitor_id: int) -> MonitorPerceptionState:
-        """Get or create per-monitor state."""
-        if monitor_id not in self._monitor_states:
-            self._monitor_states[monitor_id] = MonitorPerceptionState(
-                monitor_id=monitor_id,
-                inactive_skip_every=self._inactive_monitor_skip_every,
-                inactive_force_interval_s=self._inactive_monitor_force_s,
-            )
-        return self._monitor_states[monitor_id]
+        """Get or create per-monitor state. Thread-safe — called from fast/deep/watcher threads."""
+        with self._lock:
+            if monitor_id not in self._monitor_states:
+                self._monitor_states[monitor_id] = MonitorPerceptionState(
+                    monitor_id=monitor_id,
+                    inactive_skip_every=self._inactive_monitor_skip_every,
+                    inactive_force_interval_s=self._inactive_monitor_force_s,
+                )
+            return self._monitor_states[monitor_id]
 
     def _note_deep_monitor(self, monitor_id: int, key: str, inc: int = 1) -> None:
         with self._lock:

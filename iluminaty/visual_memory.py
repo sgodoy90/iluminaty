@@ -299,7 +299,8 @@ class VisualMemory:
                         log.info("Visual memory loaded: %s (age=%.1fh)",
                                  path.name, mem.age_hours())
                         return mem
-                except Exception:
+                except Exception as e:
+                    log.warning("Skipping corrupt session file %s: %s", path.name, e)
                     continue
         except Exception as e:
             log.debug("Failed to load visual memory: %s", e)
