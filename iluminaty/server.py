@@ -6816,6 +6816,49 @@ async def vision_smart(
         }, status_code=429)
 
     slot, resolved_mid = _latest_slot_for_monitor(monitor_id)
+    if not slot and monitor_id is not None:
+        # On-demand capture: buffer has no frame for this monitor yet.
+        # Take an immediate screenshot rather than failing the agent.
+        try:
+            import mss as _mss
+            _mid = int(monitor_id)
+            monitors_info = (_state.monitor_mgr.get_monitors()
+                             if _state.monitor_mgr else [])
+            _mon = next((m for m in monitors_info
+                         if int(m.id) == _mid), None)
+            if _mon:
+                def _snap_sync():
+                    import io as _io
+                    from PIL import Image as _Img
+                    with _mss.mss() as _s:
+                        raw = _s.grab({"left": _mon.x, "top": _mon.y,
+                                       "width": _mon.width,
+                                       "height": _mon.height})
+                        img = _Img.frombytes("RGB", raw.size,
+                                             raw.bgra, "raw", "BGRX")
+                        buf = _io.BytesIO()
+                        img.save(buf, format="WEBP", quality=75)
+                        return buf.getvalue()
+                import asyncio as _aio, base64 as _b64, time as _t
+                loop = _aio.get_event_loop()
+                webp = await loop.run_in_executor(None, _snap_sync)
+                if webp:
+                    return JSONResponse({
+                        "mode": active_mode,
+                        "monitor_id": _mid,
+                        "image_base64": _b64.b64encode(webp).decode(),
+                        "mime_type": "image/webp",
+                        "timestamp": _t.time(),
+                        "active_window": "",
+                        "ocr_text": "",
+                        "ai_prompt": (
+                            f"[On-demand snapshot M{_mid} — "
+                            "buffer empty, captured live]"
+                        ),
+                        "on_demand": True,
+                    })
+        except Exception as _ode:
+            log.warning(f"on-demand snapshot M{monitor_id} failed: {_ode}")
     if not slot:
         _raise_no_frame_available(monitor_id)
 

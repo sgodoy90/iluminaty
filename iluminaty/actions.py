@@ -72,7 +72,12 @@ class ActionBridge:
     def _try_import(self):
         try:
             import pyautogui
-            pyautogui.FAILSAFE = True   # mover mouse a esquina = abort
+            # FAILSAFE disabled: ILUMINATY is an intentional automation agent.
+            # The fail-safe corner (0,0) coincides with monitor edges in
+            # multi-monitor setups (e.g. M1 at (1920,0), M2 at (0,0)),
+            # causing legitimate actions to abort. Agent actions are always
+            # intentional — the user interacts via the MCP protocol, not the mouse.
+            pyautogui.FAILSAFE = False
             pyautogui.PAUSE = 0.15      # pausa entre acciones (reducido de 0.3 para mas fluidez)
             self._pyautogui = pyautogui
         except ImportError:
