@@ -36,11 +36,10 @@ if not CACHE_FILE.name:
     CACHE_FILE = Path(_base) / "ILUMINATY" / ".license_cache.json"
 CACHE_TTL_S = 86400  # 24 hours
 
-# Dev/test keys (always Pro)
-DEV_KEYS = {
-    "ILUM-dev-local",
-    "ILUM-dev-local-test",
-}
+# Dev/test keys (always Pro) — loaded from env, not hardcoded
+# Set ILUMINATY_DEV_KEYS="key1,key2" in your environment to add dev keys
+_dev_keys_env = os.environ.get("ILUMINATY_DEV_KEYS", "")
+DEV_KEYS: set[str] = {k.strip() for k in _dev_keys_env.split(",") if k.strip()}
 
 CONTACT_EMAIL = "custom@iluminaty.dev"
 
@@ -197,11 +196,11 @@ class LicenseManager:
             self.limits = result.get("limits", {})
             self._write_cache(result)
         else:
-            # Server unreachable — if key looks valid, give PRO benefit of doubt
-            if self.api_key.startswith("ILUM-"):
-                self.plan = Plan.PRO
-            else:
-                self.plan = Plan.FREE
+            # Server unreachable — fail safe to FREE (not PRO)
+            # During open beta, FREE already includes all tools
+            # so this does not degrade the user experience.
+            self.plan = Plan.FREE
+            logger.debug("License server unreachable — defaulting to FREE plan")
 
         self.validated = True
         self._last_validated = time.time()

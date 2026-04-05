@@ -55,16 +55,16 @@ def _get_plan() -> str:
     """Check license plan by calling the local server or auth API."""
     if not ILUMINATY_KEY:
         return "free"
+    # Dev/pro keys resolve immediately without a network call
+    if ILUMINATY_KEY.startswith("ILUM-pro") or ILUMINATY_KEY.startswith("ILUM-dev"):
+        return "pro"
     try:
         url = API_BASE + "/license/status"
-        req = urllib.request.Request(url)
+        req = urllib.request.Request(url, headers={"X-API-Key": ILUMINATY_KEY})
         with urllib.request.urlopen(req, timeout=3) as resp:
             data = json.loads(resp.read().decode())
             return data.get("plan", "free")
     except Exception:
-        # Fallback: check key prefix
-        if ILUMINATY_KEY.startswith("ILUM-pro") or ILUMINATY_KEY.startswith("ILUM-dev"):
-            return "pro"
         return "free"
 
 
@@ -3085,11 +3085,16 @@ def run_mcp_stdio():
     """
     import sys
 
-    # Debug log to file
-    _logf = open(os.path.join(os.path.dirname(__file__), "..", "mcp_debug.log"), "w")
+    # Debug log — only enabled when ILUMINATY_MCP_DEBUG=1
+    _debug_enabled = os.environ.get("ILUMINATY_MCP_DEBUG", "0") == "1"
+    _logf = None
+    if _debug_enabled:
+        _logf = open(os.path.join(os.path.dirname(__file__), "..", "mcp_debug.log"), "a")
+
     def _log(msg):
-        _logf.write(f"{msg}\n")
-        _logf.flush()
+        if _logf:
+            _logf.write(f"{msg}\n")
+            _logf.flush()
 
     def send(msg: dict):
         data = json.dumps(msg)

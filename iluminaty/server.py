@@ -182,7 +182,11 @@ def _frame_to_json(slot: FrameSlot, include_base64: bool = False) -> dict:
     return result
 
 
+_NO_AUTH = os.environ.get("ILUMINATY_NO_AUTH", "0") == "1"
+
 def _check_auth(api_key: Optional[str]):
+    if _NO_AUTH:
+        return
     if _state.api_key and api_key != _state.api_key:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
@@ -2650,8 +2654,26 @@ def init_server(
         _state.browser = BrowserBridge(debug_port=browser_debug_port)
 
         # Capa 5: File System
+        # Block sensitive config paths from filesystem access
+        _appdata = os.environ.get("APPDATA", "")
+        _home = os.path.expanduser("~")
+        _blocked = [
+            # MCP/Claude config — prevent write-based hijacking
+            os.path.join(_appdata, "Claude"),
+            os.path.join(_appdata, "Code"),
+            os.path.join(_home, ".config", "claude"),
+            os.path.join(_home, ".mcp.json"),
+            # Credentials / SSH
+            os.path.join(_home, ".ssh"),
+            os.path.join(_home, ".gnupg"),
+            os.path.join(_home, ".aws"),
+            # Windows sensitive
+            "C:\\Windows\\System32",
+            "C:\\Windows\\SysWOW64",
+        ]
         _state.filesystem = FileSystemSandbox(
             allowed_paths=file_sandbox_paths or ["."],
+            blocked_paths=_blocked,
         )
 
         # Capa 6: Orchestration (conecta todas las capas)
@@ -5525,10 +5547,17 @@ async def browser_text(x_api_key: Optional[str] = Header(None)):
 async def browser_eval(expression: str = Query(...), x_api_key: Optional[str] = Header(None)):
     """WARNING: Executes arbitrary JavaScript in the browser. Use with caution."""
     _check_auth(x_api_key)
-    # Safety: block dangerous patterns
-    dangerous = ["document.cookie", "localStorage", "sessionStorage", "eval(", "Function("]
+    # Safety: block dangerous patterns (exfil, prototype pollution, arbitrary eval)
+    dangerous = [
+        "document.cookie", "localStorage", "sessionStorage",
+        "eval(", "Function(", "fetch(", "XMLHttpRequest",
+        "window.location", "__proto__", "constructor[",
+        "globalThis", "importScripts", "WebSocket(",
+        "navigator.credentials", "indexedDB",
+    ]
+    expr_lower = expression.lower()
     for pattern in dangerous:
-        if pattern in expression:
+        if pattern.lower() in expr_lower:
             return {"error": f"Blocked: expression contains dangerous pattern '{pattern}'"}
     return _state.browser.evaluate(expression) if _state.browser else {}
 
