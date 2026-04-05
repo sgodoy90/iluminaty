@@ -214,12 +214,12 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14
           <option value="run">run</option>
         </select>
         <input id="cmd-input" type="text" placeholder='target or text...'
-          style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:4px 8px;color:var(--text);font-family:var(--mono);font-size:12px;outline:none;"
+          style="flex:1;min-width:0;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:4px 8px;color:var(--text);font-family:var(--mono);font-size:12px;outline:none;"
           onkeydown="if(event.key==='Enter')sendCmd()"
           onfocus="this.style.borderColor='var(--accent)'"
           onblur="this.style.borderColor='var(--border)'"
         />
-        <button class="btn-sm" onclick="sendCmd()">Run</button>
+        <button class="btn-sm" style="flex-shrink:0;" onclick="sendCmd()">Run</button>
       </div>
       <div id="cmd-hint" style="font-size:10px;color:var(--dim);font-family:var(--mono);margin-bottom:4px;">click &quot;Save button&quot;</div>
       <div id="cmd-result" style="font-size:10px;color:var(--muted);font-family:var(--mono);min-height:16px;"></div>
