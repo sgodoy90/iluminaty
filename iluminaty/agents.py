@@ -30,6 +30,7 @@ class AgentRole(Enum):
     PLANNER = "planner"
     EXECUTOR = "executor"
     VERIFIER = "verifier"
+    ANY = "any"  # full access + participates in message bus
 
 
 @dataclass
@@ -98,6 +99,7 @@ ROLE_TOOLS: dict[AgentRole, frozenset[str]] = {
     AgentRole.PLANNER: PLANNER_TOOLS,
     AgentRole.EXECUTOR: EXECUTOR_TOOLS,
     AgentRole.VERIFIER: VERIFIER_TOOLS,
+    AgentRole.ANY: frozenset(),  # empty = all tools allowed (checked in get_allowed_tools)
 }
 
 
@@ -307,14 +309,92 @@ class AgentCoordinator:
         return list(self._sessions.values())
 
     def get_allowed_tools(self, agent_id: str) -> frozenset[str]:
-        """Get the set of tools this agent is allowed to use."""
+        """Get the set of tools this agent is allowed to use.
+
+        Priority:
+          1. custom_tools in session metadata (user-defined override)
+          2. role=ANY → all tools (empty frozenset signals unrestricted)
+          3. role preset from ROLE_TOOLS
+        """
         session = self._sessions.get(agent_id)
         if not session:
             return frozenset()
+        # Custom tools override
+        custom = session.metadata.get("custom_tools")
+        if custom and isinstance(custom, (list, set, frozenset)):
+            return frozenset(custom)
+        # ANY role = unrestricted (caller must check for empty = all)
+        if session.role == AgentRole.ANY:
+            return frozenset()  # empty = unrestricted
         return ROLE_TOOLS.get(session.role, OBSERVER_TOOLS)
 
     def is_tool_allowed(self, agent_id: str, tool_name: str) -> bool:
-        return tool_name in self.get_allowed_tools(agent_id)
+        allowed = self.get_allowed_tools(agent_id)
+        if not allowed:  # empty = unrestricted (ANY role or custom=[])
+            return True
+        return tool_name in allowed
+
+    def update(
+        self,
+        agent_id: str,
+        *,
+        role: Optional[str] = None,
+        autonomy: Optional[str] = None,
+        monitors: Optional[list] = None,
+        custom_tools: Optional[list] = None,
+        clear_custom_tools: bool = False,
+        name: Optional[str] = None,
+    ) -> Optional["AgentSession"]:
+        """Update a registered agent's role, autonomy, monitors, or tool scope.
+
+        Any field left as None is unchanged.
+        Set clear_custom_tools=True to revert to role-based scoping.
+        Returns the updated session, or None if agent not found.
+        """
+        with self._lock:
+            session = self._sessions.get(agent_id)
+            if not session:
+                return None
+
+            if name is not None:
+                session.name = str(name).strip() or session.name
+
+            if role is not None:
+                try:
+                    session.role = AgentRole(role)
+                except ValueError:
+                    raise ValueError(
+                        f"Unknown role '{role}'. Valid: "
+                        + ", ".join(r.value for r in AgentRole)
+                    )
+                # Rebuild perception stream with new role
+                self._perception_streams[agent_id] = PerceptionStream(
+                    agent_id=agent_id,
+                    role=session.role,
+                    monitors=session.monitors,
+                )
+
+            if autonomy is not None:
+                valid_autonomy = {"suggest", "confirm", "auto"}
+                if autonomy not in valid_autonomy:
+                    raise ValueError(f"Unknown autonomy '{autonomy}'. Valid: {valid_autonomy}")
+                session.autonomy = autonomy
+
+            if monitors is not None:
+                session.monitors = list(monitors)
+                # Rebuild stream with new monitor list
+                self._perception_streams[agent_id] = PerceptionStream(
+                    agent_id=agent_id,
+                    role=session.role,
+                    monitors=session.monitors,
+                )
+
+            if clear_custom_tools:
+                session.metadata.pop("custom_tools", None)
+            elif custom_tools is not None:
+                session.metadata["custom_tools"] = list(custom_tools)
+
+            return session
 
     # ─── Perception routing ───
 

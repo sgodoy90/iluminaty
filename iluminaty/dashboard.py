@@ -70,6 +70,32 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14
 .btn:hover{background:var(--hover);border-color:var(--accent);}
 .btn-row{display:flex;gap:6px;}
 
+/* ── Agents panel ── */
+.agent-list{display:flex;flex-direction:column;gap:6px;}
+.agent-row{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:7px 10px;display:flex;flex-direction:column;gap:5px;}
+.agent-row.role-executor{border-color:#00ff8844;}
+.agent-row.role-planner{border-color:#7b61ff44;}
+.agent-row.role-observer{border-color:#4499ff44;}
+.agent-row.role-verifier{border-color:#ffaa2244;}
+.agent-row.role-any{border-color:#ffffff22;}
+.agent-hdr{display:flex;align-items:center;gap:8px;}
+.agent-name{font-family:var(--mono);font-size:12px;font-weight:600;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.agent-id{font-family:var(--mono);font-size:9px;color:var(--dim);}
+.role-badge{font-size:9px;font-weight:700;font-family:var(--mono);padding:2px 7px;border-radius:3px;text-transform:uppercase;}
+.rb-executor{background:rgba(0,255,136,0.1);color:var(--accent);}
+.rb-planner{background:rgba(123,97,255,0.1);color:var(--purple);}
+.rb-observer{background:rgba(68,153,255,0.1);color:#4499ff;}
+.rb-verifier{background:rgba(255,170,34,0.1);color:var(--warn);}
+.rb-any{background:rgba(255,255,255,0.06);color:var(--muted);}
+.agent-controls{display:flex;gap:5px;align-items:center;flex-wrap:wrap;}
+.role-select{background:var(--card);border:1px solid var(--border);color:var(--text);padding:3px 7px;border-radius:4px;font-size:11px;font-family:var(--mono);cursor:pointer;}
+.role-select:focus{outline:none;border-color:var(--accent);}
+.btn-sm{background:var(--card);border:1px solid var(--border);color:var(--text);padding:3px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-family:var(--sans);transition:all 0.15s;}
+.btn-sm:hover{background:var(--hover);border-color:var(--accent);}
+.btn-sm.danger:hover{border-color:var(--danger);color:var(--danger);}
+.agent-meta{font-size:10px;color:var(--dim);font-family:var(--mono);}
+.no-agents{color:var(--dim);font-size:11px;text-align:center;padding:12px 0;}
+
 /* Scrollbar */
 ::-webkit-scrollbar{width:4px;} ::-webkit-scrollbar-track{background:transparent;} ::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px;}
 </style>
@@ -149,7 +175,18 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14
       <div class="row"><span class="lbl">GPU</span><span class="val" id="s-gpu">CPU</span></div>
     </div>
 
-    <!-- 6. Controls -->
+    <!-- 6. Agents -->
+    <div class="panel">
+      <div class="ptitle" style="display:flex;justify-content:space-between;align-items:center;">
+        <span>Agents (<span id="agent-count">0</span>)</span>
+        <span style="font-size:9px;color:var(--dim);font-weight:400;text-transform:none;letter-spacing:0">live</span>
+      </div>
+      <div class="agent-list" id="agent-list">
+        <div class="no-agents">No agents registered</div>
+      </div>
+    </div>
+
+    <!-- 7. Controls -->
     <div class="panel">
       <div class="ptitle">Controls</div>
       <div class="btn-row">
@@ -292,13 +329,93 @@ async function checkHealth() {
   else dot.classList.remove('on');
 }
 
+// ── Agents ────────────────────────────────────────────────────────────────────
+const ROLES = ['observer','planner','executor','verifier','any'];
+const ROLE_COLORS = {observer:'rb-observer',planner:'rb-planner',executor:'rb-executor',verifier:'rb-verifier',any:'rb-any'};
+
+async function pollAgents() {
+  const d = await get('/agents');
+  if (!d) return;
+  const agents = d.agents || [];
+  setText('agent-count', agents.length);
+  const list = $('agent-list');
+  if (!list) return;
+
+  if (!agents.length) {
+    list.innerHTML = '<div class="no-agents">No agents registered</div>';
+    return;
+  }
+
+  list.innerHTML = agents.map(a => {
+    const role = a.role || 'observer';
+    const rc = ROLE_COLORS[role] || 'rb-observer';
+    const uptime = a.uptime_s != null ? (a.uptime_s < 60 ? a.uptime_s.toFixed(0)+'s' : (a.uptime_s/60).toFixed(1)+'m') : '--';
+    const monStr = a.monitors && a.monitors.length ? 'M'+a.monitors.join('+M') : 'all';
+    const opts = ROLES.map(r => `<option value="${r}"${r===role?' selected':''}>${r}</option>`).join('');
+    return `<div class="agent-row role-${role}" id="ar-${a.agent_id}">
+      <div class="agent-hdr">
+        <span class="agent-name" title="${a.agent_id}">${a.name || 'unnamed'}</span>
+        <span class="role-badge ${rc}">${role}</span>
+      </div>
+      <div class="agent-meta">${a.agent_id.substring(0,20)} · ${monStr} · ${uptime}</div>
+      <div class="agent-controls">
+        <select class="role-select" id="rs-${a.agent_id}" onchange="previewRole('${a.agent_id}')">
+          ${opts}
+        </select>
+        <button class="btn-sm" onclick="applyRole('${a.agent_id}')">Apply</button>
+        <button class="btn-sm danger" onclick="removeAgent('${a.agent_id}')">×</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function previewRole(agentId) {
+  // Visual preview before applying
+  const sel = $('rs-'+agentId);
+  const row = $('ar-'+agentId);
+  if (!sel || !row) return;
+  const newRole = sel.value;
+  row.className = 'agent-row role-'+newRole;
+  const badge = row.querySelector('.role-badge');
+  if (badge) {
+    badge.className = 'role-badge '+(ROLE_COLORS[newRole]||'rb-observer');
+    badge.textContent = newRole+' *';
+  }
+}
+
+async function applyRole(agentId) {
+  const sel = $('rs-'+agentId);
+  if (!sel) return;
+  const newRole = sel.value;
+  try {
+    const r = await fetch(API+'/agents/'+agentId, {
+      method: 'PATCH',
+      headers: {...HEADERS, 'Content-Type': 'application/json'},
+      body: JSON.stringify({role: newRole}),
+    });
+    if (r.ok) {
+      pollAgents();
+    } else {
+      const err = await r.json().catch(() => ({}));
+      alert('Failed: '+(err.detail||r.status));
+    }
+  } catch(e) { alert('Error: '+e); }
+}
+
+async function removeAgent(agentId) {
+  if (!confirm('Remove agent '+agentId+'?')) return;
+  try {
+    await fetch(API+'/agents/'+agentId, {method:'DELETE', headers:HEADERS});
+    pollAgents();
+  } catch(e) { alert('Error: '+e); }
+}
+
 // ── Controls ─────────────────────────────────────────────────────────────────
 function refreshAll() {
-  checkHealth(); pollVision(); pollWorld(); pollPerception(); pollSpatial(); pollSystem();
+  checkHealth(); pollVision(); pollWorld(); pollPerception(); pollSpatial(); pollSystem(); pollAgents();
 }
 
 function copyApiUrl() {
-  const url = API + (TOKEN ? '?token='+TOKEN : '');
   navigator.clipboard.writeText(API).then(() => {
     const btn = document.querySelector('.btn-row .btn');
     const orig = btn.textContent;
@@ -311,7 +428,8 @@ function copyApiUrl() {
 refreshAll();
 setInterval(pollVision, 500);
 setInterval(() => { pollWorld(); pollPerception(); pollSystem(); checkHealth(); }, 2000);
-setInterval(pollSpatial, 5000);   // monitors change rarely
+setInterval(pollSpatial, 5000);
+setInterval(pollAgents, 4000);   // agents change infrequently
 </script>
 </body>
 </html>'''

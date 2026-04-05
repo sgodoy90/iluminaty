@@ -3633,6 +3633,50 @@ async def agent_details(agent_id: str, x_api_key: Optional[str] = Header(None)):
     }
 
 
+@app.patch("/agents/{agent_id}")
+async def agent_update(
+    agent_id: str,
+    request_body: dict,
+    x_api_key: Optional[str] = Header(None),
+):
+    """Update an agent's role, autonomy, monitors, or tool scope at runtime.
+
+    Body fields (all optional):
+      role         : observer | planner | executor | verifier | any
+      autonomy     : suggest | confirm | auto
+      monitors     : [1, 2, 3]  — monitor IDs to watch ([] = all)
+      name         : display name
+      custom_tools : ["see_now", "act", ...]  — exact tool list override
+      clear_custom_tools : true  — revert to role-based scoping
+    """
+    _check_auth(x_api_key)
+    if not _state.agent_coordinator:
+        raise HTTPException(503, "Agent coordinator not initialized")
+
+    try:
+        session = _state.agent_coordinator.update(
+            agent_id,
+            role=request_body.get("role"),
+            autonomy=request_body.get("autonomy"),
+            monitors=request_body.get("monitors"),
+            custom_tools=request_body.get("custom_tools"),
+            clear_custom_tools=bool(request_body.get("clear_custom_tools", False)),
+            name=request_body.get("name"),
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+    if not session:
+        raise HTTPException(404, f"Agent {agent_id} not found")
+
+    allowed = _state.agent_coordinator.get_allowed_tools(agent_id)
+    return {
+        **session.to_dict(),
+        "allowed_tools": sorted(allowed) if allowed else "all (unrestricted)",
+        "updated": True,
+    }
+
+
 @app.delete("/agents/{agent_id}")
 async def agent_unregister(agent_id: str, x_api_key: Optional[str] = Header(None)):
     """Unregister an agent."""
