@@ -5416,6 +5416,27 @@ async def vscode_open(
 
 # ─── Capa 3: Terminal ───
 
+# Commands that are never allowed through terminal/exec regardless of auth
+_TERMINAL_BLOCKED_PATTERNS = [
+    "rm -rf", "del /f /s /q", "format ", "mkfs",
+    "shutdown", "reboot", "halt", "poweroff",
+    "net user", "net localgroup", "reg delete", "reg add",
+    "bcdedit", "diskpart", "cipher /w",
+    "DROP DATABASE", "DROP TABLE",  # SQL destruction
+    "> /dev/sda", "dd if=",         # disk overwrite
+    ":(){ :|:& };:",                # fork bomb
+]
+
+
+def _check_terminal_cmd(cmd: str) -> Optional[str]:
+    """Returns a block reason string if the command is not allowed, else None."""
+    cmd_lower = cmd.lower()
+    for pattern in _TERMINAL_BLOCKED_PATTERNS:
+        if pattern.lower() in cmd_lower:
+            return f"Blocked pattern: '{pattern}'"
+    return None
+
+
 @app.post("/terminal/exec")
 async def terminal_exec(
     cmd: str = Query(...),
@@ -5426,6 +5447,9 @@ async def terminal_exec(
     _check_auth(x_api_key)
     if not _state.terminal:
         raise HTTPException(503, "Not initialized")
+    block_reason = _check_terminal_cmd(cmd)
+    if block_reason:
+        raise HTTPException(400, f"Command blocked by safety filter: {block_reason}")
     import asyncio
     loop = asyncio.get_event_loop()
     result = await loop.run_in_executor(
