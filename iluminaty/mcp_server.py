@@ -1088,8 +1088,29 @@ TOOLS = [
     },
     # ── Files / system ────────────────────────────────────────────────────────
     {
+        "name": "open_path",
+        "description": (
+            "Open a file or folder on the desktop using the standard pipeline: "
+            "Win+R → type path → Enter → verify window opened. "
+            "ALWAYS use this instead of run_command to open files/folders/apps. "
+            "run_command cannot verify UI actions and will cause duplicate windows."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Absolute path to file or folder"},
+                "monitor": {"type": "integer", "description": "Target monitor (optional)"},
+            },
+            "required": ["path"],
+        },
+    },
+    {
         "name": "run_command",
-        "description": "Execute a shell command and return output.",
+        "description": (
+            "Execute a shell command and return stdout/stderr. "
+            "FOR TERMINAL COMMANDS ONLY (git, pip, npm, python scripts, etc.). "
+            "⛔ DO NOT use for opening files, folders, or apps — use open_path instead."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1704,8 +1725,33 @@ def handle_set_operating_mode(args: dict) -> list:
 
 
 
+
+# ── UI commands that must go through operate_cycle, never run_command ─────────
+_UI_CMD_PATTERNS = [
+    "explorer", "start ", "notepad", "mspaint", "calc", "taskmgr",
+    "cmd /c start", "powershell.*start-process", "wscript", "mshta",
+    "rundll32", "msiexec", "control ", "regedit", "msconfig",
+]
+
+def _is_ui_command(cmd: str) -> bool:
+    import re
+    c = cmd.strip().lower()
+    return any(re.search(p, c) for p in _UI_CMD_PATTERNS)
+
+
 def handle_run_command(args: dict) -> list:
     cmd = args.get("command", "")
+
+    # Pipeline enforcement: UI commands must use operate_cycle, not run_command.
+    # run_command cannot verify UI actions (explorer always exits 1, start detaches, etc.)
+    if _is_ui_command(cmd):
+        return [{"type": "text", "text": (
+            f"⛔ PIPELINE VIOLATION: `run_command` cannot reliably open UI elements.\n\n"
+            f"Command `{cmd}` is a UI action. Use `operate_cycle` instead:\n\n"
+            f"```\noperate_cycle(instruction=\"Open [target] — use Win+R, type path, press Enter, verify window opened\")\n```\n\n"
+            f"[PROTOCOL] All UI actions → operate_cycle → act → watch_and_notify (verify). Never run_command for UI."
+        )}]
+
     timeout = args.get("timeout", 30)
     data = _api_post(f"/terminal/exec?cmd={urllib.parse.quote(cmd)}&timeout={timeout}")
     lines = [
@@ -1718,6 +1764,7 @@ def handle_run_command(args: dict) -> list:
         lines.append(f"\n**stdout**:\n```\n{stdout[:3000]}\n```")
     if stderr:
         lines.append(f"\n**stderr**:\n```\n{stderr[:1000]}\n```")
+    lines.append("\n[PROTOCOL] For UI actions use operate_cycle, not run_command.")
     return [{"type": "text", "text": "\n".join(lines)}]
 
 
@@ -3400,6 +3447,65 @@ def handle_save_session_memory(args: dict) -> list:
     return [{"type": "text", "text": "Memory save failed — will retry on server shutdown."}]
 
 
+def handle_open_path(args: dict) -> list:
+    """Open a file or folder using the standard ILUMINATY pipeline.
+
+    Pipeline: Win+R → type path → Enter → watch_and_notify(window_opened) → verify.
+    This is the ONLY correct way to open files/folders. Never use run_command for this.
+
+    Args:
+        path: Absolute path to file or folder (e.g. C:\\Users\\user\\Documents)
+        monitor: Optional monitor to open on (default: active monitor)
+    """
+    import time as _t
+    path = (args.get("path") or "").strip()
+    if not path:
+        return [{"type": "text", "text": "Error: path is required"}]
+
+    # Step 1: Open Win+R
+    _api_post(f"/action/key?keys=win%2Br")
+    _t.sleep(0.4)
+
+    # Step 2: Type the path
+    _api_post(f"/action/type", body={"text": path})
+    _t.sleep(0.2)
+
+    # Step 3: Press Enter
+    _api_post(f"/action/key?keys=enter")
+
+    # Step 4: Verify window opened (use tail of path as title hint)
+    import os as _os
+    title_hint = _os.path.basename(path.rstrip("\\/")) or path
+    if _state.watch_engine:
+        import asyncio as _asyncio
+        loop = _asyncio.new_event_loop()
+        result = loop.run_until_complete(
+            _asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: _state.watch_engine.wait(
+                    condition="window_opened",
+                    window_title=title_hint,
+                    timeout=6,
+                )
+            )
+        )
+        loop.close()
+        verified = result.triggered
+        reason   = result.reason
+    else:
+        _t.sleep(1.5)
+        verified = True
+        reason   = "watch_engine not available — assumed open"
+
+    status = "✓ OPENED" if verified else "⚠ NOT VERIFIED"
+    return [{"type": "text", "text": (
+        f"open_path: {status}\n"
+        f"Path: {path}\n"
+        f"Verify: {reason}\n\n"
+        f"[PROTOCOL] Pipeline used: Win+R → type → Enter → watch_and_notify"
+    )}]
+
+
 def handle_open_on_monitor(args: dict) -> list:
     """Open an application on a specific monitor without disturbing user's active workspace.
 
@@ -3665,6 +3771,7 @@ HANDLERS = {
     "write_file": handle_write_file,
     "get_clipboard": handle_get_clipboard,
     # ── Pipeline / workspace management ──
+    "open_path":        handle_open_path,
     "open_on_monitor":  handle_open_on_monitor,
     # ── Recording (opt-in) ──
     "screen_record":    handle_screen_record,
@@ -3859,6 +3966,18 @@ def run_mcp_stdio():
                 if handler:
                     try:
                         content = handler(tool_args)
+                        # ── Pipeline reminder injected into every tool response ──────
+                        # Keeps the AI from drifting to run_command for UI actions.
+                        _PIPELINE_REMINDER = (
+                            "\n\n---\n"
+                            "**[ILUMINATY PROTOCOL]** "
+                            "UI actions (open file/folder/app, click, type, close window) → "
+                            "`open_path` or `operate_cycle` → `act` → `watch_and_notify` (verify). "
+                            "Never `run_command` for UI. One pipeline. Always verify."
+                        )
+                        # Append to last text block only — avoid polluting image/binary content
+                        if content and content[-1].get("type") == "text":
+                            content[-1]["text"] += _PIPELINE_REMINDER
                         send({
                             "jsonrpc": "2.0",
                             "id": msg_id,
