@@ -798,9 +798,11 @@ TOOLS = [
             "Use instead of polling loops.\n\n"
             "Conditions: page_loaded, motion_stopped, motion_started, "
             "text_appeared, text_disappeared, build_passed, build_failed, "
-            "idle, element_visible, window_opened\n\n"
+            "idle, element_visible, window_opened, window_title_contains, url_contains\n\n"
             "Examples:\n"
             "  watch_and_notify('page_loaded', timeout=30)  — wait for page to load\n"
+            "  watch_and_notify('window_title_contains', window_title='Infinite Craft', timeout=15)\n"
+            "  watch_and_notify('url_contains', window_title='github.com', timeout=15)\n"
             "  watch_and_notify('text_appeared', text='Upload complete', timeout=120)\n"
             "  watch_and_notify('build_passed', timeout=60)  — wait for build"
         ),
@@ -1093,6 +1095,26 @@ TOOLS = [
         "inputSchema": {"type": "object", "properties": {}},
     },
     # ── Files / system ────────────────────────────────────────────────────────
+    {
+        "name": "find_on_screen",
+        "description": (
+            "Locate a UI element or text on screen by description. "
+            "Returns global (x, y) coordinates usable directly in act/drag_screen. "
+            "Use BEFORE clicking anything by name — more reliable than guessing coords.\n\n"
+            "Examples:\n"
+            "  find_on_screen('Submit button', monitor=1)\n"
+            "  find_on_screen('Save As dialog', monitor=2)\n"
+            "  find_on_screen('Water element', monitor=1)"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query":   {"type": "string",  "description": "Description of element to find (text, button label, etc.)"},
+                "monitor": {"type": "integer", "description": "Monitor to search (default: active monitor)"},
+            },
+            "required": ["query"],
+        },
+    },
     {
         "name": "open_path",
         "description": (
@@ -3333,7 +3355,7 @@ def handle_watch_and_notify(args: dict) -> list:
     """
     condition = (args.get("condition") or "").strip()
     if not condition:
-        return [{"type": "text", "text": "Error: condition is required. Available: page_loaded, motion_stopped, motion_started, text_appeared, text_disappeared, build_passed, build_failed, idle, element_visible, window_opened"}]
+        return [{"type": "text", "text": "Error: condition is required. Available: page_loaded, motion_stopped, motion_started, text_appeared, text_disappeared, build_passed, build_failed, idle, element_visible, window_opened, window_title_contains, url_contains"}]
 
     timeout = float(args.get("timeout", 30))
     text    = args.get("text")
@@ -3452,6 +3474,46 @@ def handle_save_session_memory(args: dict) -> list:
     if saved:
         return [{"type": "text", "text": f"Session memory saved. Total: {sessions} sessions, {kb:.0f}KB"}]
     return [{"type": "text", "text": "Memory save failed — will retry on server shutdown."}]
+
+
+def handle_find_on_screen(args: dict) -> list:
+    """Locate a UI element by description using smart_locate.
+
+    Returns global (x, y) so the agent can click immediately without guessing coords.
+    """
+    query   = (args.get("query") or "").strip()
+    monitor = args.get("monitor")
+    if not query:
+        return [{"type": "text", "text": "Error: query is required."}]
+
+    params = f"/locate?query={urllib.parse.quote(query)}"
+    if monitor is not None:
+        params += f"&monitor_id={int(monitor)}"
+    try:
+        data = _api_get(params)
+    except Exception as e:
+        return [{"type": "text", "text": f"find_on_screen failed: {e}"}]
+
+    found = data.get("found", False)
+    if not found:
+        reason = data.get("reason", "not_found")
+        hint   = data.get("hint", "")
+        return [{"type": "text", "text": (
+            f"Element '{query}' NOT found on screen.\n"
+            f"Reason: {reason}\n"
+            + (f"Hint: {hint}" if hint else "Try see_now to visually inspect the screen.")
+        )}]
+
+    x = data.get("x", 0)
+    y = data.get("y", 0)
+    confidence = data.get("confidence", 0.0)
+    method = data.get("method", "unknown")
+    label  = data.get("label", query)
+    return [{"type": "text", "text": (
+        f"Found '{label}' at global ({x}, {y})\n"
+        f"Confidence: {confidence:.0%} | Method: {method}\n"
+        f"Ready to use: act(action='click', x={x}, y={y})"
+    )}]
 
 
 def handle_open_path(args: dict) -> list:
@@ -3778,6 +3840,7 @@ HANDLERS = {
     "write_file": handle_write_file,
     "get_clipboard": handle_get_clipboard,
     # ── Pipeline / workspace management ──
+    "find_on_screen":   handle_find_on_screen,
     "open_path":        handle_open_path,
     "open_on_monitor":  handle_open_on_monitor,
     # ── Recording (opt-in) ──

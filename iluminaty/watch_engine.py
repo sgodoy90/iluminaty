@@ -250,47 +250,73 @@ class WatchEngine:
                     )
 
         # ── Window-based conditions ───────────────────────────────────────────
-        if condition in ("window_opened", "window_closed") and window_title:
-            # Primary: poll list_windows directly — reliable, no IPA dependency
-            # IPA gate events for window_focus are unreliable for newly spawned windows
+        # window_title_contains: alias for window_opened with substring match on `value`
+        # Normalise so both "window_title_contains" and "window_opened" share the same path
+        _win_condition = condition
+        _win_title = window_title
+        if condition == "window_title_contains" and _win_title:
+            _win_condition = "window_opened"
+        if condition in ("window_opened", "window_closed", "window_title_contains") and _win_title:
             if self._windows_fn:
                 try:
                     wins = self._windows_fn() or []
-                    title_l = window_title.lower()
+                    title_l = _win_title.lower()
                     match = any(
                         title_l in str(w.get("title", "")).lower() or
                         title_l in str(w.get("app_name", "")).lower()
                         for w in wins
                     )
-                    if condition == "window_opened" and match:
-                        return WatchResult(
-                            triggered=True, condition=condition, elapsed_s=elapsed,
-                            reason=f"Window '{window_title}' is now open",
-                            evidence=next(
-                                (str(w.get("title", "")) for w in wins
-                                 if title_l in str(w.get("title", "")).lower()),
-                                window_title,
-                            ),
+                    if _win_condition == "window_opened" and match:
+                        matched_title = next(
+                            (str(w.get("title", "")) for w in wins
+                             if title_l in str(w.get("title", "")).lower()),
+                            _win_title,
                         )
-                    if condition == "window_closed" and not match:
                         return WatchResult(
                             triggered=True, condition=condition, elapsed_s=elapsed,
-                            reason=f"Window '{window_title}' is no longer open",
+                            reason=f"Window '{_win_title}' is now open",
+                            evidence=matched_title,
+                        )
+                    if _win_condition == "window_closed" and not match:
+                        return WatchResult(
+                            triggered=True, condition=condition, elapsed_s=elapsed,
+                            reason=f"Window '{_win_title}' is no longer open",
                         )
                 except Exception:
                     pass
 
-            # Fallback: IPA gate events (window_focus — fires on user focus, not open)
+            # Fallback: IPA gate events
             if self._ipa:
                 for evt in new_events:
                     if evt.event_type in ("window_focus", "window_opened") and \
-                            window_title.lower() in evt.description.lower():
-                        if condition == "window_opened":
+                            _win_title.lower() in evt.description.lower():
+                        if _win_condition == "window_opened":
                             return WatchResult(
                                 triggered=True, condition=condition, elapsed_s=elapsed,
-                                reason=f"Window '{window_title}' detected via IPA event",
+                                reason=f"Window '{_win_title}' detected via IPA event",
                                 evidence=evt.description,
                             )
+
+        # ── URL / page title contains ─────────────────────────────────────────
+        # page_loaded with value= checks if any window title/URL contains the value
+        if condition in ("url_contains", "page_loaded") and _win_title and self._windows_fn:
+            try:
+                wins = self._windows_fn() or []
+                needle = _win_title.lower()
+                match_win = next(
+                    (w for w in wins
+                     if needle in str(w.get("title", "")).lower() or
+                        needle in str(w.get("url", "")).lower()),
+                    None,
+                )
+                if match_win:
+                    return WatchResult(
+                        triggered=True, condition=condition, elapsed_s=elapsed,
+                        reason=f"Page/URL contains '{_win_title}'",
+                        evidence=str(match_win.get("title", "")),
+                    )
+            except Exception:
+                pass
 
         # ── Element visibility ────────────────────────────────────────────────
         if condition == "element_visible" and element and self._ui_fn:

@@ -107,8 +107,9 @@ class OCREngine:
         """
         mid = monitor_id if monitor_id is not None else self._last_monitor_id
 
-        # 1. Cache hit
-        if frame_hash and frame_hash == self._cache_hash and self._cache_result:
+        # 1. Cache hit — key includes monitor_id to prevent cross-monitor bleed
+        cache_key = f"{frame_hash}:{mid}" if frame_hash else None
+        if cache_key and cache_key == self._cache_hash and self._cache_result:
             return {**self._cache_result, "cached": True}
 
         # 2. OCRWorker result (preferred — no extra inference cost)
@@ -127,7 +128,7 @@ class OCREngine:
                     "from_worker": True,
                 }
                 if frame_hash:
-                    self._cache_hash   = frame_hash
+                    self._cache_hash   = cache_key if cache_key else frame_hash
                     self._cache_result = result
                 return result
 
@@ -141,7 +142,7 @@ class OCREngine:
         if self._tesseract:
             result = self._extract_tesseract(frame_bytes)
             if frame_hash:
-                self._cache_hash   = frame_hash
+                self._cache_hash   = cache_key if cache_key else frame_hash
                 self._cache_result = result
             return result
 
@@ -621,7 +622,11 @@ class VisionIntelligence:
 
         # OCR (opcional — es el paso mas lento, caching ayuda)
         if run_ocr and self.ocr.available:
-            ocr_result = self.ocr.extract_text(slot.frame_bytes, frame_hash=slot.phash)
+            ocr_result = self.ocr.extract_text(
+                slot.frame_bytes,
+                frame_hash=slot.phash,
+                monitor_id=getattr(slot, "monitor_id", None),
+            )
 
             # Auto-blur: detectar contenido sensible y blur esas regiones
             if self.auto_blur and ocr_result.get("blocks"):

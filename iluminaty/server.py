@@ -5021,7 +5021,10 @@ async def watchdog_scan(x_api_key: Optional[str] = Header(None)):
     win = get_active_window_info()
     ocr_text = ""
     if _state.vision and _state.vision.ocr.available:
-        ocr_result = _state.vision.ocr.extract_text(slot.frame_bytes, frame_hash=slot.phash)
+        ocr_result = _state.vision.ocr.extract_text(
+            slot.frame_bytes, frame_hash=slot.phash,
+            monitor_id=getattr(slot, "monitor_id", None),
+        )
         ocr_text = ocr_result.get("text", "")
 
     alerts = _state.watchdog.scan(ocr_text=ocr_text, window_title=win.get("title", ""))
