@@ -1,6 +1,6 @@
 ## ILUMINATY vs Computer Use -- Benchmark
 
-> Run: 2026-04-05T13:16:52 | Server: unknown | Monitors: 3
+> Run: 2026-04-05T13:55:51 | Server: unknown | Monitors: 3
 
 ### Methodology
 - **ILUMINATY**: measured directly against live server
@@ -14,17 +14,17 @@
 
 | Task | Name | ILUMINATY tokens | Computer Use tokens | Savings | ILUMINATY ms | CU est. ms | Faster | Pass |
 |------|------|-----------------|---------------------|---------|-------------|-----------|--------|------|
-| T1 | Element Location | 0 | 4,300 | 100.0% | 54 | 2500 | 97.8% | [PASS] |
-| T2 | Multi-Monitor Vision | 4,800 | 24,300 | 80.2% | 119 | 2400 | 95.1% | [PASS] |
-| T3 | Multi-Step Task | 750 | 21,500 | 96.5% | 3594 | 12500 | 71.2% | [PASS] |
-| T4 | Event Detection | 0 | N/A (limited) | N/A | 9513 | 6000 | N/A | [FAIL] |
-| T5 | Spatial Awareness | 400 | N/A (no) | N/A | 770 | 3000 | 74.3% | [PASS] |
-| T6 | Session Memory | 57 | N/A (no) | N/A | 8 | 0 | N/A | [PASS] |
+| T1 | Element Location | 0 | 4,300 | 100.0% | 66 | 2500 | 97.4% | [PASS] |
+| T2 | Multi-Monitor Vision | 4,800 | 24,300 | 80.2% | 173 | 2400 | 92.8% | [PASS] |
+| T3 | Multi-Step Task | 750 | 21,500 | 96.5% | 3705 | 12500 | 70.4% | [PASS] |
+| T4 | Event Detection | 0 | N/A (limited) | N/A | 9517 | 6000 | N/A | [FAIL] |
+| T5 | Spatial Awareness | 400 | N/A (no) | N/A | 1312 | 3000 | 56.3% | [PASS] |
+| T6 | Session Memory | 57 | N/A (no) | N/A | 27 | 0 | N/A | [PASS] |
 | **TOTAL** | *(comparable)* | **6,007** | **50,100** | **88.0%** | | | | |
 
 ### Key Advantages
 
-- **Element Location**: 100.0% fewer tokens. ILUMINATY: source=ocr conf=100% at (2045,126)
+- **Element Location**: 100.0% fewer tokens. ILUMINATY: OCR cache not warm yet (run again after 30s for warm results) -- NOTE: OCR cache cold, latency measured anyway
 - **Multi-Monitor Vision**: 80.2% fewer tokens. ILUMINATY: 3 monitors x low_res = 4800 tokens
 - **Multi-Step Task**: 96.5% fewer tokens. ILUMINATY: 5 steps x ~150 tokens post-action context = 750 tokens
 - **Event Detection**: 100.0% fewer tokens. ILUMINATY: fallback: Timed out after 10s

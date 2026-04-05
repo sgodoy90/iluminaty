@@ -2937,9 +2937,9 @@ def init_server(
             # M-1 fix: default to user home workspace, not project root "."
             # "." would allow reading .env, source code, venv, etc.
             allowed_paths=file_sandbox_paths or [
-                str(Path.home() / "iluminaty-workspace"),
-                str(Path.home() / "Documents"),
-                str(Path.home() / "Desktop"),
+                str(pathlib.Path.home() / "iluminaty-workspace"),
+                str(pathlib.Path.home() / "Documents"),
+                str(pathlib.Path.home() / "Desktop"),
             ],
             blocked_paths=_blocked,
         )
