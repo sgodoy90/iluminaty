@@ -2370,6 +2370,88 @@ def handle_drag_screen(args: dict) -> list:
     }]
 
 
+def _post_action_context(monitor=None, action_type="", result_ok=True) -> str:
+    """
+    After any action, return a compact visual state summary so the agent can
+    reason about what actually happened — without requiring an explicit see_now call.
+
+    Returns ~50-150 tokens of structured state:
+      - Active window title + app
+      - Scene state (idle/typing/video/loading)
+      - Last IPA event (what changed visually)
+      - List of windows on the affected monitor
+      - A nudge if the action may not have worked
+
+    This is NOT a replacement for see_now. It is a lightweight signal that
+    tells the agent: "here's what the screen looks like now — reason about
+    whether your action had the expected effect before continuing."
+
+    Cost: 1 API call (~50ms). No image = no vision tokens.
+    The agent should call see_now(monitor) if it needs to visually confirm.
+    """
+    parts = []
+
+    # 1. IPA scene state — what is happening on screen right now
+    try:
+        ipa = _api_get("/ipa/context")
+        scene = ipa.get("scene_state", "unknown")
+        motion = (ipa.get("motion") or {}).get("motion_type", "static")
+        gate = ipa.get("gate_event") or {}
+        gate_desc = gate.get("description", "")
+        import time as _t
+        gate_age = round(_t.time() - gate.get("timestamp", _t.time()), 1) if gate_desc else 0
+        event_str = f" | last_event={gate_desc} ({gate_age}s ago)" if gate_desc else ""
+        parts.append(f"scene={scene} motion={motion}{event_str}")
+    except Exception:
+        pass
+
+    # 2. Active window on the affected monitor
+    try:
+        spatial = _api_get("/spatial/state")
+        active_win = spatial.get("active_window") or {}
+        active_title = active_win.get("title", "")
+        active_app = active_win.get("app_name", "")
+        active_mon = active_win.get("monitor_id", "?")
+        if active_title:
+            parts.append(f"active_window='{active_title[:60]}' app={active_app} m={active_mon}")
+    except Exception:
+        pass
+
+    # 3. Windows on the affected monitor (condensed)
+    try:
+        mon_id = monitor or (spatial.get("active_monitor_id") if 'spatial' in dir() else None)
+        if mon_id is not None:
+            wins = _api_get("/windows/list?visible_only=true").get("windows", [])
+            mon_wins = [w for w in wins if w.get("monitor_id") == int(mon_id)]
+            if mon_wins:
+                titles = [w.get("title", "")[:40] for w in mon_wins[:4]]
+                parts.append(f"windows_on_m{mon_id}=[{', '.join(repr(t) for t in titles)}]")
+    except Exception:
+        pass
+
+    # 4. Reasoning nudge based on action type
+    nudges = {
+        "click":        "Did the click land on the right element? Call see_now if uncertain.",
+        "type":         "Did the text appear in the right field? Call see_now to verify.",
+        "key":          "Did the key have the expected effect (save/close/submit)?",
+        "open":         "Is the app visible on the target monitor? Call see_now to confirm.",
+        "move":         "Is the window now on the correct monitor? Call see_now to verify.",
+        "close":        "Did the window close? list_windows + see_now to confirm.",
+        "focus":        "Is the right window now active? Check active_window above.",
+        "scroll":       "Did the content scroll? Call see_now to verify.",
+        "navigate":     "Did the page load? Call see_now to check the result.",
+    }
+    nudge = nudges.get(action_type, "")
+
+    if not result_ok:
+        nudge = f"ACTION FAILED. {nudge} Investigate before retrying."
+
+    if nudge:
+        parts.append(f"→ {nudge}")
+
+    return "\n".join(parts) if parts else ""
+
+
 def handle_act(args: dict) -> list:
     """
     Direct action executor. Claude sees screen via see_now, decides what to do.
@@ -2445,6 +2527,8 @@ def handle_act(args: dict) -> list:
     else:
         loc_note = ""
 
+    _mon = args.get("monitor")  # used for post-action context
+
     try:
         if action == "click":
             x, y = int(args.get("x", 0)), int(args.get("y", 0))
@@ -2454,25 +2538,30 @@ def handle_act(args: dict) -> list:
                 query += f"&monitor_id={int(args['monitor'])}&relative_to_monitor=true"
             data = _api_post(query)
             ok = data.get("success", False)
-            return [{"type": "text", "text": f"click ({x},{y}) {button}: {'OK' if ok else 'FAIL'}{loc_note} {data.get('message','')}"}]
+            ctx = _post_action_context(monitor=_mon, action_type="click", result_ok=ok)
+            msg = f"click ({x},{y}) {button}: {'OK' if ok else 'FAIL'}{loc_note} {data.get('message','')}"
+            return [{"type": "text", "text": f"{msg}\n\n[POST-ACTION STATE]\n{ctx}" if ctx else msg}]
 
         elif action == "double_click":
             x, y = int(args.get("x", 0)), int(args.get("y", 0))
             data = _api_post(f"/action/double_click?x={x}&y={y}")
             ok = data.get("success", False)
-            return [{"type": "text", "text": f"double_click ({x},{y}): {'OK' if ok else 'FAIL'}{loc_note}"}]
+            ctx = _post_action_context(monitor=_mon, action_type="click", result_ok=ok)
+            msg = f"double_click ({x},{y}): {'OK' if ok else 'FAIL'}{loc_note}"
+            return [{"type": "text", "text": f"{msg}\n\n[POST-ACTION STATE]\n{ctx}" if ctx else msg}]
 
         elif action == "type":
             text = str(args.get("text", ""))
             if not text:
                 return [{"type": "text", "text": "Error: text is required"}]
-            # If target resolved a field, click it first to focus
             if target and args.get("x") and args.get("y"):
                 x, y = int(args["x"]), int(args["y"])
                 _api_post(f"/action/click?x={x}&y={y}&button=left")
             data = _api_post(f"/action/type?text={urllib.parse.quote(text)}")
             ok = data.get("success", False)
-            return [{"type": "text", "text": f"typed {len(text)} chars: {'OK' if ok else 'FAIL'}{loc_note}"}]
+            ctx = _post_action_context(monitor=_mon, action_type="type", result_ok=ok)
+            msg = f"typed {len(text)} chars: {'OK' if ok else 'FAIL'}{loc_note}"
+            return [{"type": "text", "text": f"{msg}\n\n[POST-ACTION STATE]\n{ctx}" if ctx else msg}]
 
         elif action == "key":
             keys = str(args.get("keys", ""))
@@ -2480,7 +2569,9 @@ def handle_act(args: dict) -> list:
                 return [{"type": "text", "text": "Error: keys is required (e.g. 'enter', 'ctrl+s', 'win+r')"}]
             data = _api_post(f"/action/hotkey?keys={urllib.parse.quote(keys)}")
             ok = data.get("success", False)
-            return [{"type": "text", "text": f"key {keys}: {'OK' if ok else 'FAIL'}"}]
+            ctx = _post_action_context(monitor=_mon, action_type="key", result_ok=ok)
+            msg = f"key {keys}: {'OK' if ok else 'FAIL'}"
+            return [{"type": "text", "text": f"{msg}\n\n[POST-ACTION STATE]\n{ctx}" if ctx else msg}]
 
         elif action == "scroll":
             amount = int(args.get("amount", 3))
@@ -2489,7 +2580,9 @@ def handle_act(args: dict) -> list:
                 query += f"&x={int(args['x'])}&y={int(args['y'])}"
             data = _api_post(query)
             ok = data.get("success", False)
-            return [{"type": "text", "text": f"scroll {'down' if amount > 0 else 'up'} {abs(amount)}: {'OK' if ok else 'FAIL'}"}]
+            ctx = _post_action_context(monitor=_mon, action_type="scroll", result_ok=ok)
+            msg = f"scroll {'down' if amount > 0 else 'up'} {abs(amount)}: {'OK' if ok else 'FAIL'}"
+            return [{"type": "text", "text": f"{msg}\n\n[POST-ACTION STATE]\n{ctx}" if ctx else msg}]
 
         elif action == "focus":
             title = str(args.get("title", ""))
@@ -2501,7 +2594,9 @@ def handle_act(args: dict) -> list:
             else:
                 return [{"type": "text", "text": "Error: title or handle required"}]
             ok = data.get("success", False)
-            return [{"type": "text", "text": f"focus '{title or handle}': {'OK' if ok else 'FAIL'}"}]
+            ctx = _post_action_context(monitor=_mon, action_type="focus", result_ok=ok)
+            msg = f"focus '{title or handle}': {'OK' if ok else 'FAIL'}"
+            return [{"type": "text", "text": f"{msg}\n\n[POST-ACTION STATE]\n{ctx}" if ctx else msg}]
 
         elif action == "move_mouse":
             x, y = int(args.get("x", 0)), int(args.get("y", 0))
@@ -3348,16 +3443,19 @@ def handle_open_on_monitor(args: dict) -> list:
 
     if data.get("success"):
         pos = data.get("position", {})
-        return [{"type": "text", "text": (
+        ctx = _post_action_context(monitor=monitor, action_type="open", result_ok=True)
+        msg = (
             f"Opened '{app}' on M{monitor}: "
             f"handle={data.get('handle')} "
             f"pos=({pos.get('x')},{pos.get('y')}) "
             f"size={pos.get('w')}x{pos.get('h')}"
             + (f" → navigated to {url}" if url and data.get("url_nav") else "")
-        )}]
-    return [{"type": "text", "text": (
-        f"open_on_monitor failed at step={data.get('step','?')}: {data.get('error','?')}"
-    )}]
+        )
+        return [{"type": "text", "text": f"{msg}\n\n[POST-ACTION STATE]\n{ctx}" if ctx else msg}]
+
+    ctx = _post_action_context(monitor=monitor, action_type="open", result_ok=False)
+    msg = f"open_on_monitor failed at step={data.get('step','?')}: {data.get('error','?')}"
+    return [{"type": "text", "text": f"{msg}\n\n[POST-ACTION STATE]\n{ctx}" if ctx else msg}]
 
 
 def handle_screen_record(args: dict) -> list:
