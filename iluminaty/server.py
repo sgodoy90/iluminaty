@@ -5826,6 +5826,15 @@ async def actions_act_alias(
         if action in ("scroll",):
             sx = int(x or 0)
             sy = int(y or 0)
+            # Translate monitor-relative coords to global
+            if monitor is not None:
+                _mid = int(monitor)
+                _mons = (_state.monitor_mgr.monitors
+                         if _state.monitor_mgr else [])
+                _mon = next((m for m in _mons if int(m.id) == _mid), None)
+                if _mon:
+                    sx += _mon.left
+                    sy += _mon.top
             clicks = int(request_body.get("clicks", -3))
             import pyautogui as _pag
             _pag.scroll(clicks, x=sx, y=sy)
@@ -5845,6 +5854,15 @@ async def actions_act_alias(
             cx, cy = loc.x, loc.y
         elif x is not None and y is not None:
             cx, cy = int(x), int(y)
+            # Translate monitor-relative coords to global when monitor= is given
+            if monitor is not None:
+                monitor_id = int(monitor)
+                monitors_info = (_state.monitor_mgr.monitors
+                                 if _state.monitor_mgr else [])
+                mon = next((m for m in monitors_info if int(m.id) == monitor_id), None)
+                if mon:
+                    cx = cx + mon.left
+                    cy = cy + mon.top
         else:
             return {"success": False, "message": "Provide target name or x,y coordinates"}
 
@@ -5852,6 +5870,18 @@ async def actions_act_alias(
             result = _state.actions.double_click(cx, cy)
         elif action == "right_click":
             result = _state.actions.click(cx, cy, "right")
+        elif action == "move":
+            import pyautogui as _pag
+            _pag.moveTo(cx, cy, duration=0.1)
+            result_dict = {"action": "click", "success": True,
+                           "message": f"Moved to ({cx},{cy})",
+                           "duration_ms": 100}
+            d = result_dict
+            d["resolved_x"] = cx
+            d["resolved_y"] = cy
+            if target:
+                d["target"] = target
+            return d
         else:
             result = _state.actions.click(cx, cy)
 
@@ -6822,7 +6852,7 @@ async def vision_smart(
         try:
             import mss as _mss
             _mid = int(monitor_id)
-            monitors_info = (_state.monitor_mgr.get_monitors()
+            monitors_info = (_state.monitor_mgr.monitors
                              if _state.monitor_mgr else [])
             _mon = next((m for m in monitors_info
                          if int(m.id) == _mid), None)
@@ -6831,7 +6861,7 @@ async def vision_smart(
                     import io as _io
                     from PIL import Image as _Img
                     with _mss.mss() as _s:
-                        raw = _s.grab({"left": _mon.x, "top": _mon.y,
+                        raw = _s.grab({"left": _mon.left, "top": _mon.top,
                                        "width": _mon.width,
                                        "height": _mon.height})
                         img = _Img.frombytes("RGB", raw.size,
@@ -6840,8 +6870,7 @@ async def vision_smart(
                         img.save(buf, format="WEBP", quality=75)
                         return buf.getvalue()
                 import asyncio as _aio, base64 as _b64, time as _t
-                loop = _aio.get_event_loop()
-                webp = await loop.run_in_executor(None, _snap_sync)
+                webp = await _aio.get_running_loop().run_in_executor(None, _snap_sync)
                 if webp:
                     return JSONResponse({
                         "mode": active_mode,
