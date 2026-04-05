@@ -38,41 +38,13 @@ except Exception:
     API_TIMEOUT_S = 12.0
 API_TIMEOUT_S = max(3.0, min(60.0, API_TIMEOUT_S))
 
-# ILUMINATY license key - gates MCP tools to free/pro plan
-ILUMINATY_KEY = os.environ.get("ILUMINATY_KEY", "")
-
-# Free tier tools — available without license
-# Import tier definitions from licensing module
-from .licensing import (
-    UNREGISTERED_MCP_TOOLS,
-    FREE_MCP_TOOLS,
-    PRO_MCP_TOOLS,
-    ALL_MCP_TOOLS,
-)
-
-
-def _get_plan() -> str:
-    """Check license plan by calling the local server or auth API."""
-    if not ILUMINATY_KEY:
-        return "free"
-    # Always validate through the local server — no prefix-based shortcuts
-    try:
-        url = API_BASE + "/license/status"
-        req = urllib.request.Request(url, headers={"X-API-Key": ILUMINATY_KEY})
-        with urllib.request.urlopen(req, timeout=3) as resp:
-            data = json.loads(resp.read().decode())
-            return data.get("plan", "free")
-    except Exception:
-        # Server unreachable — fail safe to free, not pro
-        return "free"
+# All tools available — no license gates in open source release
+from .licensing import ALL_MCP_TOOLS
 
 
 def _get_allowed_tools() -> set:
-    """Return set of tool names allowed for current plan."""
-    plan = _get_plan()
-    if plan in ("pro", "enterprise"):
-        return ALL_MCP_TOOLS
-    return FREE_MCP_TOOLS
+    """All tools available to everyone."""
+    return ALL_MCP_TOOLS
 
 
 # ─── Persistent HTTP connection pool (keep-alive, no new TCP per call) ─────
@@ -3181,24 +3153,6 @@ def run_mcp_stdio():
             elif method == "tools/call":
                 tool_name = msg.get("params", {}).get("name", "")
                 tool_args = msg.get("params", {}).get("arguments", {})
-
-                # License gate: block pro-only tools for free users
-                allowed = _get_allowed_tools()
-                if tool_name not in allowed:
-                    send({
-                        "jsonrpc": "2.0",
-                        "id": msg_id,
-                        "result": {
-                            "content": [{
-                                "type": "text",
-                                "text": f"Tool '{tool_name}' requires ILUMINATY Pro ($29/mo).\n"
-                                        f"Upgrade at: https://iluminaty.dev/#pricing\n"
-                                        f"Set your ILUMINATY_KEY env var after subscribing.",
-                            }],
-                            "isError": True,
-                        },
-                    })
-                    continue
 
                 handler = HANDLERS.get(tool_name)
                 if handler:

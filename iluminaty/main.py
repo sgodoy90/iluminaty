@@ -60,7 +60,8 @@ def build_parser() -> argparse.ArgumentParser:
         description="ILUMINATY - Real-time visual perception for AI"
     )
     parser.add_argument(
-        "command", nargs="?", default="start", choices=["start", "version"],
+        "command", nargs="?", default="start",
+        choices=["start", "version", "mcp-config"],
         help="Command to run"
     )
     parser.add_argument("--port", type=int, default=8420, help="API port (default: 8420)")
@@ -126,12 +127,91 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _write_mcp_config(port: int = 8420):
+    """Write MCP config for Claude Code and Claude Desktop."""
+    import json
+    import sys
+    import shutil
+
+    python = sys.executable
+    mcp_module = "-m iluminaty.mcp_server"
+
+    config = {
+        "mcpServers": {
+            "iluminaty": {
+                "command": python,
+                "args": ["-m", "iluminaty.mcp_server"],
+                "env": {
+                    "ILUMINATY_API_URL": f"http://127.0.0.1:{port}",
+                },
+            }
+        }
+    }
+
+    written = []
+
+    # 1. Project-local .mcp.json (Claude Code)
+    local_path = os.path.join(os.getcwd(), ".mcp.json")
+    try:
+        existing = {}
+        if os.path.exists(local_path):
+            existing = json.loads(open(local_path).read())
+        existing.setdefault("mcpServers", {})
+        existing["mcpServers"]["iluminaty"] = config["mcpServers"]["iluminaty"]
+        with open(local_path, "w") as f:
+            json.dump(existing, f, indent=2)
+        written.append(local_path)
+    except Exception as e:
+        print(f"  ⚠ Could not write {local_path}: {e}")
+
+    # 2. Claude Desktop config
+    appdata = os.environ.get("APPDATA", "")
+    if appdata:
+        desktop_path = os.path.join(appdata, "Claude", "claude_desktop_config.json")
+        try:
+            existing = {}
+            if os.path.exists(desktop_path):
+                existing = json.loads(open(desktop_path).read())
+            existing.setdefault("mcpServers", {})
+            existing["mcpServers"]["iluminaty"] = config["mcpServers"]["iluminaty"]
+            os.makedirs(os.path.dirname(desktop_path), exist_ok=True)
+            with open(desktop_path, "w") as f:
+                json.dump(existing, f, indent=2)
+            written.append(desktop_path)
+        except Exception as e:
+            print(f"  ⚠ Could not write {desktop_path}: {e}")
+
+    # 3. User-level ~/.mcp.json (Claude Code global)
+    home_mcp = os.path.join(os.path.expanduser("~"), ".mcp.json")
+    try:
+        existing = {}
+        if os.path.exists(home_mcp):
+            existing = json.loads(open(home_mcp).read())
+        existing.setdefault("mcpServers", {})
+        existing["mcpServers"]["iluminaty"] = config["mcpServers"]["iluminaty"]
+        with open(home_mcp, "w") as f:
+            json.dump(existing, f, indent=2)
+        written.append(home_mcp)
+    except Exception as e:
+        print(f"  ⚠ Could not write {home_mcp}: {e}")
+
+    print("\n✓ ILUMINATY MCP config written:")
+    for p in written:
+        print(f"  {p}")
+    print("\nRestart Claude Code or Claude Desktop to load the server.")
+    print(f"Make sure `iluminaty start` is running on port {port}.\n")
+
+
 def main():
     parser = build_parser()
     args = parser.parse_args()
     
     if args.command == "version":
         from iluminaty import __version__; print(f"iluminaty v{__version__}")
+        return
+
+    if args.command == "mcp-config":
+        _write_mcp_config(args.port)
         return
     
     print(BANNER)

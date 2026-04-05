@@ -20,77 +20,57 @@
 
 ---
 
-## Quick Start — 5 minutes
-
-**Step 1: Clone and install**
+## Quick Start
 
 ```bash
-git clone https://github.com/sgodoy90/iluminaty
-cd iluminaty
-install.bat          # Windows: creates .venv, installs deps, writes MCP config
+pip install iluminaty[ocr]
+iluminaty start
 ```
 
-**Step 2: Start the server**
+That's it. The server starts on `:8420` and auto-detects all your monitors.
 
-```bash
-start.bat            # starts on :8420, auto-detects all monitors
+```
+[ILUMINATY] IPA v3 running — 3 monitors detected
+[ILUMINATY] Capture: 3.0 fps per monitor
+[ILUMINATY] API: http://127.0.0.1:8420
+[ILUMINATY] MCP config written → ~/.mcp.json
 ```
 
-You'll see:
-```
-Monitor 1: 3.0 fps
-Monitor 2: 3.0 fps
-Monitor 3: 3.0 fps
-[IPA] Multi-monitor capture: 3 monitors
-API: http://127.0.0.1:8420
-```
-
-**Step 3: Connect Claude**
-
-`install.bat` already wrote `.mcp.json` in the project folder and `%APPDATA%\Claude\claude_desktop_config.json`.
-
-For Claude Code, the `.mcp.json` is ready. For Claude Desktop, restart it.
-
-**Step 4: Try it**
-
-In Claude, type:
-```
-call see_now
-```
-
-Claude now sees your screen in real-time.
-
----
-
-## Manual Install
-
-```bash
-# Create virtualenv
-python -m venv .venv
-.venv\Scripts\activate
-
-# Install core + OCR
-pip install -e ".[ocr]"
-
-# Start with your key
-python main.py start --port 8420 --fps 3 --actions --api-key YOUR_KEY
-```
-
-**MCP config** (`~/.mcp.json` or `%APPDATA%\Claude\claude_desktop_config.json`):
+**Connect to Claude Code** — add to your project's `.mcp.json`:
 
 ```json
 {
   "mcpServers": {
     "iluminaty": {
-      "command": "C:/path/to/iluminaty/.venv/Scripts/python.exe",
-      "args": ["C:/path/to/iluminaty/run_mcp.py"],
+      "command": "python",
+      "args": ["-m", "iluminaty.mcp_server"],
       "env": {
-        "ILUMINATY_API_URL": "http://127.0.0.1:8420",
-        "ILUMINATY_KEY": "your-key-here"
+        "ILUMINATY_API_URL": "http://127.0.0.1:8420"
       }
     }
   }
 }
+```
+
+Or run `iluminaty mcp-config` to write it automatically.
+
+**Try it:**
+
+```
+call see_now
+```
+
+Claude now sees your screen in real-time. All 38 tools available immediately — no registration, no API key required.
+
+---
+
+## Install from source
+
+```bash
+git clone https://github.com/sgodoy90/iluminaty
+cd iluminaty
+pip install -e ".[ocr]"
+iluminaty start
 ```
 
 ---
