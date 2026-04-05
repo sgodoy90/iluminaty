@@ -55,15 +55,19 @@ Server starts on `:8420`, auto-detects all monitors:
       "command": "python",
       "args": ["-m", "iluminaty.mcp_server"],
       "env": {
-        "ILUMINATY_API_URL": "http://127.0.0.1:8420",
-        "ILUMINATY_KEY": "your-key"
+        "ILUMINATY_API_URL": "http://127.0.0.1:8420"
       }
     }
   }
 }
 ```
 
-Or run `iluminaty mcp-config` to write it automatically.
+> **No registration, no license key, no account.** All 38 tools work immediately.
+>
+> The optional `--api-key` flag is a local auth token — it protects the server
+> if you expose it on a network. On localhost it's not needed.
+
+Or run `iluminaty mcp-config` to write the config automatically.
 
 **Start a session:**
 
@@ -73,8 +77,6 @@ call see_now                → current screen image + IPA context
 call act action=click target="Save button"   → clicks it exactly
 ```
 
-All 38 tools available immediately. No registration, no API key required for local use.
-
 ---
 
 ## Install from Source
@@ -83,7 +85,7 @@ All 38 tools available immediately. No registration, no API key required for loc
 git clone https://github.com/sgodoy90/iluminaty
 cd iluminaty
 pip install -e ".[ocr]"
-iluminaty start --port 8420 --fps 3 --api-key your-key
+iluminaty start
 ```
 
 **Optional flags:**
@@ -92,7 +94,7 @@ iluminaty start --port 8420 --fps 3 --api-key your-key
 |---|---|---|
 | `--port` | `8420` | HTTP port |
 | `--fps` | `3` | Capture rate per monitor |
-| `--api-key` | _(none)_ | Auth token (also `ILUMINATY_KEY` env var) |
+| `--api-key` | _(none)_ | Local auth token — only needed if exposing on a network |
 | `--audio` | `off` | Audio capture: `off`, `system`, `mic`, `all` |
 
 ---
@@ -392,7 +394,7 @@ Audio is stored in a RAM ring buffer (same zero-disk model as video). VAD (voice
 
 ## Security
 
-- **Auth tokens**: `X-API-Key` header required on all API calls. Set via `--api-key` or `ILUMINATY_KEY` env var.
+- **Local auth (optional)**: pass `--api-key <token>` at startup to require `X-API-Key` on all requests. Useful if you expose the server on a LAN. On localhost with no flag, the server runs open — no key needed, no account, no registration.
 - **Shell sandboxing**: `run_command` blocks destructive patterns (`rm -rf /`, `format`, `del /s`, registry deletes, etc.).
 - **File sandboxing**: `read_file`/`write_file` restricted to safe paths. Auto-backup before write.
 - **Sensitive content detection**: security layer can blur/mask regions containing passwords or credit card numbers before sending to AI.
