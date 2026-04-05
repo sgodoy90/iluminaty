@@ -402,7 +402,11 @@ def _execute_cycle_action(action: dict, focus_handle: int | None, monitor_hint: 
         x = int(action.get("x", 0))
         y = int(action.get("y", 0))
         button = urllib.parse.quote(str(action.get("button", "left")))
-        coord_space = str(action.get("coord_space", "global")).strip().lower()
+        # Bug fix: when monitor= is specified, default coord_space to "monitor"
+        # (relative to that monitor's origin) — this is what agents expect.
+        # Passing x=960,y=540,monitor=1 should click center of M1, not M2.
+        default_space = "monitor" if monitor is not None else "global"
+        coord_space = str(action.get("coord_space", default_space)).strip().lower()
         query = f"/action/click?x={x}&y={y}&button={button}{focus_suffix}"
         if monitor is not None:
             query += f"&monitor_id={int(monitor)}"
@@ -423,7 +427,8 @@ def _execute_cycle_action(action: dict, focus_handle: int | None, monitor_hint: 
 
     if kind == "scroll":
         amount = int(action.get("amount", 3))
-        coord_space = str(action.get("coord_space", "global")).strip().lower()
+        default_space = "monitor" if monitor is not None else "global"
+        coord_space = str(action.get("coord_space", default_space)).strip().lower()
         query = f"/action/scroll?amount={amount}{focus_suffix}"
         if "x" in action and action.get("x") is not None:
             query += f"&x={int(action.get('x'))}"
