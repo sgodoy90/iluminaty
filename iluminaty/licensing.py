@@ -31,7 +31,7 @@ ALL_MCP_TOOLS = {
     "read_screen_text", "vision_query",
     # Perception / context
     "perception", "perception_world", "get_context",
-    "get_spatial_context", "spatial_state",
+    "get_spatial_context", "spatial_state", "refresh_monitors",
     # Watch engine
     "watch_and_notify", "monitor_until",
     # Memory

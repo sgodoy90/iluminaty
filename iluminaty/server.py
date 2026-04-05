@@ -2580,51 +2580,97 @@ def init_server(
         _state.monitor_mgr = MonitorManager()
         _state.monitor_mgr.refresh()
 
-        # Monitor change watcher — auto-refresh layout when display configuration changes
-        # Polls every 5s comparing monitor count + geometry hash. Cheap: mss enumerate < 1ms.
-        # Triggers on: monitor plug/unplug, resolution change, orientation change.
-        import hashlib as _hl
-        def _monitor_change_watcher():
-            import time as _t
-            def _geo_hash(mgr):
-                s = "|".join(
-                    f"{m.id}:{m.left}:{m.top}:{m.width}:{m.height}"
-                    for m in sorted(mgr._monitors, key=lambda x: x.id)
-                )
-                return _hl.md5(s.encode()).hexdigest()
-
-            last_hash = _geo_hash(_state.monitor_mgr)
-            last_count = len(_state.monitor_mgr._monitors)
-            while True:
-                _t.sleep(5)
-                try:
-                    _state.monitor_mgr.refresh()
-                    new_hash = _geo_hash(_state.monitor_mgr)
-                    new_count = len(_state.monitor_mgr._monitors)
-                    if new_hash != last_hash:
-                        logger.info(
-                            "Monitor layout changed: %d→%d monitors. "
-                            "Spatial context invalidated — agent will be notified on next action.",
-                            last_count, new_count
-                        )
-                        # Signal perception engine to re-initialize capture streams
-                        if _state.perception:
-                            try:
-                                _state.perception.reinitialize_monitors()
-                            except Exception:
-                                pass  # reinitialize is best-effort
-                        last_hash = new_hash
-                        last_count = new_count
-                except Exception:
-                    pass  # never crash the watcher
-
+        # Monitor change listener — zero-polling, event-driven.
+        # Windows: hooks WM_DISPLAYCHANGE via a minimal hidden window message loop.
+        # Linux/Mac: falls back to a one-time registration (manual refresh via /monitors/refresh).
+        # Triggers on: plug/unplug, resolution change, orientation change, DPI change.
+        # RAM cost: ~0 (one hidden HWND + message pump thread, no polling).
         import threading as _thr
-        _watcher = _thr.Thread(
-            target=_monitor_change_watcher,
+        import sys as _sys
+
+        def _start_display_change_listener():
+            if _sys.platform != "win32":
+                return  # Linux/Mac: /monitors/refresh endpoint handles it
+
+            try:
+                import ctypes, ctypes.wintypes
+                user32 = ctypes.windll.user32
+
+                WM_DISPLAYCHANGE = 0x007E
+                WM_DESTROY       = 0x0002
+                WS_OVERLAPPED    = 0x00000000
+                HWND_MESSAGE     = ctypes.wintypes.HWND(-3)
+
+                # Callback: called by Windows on every display change
+                def wnd_proc(hwnd, msg, wparam, lparam):
+                    if msg == WM_DISPLAYCHANGE:
+                        logger.info(
+                            "WM_DISPLAYCHANGE received — refreshing monitor layout."
+                        )
+                        try:
+                            _state.monitor_mgr.refresh()
+                            if _state.perception:
+                                _state.perception.reinitialize_monitors()
+                            # Mark spatial context stale so next POST-ACTION STATE warns agent
+                            _post_action_context._last_n_monitors = None
+                        except Exception as _e:
+                            logger.warning("Monitor reinit failed: %s", _e)
+                    elif msg == WM_DESTROY:
+                        user32.PostQuitMessage(0)
+                    return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
+
+                WndProc = ctypes.WINFUNCTYPE(
+                    ctypes.c_long, ctypes.wintypes.HWND,
+                    ctypes.c_uint, ctypes.wintypes.WPARAM, ctypes.wintypes.LPARAM
+                )
+                wnd_proc_cb = WndProc(wnd_proc)
+
+                WNDCLASSEX = type("WNDCLASSEX", (ctypes.Structure,), {"_fields_": [
+                    ("cbSize",        ctypes.c_uint),
+                    ("style",         ctypes.c_uint),
+                    ("lpfnWndProc",   WndProc),
+                    ("cbClsExtra",    ctypes.c_int),
+                    ("cbWndExtra",    ctypes.c_int),
+                    ("hInstance",     ctypes.wintypes.HINSTANCE),
+                    ("hIcon",         ctypes.wintypes.HICON),
+                    ("hCursor",       ctypes.wintypes.HANDLE),
+                    ("hbrBackground", ctypes.wintypes.HBRUSH),
+                    ("lpszMenuName",  ctypes.wintypes.LPCWSTR),
+                    ("lpszClassName", ctypes.wintypes.LPCWSTR),
+                    ("hIconSm",       ctypes.wintypes.HICON),
+                ]})
+
+                cls = WNDCLASSEX()
+                cls.cbSize = ctypes.sizeof(WNDCLASSEX)
+                cls.lpfnWndProc = wnd_proc_cb
+                cls.lpszClassName = "IluminatyDisplayWatcher"
+                cls.hInstance = user32.GetModuleHandleW(None)
+
+                if not user32.RegisterClassExW(ctypes.byref(cls)):
+                    return  # class may already be registered — non-fatal
+
+                hwnd = user32.CreateWindowExW(
+                    0, "IluminatyDisplayWatcher", "IluminatyDisplayWatcher",
+                    WS_OVERLAPPED, 0, 0, 0, 0,
+                    HWND_MESSAGE, None, cls.hInstance, None
+                )
+                if not hwnd:
+                    return
+
+                # Run message loop until process exits
+                msg = ctypes.wintypes.MSG()
+                while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+                    user32.TranslateMessage(ctypes.byref(msg))
+                    user32.DispatchMessageW(ctypes.byref(msg))
+
+            except Exception as _e:
+                logger.debug("Display change listener failed to start: %s", _e)
+
+        _thr.Thread(
+            target=_start_display_change_listener,
             daemon=True,
-            name="monitor-change-watcher"
-        )
-        _watcher.start()
+            name="display-change-listener"
+        ).start()
 
         # Perception Engine — continuous vision processing (the AI's visual cortex)
         # Wired AFTER monitor_mgr/diff/context are initialized (IPA Phase 1.3)
@@ -4273,6 +4319,31 @@ async def monitors_info(x_api_key: Optional[str] = Header(None)):
 async def monitors_info_alias(x_api_key: Optional[str] = Header(None)):
     """Alias compat para monitor info."""
     return await monitors_info(x_api_key=x_api_key)
+
+
+@app.post("/monitors/refresh")
+async def monitors_refresh(x_api_key: Optional[str] = Header(None)):
+    """
+    Force re-detection of monitor layout. Call this after:
+    - Plugging/unplugging a monitor (Linux/Mac — Windows auto-detects via WM_DISPLAYCHANGE)
+    - Changing resolution or orientation in display settings
+    - Connecting via remote desktop or virtual machine
+    Returns the new monitor layout immediately.
+    """
+    _check_auth(x_api_key)
+    if not _state.monitor_mgr:
+        raise HTTPException(503, "Not initialized")
+    _state.monitor_mgr.refresh()
+    if _state.perception:
+        try:
+            _state.perception.reinitialize_monitors()
+        except Exception:
+            pass
+    return {
+        "refreshed": True,
+        "monitors": _state.monitor_mgr.to_dict().get("monitors", []),
+        "count": len(_state.monitor_mgr._monitors),
+    }
 
 
 @app.get("/spatial/state")

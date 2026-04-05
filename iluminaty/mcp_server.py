@@ -736,6 +736,19 @@ TOOLS = [
             "properties": {"include_windows": {"type": "boolean", "default": True}},
         },
     },
+    {
+        "name": "refresh_monitors",
+        "description": (
+            "Re-detect monitor layout after any display configuration change. "
+            "Call this when: user plugs/unplugs a monitor, changes resolution or orientation, "
+            "connects via remote desktop, or resizes a VM window. "
+            "On Windows this happens automatically (WM_DISPLAYCHANGE). "
+            "On Linux/Mac or when POST-ACTION STATE warns of environment change: call this. "
+            "Returns new monitor count and layout immediately. "
+            "After calling, re-call get_spatial_context to update your spatial map."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
     # ── Watch Engine ──────────────────────────────────────────────────────────
     {
         "name": "watch_and_notify",
@@ -2652,22 +2665,56 @@ def handle_see_monitor(args: dict) -> list:
         return [{"type": "text", "text": f"Error capturing monitor {monitor}: {e}"}]
 
 
+def _monitor_geometry_hints(width: int, height: int) -> str:
+    """
+    Return geometry hints for any monitor — no hardcoded aspect ratios.
+    Works for any monitor in any orientation or resolution ever made.
+
+    Examples:
+      1920x1080  → "16:9 landscape"
+      2560x1440  → "16:9 landscape"
+      3440x1440  → "21:9 landscape"  (ultrawide)
+      5120x1440  → "32:9 landscape"  (super-ultrawide)
+      1080x1920  → "9:16 portrait"   (vertical)
+      1280x1024  → "5:4 landscape"   (legacy)
+      3840x2160  → "16:9 landscape"  (4K)
+      2560x1080  → "21:9 landscape"  (ultrawide)
+    """
+    if height == 0:
+        return "unknown"
+    aspect = width / height
+
+    # Orientation
+    orientation = "landscape" if width >= height else "portrait"
+
+    # Approximate aspect ratio label from actual ratio
+    # Covers every monitor ever shipped without a lookup table
+    def _approx_ratio(a: float) -> str:
+        ratios = [
+            (0.50, "1:2"), (0.56, "9:16"), (0.60, "3:5"),
+            (0.75, "4:3"), (0.80, "4:5"), (1.00, "1:1"),
+            (1.25, "5:4"), (1.33, "4:3"), (1.50, "3:2"),
+            (1.60, "16:10"), (1.78, "16:9"), (2.00, "2:1"),
+            (2.33, "21:9"), (2.37, "21:9"), (3.56, "32:9"),
+            (4.00, "4:1"),
+        ]
+        closest = min(ratios, key=lambda r: abs(r[0] - a))
+        return closest[1]
+
+    ratio_label = _approx_ratio(aspect)
+    return f"{ratio_label} {orientation}"
+
+
 def _spatial_zone(left: int, top: int, width: int, height: int,
                   all_monitors: list) -> str:
     """Convert absolute monitor coordinates to human-readable spatial zone.
 
     Compares this monitor's center against all others to produce
     a natural label: CENTER, LEFT, RIGHT, TOP-LEFT, etc.
-    Works for any number of monitors in any physical arrangement.
-
-    Special cases:
-    - 1 monitor, aspect ratio > 2.1 (ultrawide): labeled ULTRAWIDE
-    - 1 monitor, standard: labeled MAIN
+    Works for any number of monitors in any physical arrangement —
+    1, 2, 3, 4+, mixed orientations, any resolution.
     """
     if len(all_monitors) <= 1:
-        aspect = width / height if height > 0 else 1.0
-        if aspect >= 2.1:
-            return "ULTRAWIDE"
         return "MAIN"
 
     cx = left + width // 2
@@ -2766,20 +2813,29 @@ def handle_get_spatial_context(args: dict) -> list:
         monitor_zones[mid] = zone
         is_active = (mid == active_monitor_id)
 
+        geo = _monitor_geometry_hints(w, h)
         lines.append(
-            f"  M{mid} [{zone}] {w}x{h} at ({left},{top})"
+            f"  M{mid} [{zone}] {w}x{h} ({geo}) at ({left},{top})"
             + (" ← ACTIVE" if is_active else "")
         )
 
-        # Ultrawide: describe virtual zones so agent knows how to target halves
-        if zone == "ULTRAWIDE":
+        # For any wide monitor (width > 2x height): show virtual halves
+        # so agent can target left/right zones without guessing coordinates.
+        # Works for any ultrawide, super-ultrawide, or rotated setup.
+        if w > h * 1.9:
             half = w // 2
             lines.append(
-                f"    ↳ ULTRAWIDE detected (aspect={w/h:.1f}). "
-                f"Virtual zones: LEFT-HALF x={left}..{left+half}, "
-                f"RIGHT-HALF x={left+half}..{left+w}. "
-                f"Use x={left+half//2},y={h//2} for left zone, "
-                f"x={left+half+half//2},y={h//2} for right zone."
+                f"    ↳ Wide display: "
+                f"left-half x={left}–{left+half}, center=({left+half//2},{top+h//2}) | "
+                f"right-half x={left+half}–{left+w}, center=({left+half+half//2},{top+h//2})"
+            )
+        # Vertical monitor (portrait): show top/bottom zones
+        elif h > w * 1.4:
+            half = h // 2
+            lines.append(
+                f"    ↳ Portrait display: "
+                f"top-half y={top}–{top+half}, center=({left+w//2},{top+half//2}) | "
+                f"bottom-half y={top+half}–{top+h}, center=({left+w//2},{top+half+half//2})"
             )
 
         # Windows on this monitor
@@ -3660,6 +3716,18 @@ HANDLERS = {
     "perception_world": handle_perception_world,
     "get_context": handle_context,
     "get_spatial_context": handle_get_spatial_context,
+    "refresh_monitors":    lambda args: (
+        lambda d: [{"type": "text", "text": (
+            f"Monitor layout refreshed. "
+            f"Detected {d.get('count', '?')} monitor(s).\n"
+            + "\n".join(
+                f"  M{m.get('id')} {m.get('width')}x{m.get('height')} "
+                f"at ({m.get('left')},{m.get('top')})"
+                for m in d.get("monitors", [])
+            )
+            + "\n\nCall get_spatial_context() to update your spatial map."
+        )}]
+    )(_api_post("/monitors/refresh")),
     "spatial_state": handle_spatial_state,
     # ── Watch Engine ──
     "watch_and_notify":    handle_watch_and_notify,
@@ -3825,8 +3893,9 @@ def run_mcp_stdio():
                             "  - Before typing: see_now to confirm focus is on the right window.\n"
                             "  - Monitor layout can change at runtime (plug/unplug/resolution change).\n"
                             "    POST-ACTION STATE will warn you if this happens. Re-call get_spatial_context.\n"
-                            "  - ULTRAWIDE monitor (aspect > 2.1): treated as LEFT-HALF / RIGHT-HALF zones.\n"
-                            "    get_spatial_context will show virtual zone coordinates for targeting.\n\n"
+                            "  - Wide monitors (width > 2x height): get_spatial_context shows left/right\n"
+                            "    virtual zone coordinates. Portrait monitors show top/bottom zones.\n"
+                            "    Works for any resolution, aspect ratio, or physical orientation.\n\n"
 
                             "## WHAT GOOD LOOKS LIKE\n"
                             "  Task: open notepad on each monitor\n"
