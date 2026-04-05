@@ -2891,10 +2891,18 @@ def init_server(
                 pass
             return False
 
+        # windows_fn: returns list of visible windows for window_opened/closed detection
+        def _windows_for_watch():
+            if _state.windows:
+                return [w.__dict__ if hasattr(w, '__dict__') else w
+                        for w in _state.windows.list_windows()]
+            return []
+
         _state.watch_engine = WatchEngine(
             ipa_bridge=_state.ipa_bridge,
             ocr_fn=_ocr_text_for_watch,
             ui_tree_fn=_element_found_for_watch,
+            windows_fn=_windows_for_watch,
         )
 
         # Visual Memory — persist context between AI sessions
@@ -5171,11 +5179,20 @@ async def monitor_until(
     condition: str = Query(...),
     timeout: float = Query(120.0),
     text: Optional[str] = Query(None),
+    window_title: Optional[str] = Query(None),   # Bug 3 fix: explicit window_title param
     element: Optional[str] = Query(None),
     monitor_id: Optional[int] = Query(None),
     x_api_key: Optional[str] = Header(None),
 ):
-    """Alias for watch/notify with longer default timeout."""
+    """Wait until a condition is met. Returns immediately when triggered.
+
+    Conditions: window_opened, window_closed, text_appeared, text_disappeared,
+                page_loaded, motion_started, motion_stopped, idle, build_passed,
+                build_failed, element_visible
+
+    window_opened / window_closed: use window_title= param (title substring match).
+    text_appeared / text_disappeared: use text= param (OCR-based).
+    """
     _check_auth(x_api_key)
     if not _state.watch_engine:
         return {"triggered": False, "reason": "watch_engine_not_initialized"}
@@ -5185,7 +5202,8 @@ async def monitor_until(
         None,
         lambda: _state.watch_engine.wait(
             condition=condition, timeout=timeout,
-            text=text, element=element, monitor_id=monitor_id,
+            text=text, window_title=window_title,
+            element=element, monitor_id=monitor_id,
         )
     )
     return result.to_dict()

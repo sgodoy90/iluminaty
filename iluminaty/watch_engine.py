@@ -77,10 +77,12 @@ class WatchEngine:
 
     def __init__(self, ipa_bridge: Optional["IPABridge"] = None,
                  ocr_fn: Optional[Callable] = None,
-                 ui_tree_fn: Optional[Callable] = None):
-        self._ipa    = ipa_bridge
-        self._ocr_fn = ocr_fn          # fn(monitor_id) -> str (current OCR text)
-        self._ui_fn  = ui_tree_fn      # fn(query) -> bool (element found)
+                 ui_tree_fn: Optional[Callable] = None,
+                 windows_fn: Optional[Callable] = None):
+        self._ipa        = ipa_bridge
+        self._ocr_fn     = ocr_fn       # fn(monitor_id) -> str (current OCR text)
+        self._ui_fn      = ui_tree_fn   # fn(query) -> bool (element found)
+        self._windows_fn = windows_fn   # fn() -> list[dict] (visible windows)
 
     def wait(
         self,
@@ -249,14 +251,44 @@ class WatchEngine:
 
         # ── Window-based conditions ───────────────────────────────────────────
         if condition in ("window_opened", "window_closed") and window_title:
-            # Check via IPA gate events
+            # Primary: poll list_windows directly — reliable, no IPA dependency
+            # IPA gate events for window_focus are unreliable for newly spawned windows
+            if self._windows_fn:
+                try:
+                    wins = self._windows_fn() or []
+                    title_l = window_title.lower()
+                    match = any(
+                        title_l in str(w.get("title", "")).lower() or
+                        title_l in str(w.get("app_name", "")).lower()
+                        for w in wins
+                    )
+                    if condition == "window_opened" and match:
+                        return WatchResult(
+                            triggered=True, condition=condition, elapsed_s=elapsed,
+                            reason=f"Window '{window_title}' is now open",
+                            evidence=next(
+                                (str(w.get("title", "")) for w in wins
+                                 if title_l in str(w.get("title", "")).lower()),
+                                window_title,
+                            ),
+                        )
+                    if condition == "window_closed" and not match:
+                        return WatchResult(
+                            triggered=True, condition=condition, elapsed_s=elapsed,
+                            reason=f"Window '{window_title}' is no longer open",
+                        )
+                except Exception:
+                    pass
+
+            # Fallback: IPA gate events (window_focus — fires on user focus, not open)
             if self._ipa:
-                for evt in (new_events if self._ipa else []):
-                    if evt.event_type == "window_focus" and window_title.lower() in evt.description.lower():
+                for evt in new_events:
+                    if evt.event_type in ("window_focus", "window_opened") and \
+                            window_title.lower() in evt.description.lower():
                         if condition == "window_opened":
                             return WatchResult(
                                 triggered=True, condition=condition, elapsed_s=elapsed,
-                                reason=f"Window '{window_title}' opened",
+                                reason=f"Window '{window_title}' detected via IPA event",
                                 evidence=evt.description,
                             )
 

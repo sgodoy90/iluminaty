@@ -431,7 +431,7 @@ def task_t4_event_detection(client: IluminatyClient) -> TaskResult:
         t0 = time.perf_counter()
         # Start a background watch for window_opened
         resp = client.post(
-            f"/watch/until?condition=window_opened&timeout=10&text=Bloc",
+            f"/watch/until?condition=window_opened&timeout=10&window_title=Bloc",
             timeout=12
         )
         elapsed = (time.perf_counter() - t0) * 1000
