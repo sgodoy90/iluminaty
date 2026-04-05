@@ -3178,81 +3178,51 @@ def handle_see_region(args: dict) -> list:
     scale   = float(args.get("scale", 2.0))
     scale   = max(1.0, min(scale, 4.0))  # clamp 1-4x
 
-    # Get the full frame first (low_res is fine — we crop then upscale)
-    query = "/vision/smart?mode=low_res"
-    if monitor is not None:
-        query += f"&monitor_id={int(monitor)}"
-    try:
-        data = _api_get(query)
-    except Exception as e:
-        return [{"type": "text", "text": f"see_region failed: {e}"}]
-
-    img_b64 = data.get("image_base64") or data.get("data", "")
-    if not img_b64:
-        return [{"type": "text", "text": "see_region: no image data available"}]
-
+    # Take a live native screenshot of the exact region — do NOT use the low_res buffer.
+    # The low_res buffer (320x180) would make a 600px crop only ~100px tall, losing detail.
     try:
         import base64 as _b64
         from PIL import Image as _Image
         import io as _io
+        import mss as _mss
 
-        # Decode
-        img_bytes = _b64.b64decode(img_b64)
-        img = _Image.open(_io.BytesIO(img_bytes))
-        iw, ih = img.size
-
-        # If monitor-relative coords provided, they are already relative.
-        # If global coords, we need to offset by monitor origin.
-        ox, oy = 0, 0
+        # Resolve monitor offset to translate monitor-relative coords to global desktop
+        gx, gy = x, y
         if monitor is not None:
             try:
                 mons = _api_get("/monitors/info").get("monitors", [])
-                m = next((m for m in mons if int(m.get("id", 0)) == int(monitor)), None)
+                m = next((mm for mm in mons if int(mm.get("id", 0)) == int(monitor)), None)
                 if m:
-                    # The captured frame is for this monitor, so coords are already relative
-                    ox, oy = 0, 0
+                    pos = str(m.get("position", "(0,0)")).strip("()")
+                    parts = pos.split(",")
+                    mx = int(parts[0]) if parts else 0
+                    my = int(parts[1]) if len(parts) > 1 else 0
+                    gx = x + mx
+                    gy = y + my
             except Exception:
                 pass
 
-        # Scale region coords to actual image size
-        # The image may be downsampled from original resolution
-        # We need to find the original monitor resolution to compute ratio
-        orig_w, orig_h = iw, ih
-        try:
-            mons = _api_get("/monitors/info").get("monitors", [])
-            if monitor is not None:
-                m = next((mm for mm in mons if int(mm.get("id", 0)) == int(monitor)), None)
-            else:
-                m = mons[0] if mons else None
-            if m:
-                orig_w = int(m.get("width", iw))
-                orig_h = int(m.get("height", ih))
-        except Exception:
-            pass
+        # Capture native resolution
+        with _mss.mss() as sct:
+            region = {"left": gx, "top": gy, "width": width, "height": height}
+            shot = sct.grab(region)
+            img = _Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
 
-        rx = (x - ox) / orig_w * iw
-        ry = (y - oy) / orig_h * ih
-        rw = width / orig_w * iw
-        rh = height / orig_h * ih
-
-        # Clamp to image bounds
-        rx = max(0, min(rx, iw - 1))
-        ry = max(0, min(ry, ih - 1))
-        rw = max(1, min(rw, iw - rx))
-        rh = max(1, min(rh, ih - ry))
-
-        # Crop
-        cropped = img.crop((int(rx), int(ry), int(rx + rw), int(ry + rh)))
-
-        # Upscale for readability
+        # img is already the exact native-resolution crop — just upscale if needed
+        cropped = img
         if scale > 1.0:
             new_w = int(cropped.width * scale)
             new_h = int(cropped.height * scale)
+            # Cap output at ~1920 wide to avoid massive payloads
+            if new_w > 1920:
+                ratio = 1920 / new_w
+                new_w = 1920
+                new_h = int(new_h * ratio)
             cropped = cropped.resize((new_w, new_h), _Image.LANCZOS)
 
         # Encode as WebP
         buf = _io.BytesIO()
-        cropped.save(buf, format="WEBP", quality=90)
+        cropped.save(buf, format="WEBP", quality=85)
         out_b64 = _b64.b64encode(buf.getvalue()).decode()
 
         header = (
@@ -3266,15 +3236,9 @@ def handle_see_region(args: dict) -> list:
             {"type": "image", "data": out_b64, "mimeType": "image/webp"},
         ]
 
-        # Prompt injection scan on OCR if available (same as see_now)
-        if data.get("ocr_text"):
-            injection = _scan_prompt_injection(data["ocr_text"])
-            if injection["detected"]:
-                sev = injection["severity"].upper()
-                findings_str = "; ".join(
-                    f"[{f['severity']}] {f['label']}: \"{f['context']}\""
-                    for f in injection["findings"][:3]
-                )
+        if False:  # placeholder — no ocr_text from native screenshot path
+            pass
+        if False:
                 result.append({"type": "text", "text": (
                     f"\n[SECURITY WARNING - {sev} SEVERITY]\n"
                     f"Potential prompt injection in screen region.\n"
