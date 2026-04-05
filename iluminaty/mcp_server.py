@@ -1176,6 +1176,46 @@ TOOLS = [
     },
     # ── Status ────────────────────────────────────────────────────────────────
     {
+        "name": "map_environment",
+        "description": (
+            "SPATIAL AWARENESS TOOL — call this ONCE at the start of any UI task and after every click to verify precision.\n\n"
+            "Returns in a single call:\n"
+            "  1. Global desktop map: all monitors, their pixel offsets, sizes, and positions relative to each other\n"
+            "  2. Cursor position: global (x,y) AND monitor-relative (x,y) for every monitor\n"
+            "  3. Which monitor contains the cursor RIGHT NOW\n"
+            "  4. Active window title + which monitor it is on\n"
+            "  5. Native screenshot of the target monitor with:\n"
+            "       - Red crosshair marking EXACT cursor position\n"
+            "       - Coordinate labels on the crosshair (monitor-relative pixels)\n"
+            "       - Grid lines every 100px with labels for precise element measurement\n\n"
+            "HOW TO USE:\n"
+            "  Step 1: call map_environment(monitor=N) — study the image, read element positions from the grid\n"
+            "  Step 2: note the pixel coords of the target element (monitor-relative)\n"
+            "  Step 3: act(click, x=<that_x>, y=<that_y>, monitor=N)\n"
+            "  Step 4: call map_environment(monitor=N) again — verify crosshair landed on correct element\n\n"
+            "This is the equivalent of Computer Use's coordinate system but for multi-monitor setups."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "monitor": {
+                    "type": "integer",
+                    "description": "Which monitor to capture and show. Omit to use the monitor currently containing the cursor.",
+                },
+                "scale": {
+                    "type": "number",
+                    "description": "Screenshot scale: 0.25=quarter res (fast), 0.5=half res (default, recommended), 1.0=full 1920x1080.",
+                    "default": 0.5,
+                },
+                "grid": {
+                    "type": "boolean",
+                    "description": "Draw coordinate grid every 100px (default true). Set false for clean screenshot.",
+                    "default": True,
+                },
+            },
+        },
+    },
+    {
         "name": "screen_status",
         "description": "System status: buffer stats, capture state, FPS, active window.",
         "inputSchema": {"type": "object", "properties": {}},
@@ -1388,6 +1428,154 @@ def handle_read_text(args: dict) -> dict:
         return [{"type": "text", "text": "No readable text found on screen. OCR may not be available (install tesseract)."}]
 
     return [{"type": "text", "text": f"## Screen Text (OCR)\n```\n{text[:3000]}\n```\nConfidence: {data.get('confidence', 0)}%"}]
+
+
+def _parse_mon(m: dict) -> tuple:
+    """Parse monitor dict → (id, left, top, width, height)."""
+    pos = str(m.get("position", "(0,0)")).strip("()").split(",")
+    res = m.get("resolution", "1920x1080").split("x")
+    return (
+        int(m.get("id", 0)),
+        int(pos[0]) if pos else 0,
+        int(pos[1]) if len(pos) > 1 else 0,
+        int(res[0]),
+        int(res[1]),
+    )
+
+
+def handle_map_environment(args: dict) -> list:
+    """Full spatial context: monitor map + cursor position + annotated screenshot.
+
+    Single call gives the AI everything needed for precise clicking:
+    - Global desktop map (all monitors, offsets, sizes)
+    - Cursor position: global AND relative to every monitor
+    - Which monitor contains the cursor
+    - Native screenshot with red crosshair at cursor + optional 100px grid
+    """
+    monitor_req = args.get("monitor")
+    scale       = float(args.get("scale", 0.5))
+    scale       = max(0.25, min(scale, 1.0))
+    draw_grid   = bool(args.get("grid", True))
+
+    try:
+        import ctypes
+        import ctypes.wintypes
+        import base64 as _b64
+        from PIL import Image as _Img, ImageDraw as _Draw, ImageFont as _IFont
+        import io as _io
+        import mss as _mss
+
+        # ── 1. Cursor position (Windows API — exact, no latency) ──────────────
+        pt = ctypes.wintypes.POINT()
+        ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
+        cx, cy = pt.x, pt.y
+
+        # ── 2. Monitor layout ─────────────────────────────────────────────────
+        mons_data = _api_get("/monitors/info").get("monitors", [])
+        mons = [_parse_mon(m) for m in mons_data]  # (id, left, top, w, h)
+
+        # ── 3. Cursor monitor membership ──────────────────────────────────────
+        cursor_mon = None
+        for (mid, ml, mt, mw, mh) in mons:
+            if ml <= cx < ml + mw and mt <= cy < mt + mh:
+                cursor_mon = mid
+                break
+
+        # ── 4. Select target monitor ──────────────────────────────────────────
+        if monitor_req is not None:
+            target = next((m for m in mons if m[0] == int(monitor_req)), mons[0])
+        elif cursor_mon is not None:
+            target = next(m for m in mons if m[0] == cursor_mon)
+        else:
+            target = mons[0]
+
+        t_id, t_left, t_top, t_w, t_h = target
+        rel_x = cx - t_left
+        rel_y = cy - t_top
+
+        # ── 5. Global desktop map text ────────────────────────────────────────
+        lines = ["=== DESKTOP LAYOUT (global coords) ==="]
+        for (mid, ml, mt, mw, mh) in mons:
+            is_cur = "<-- CURSOR HERE" if mid == cursor_mon else ""
+            lines.append(
+                f"  M{mid}: offset=({ml:+d},{mt:+d})  size={mw}x{mh}  "
+                f"range X[{ml}..{ml+mw-1}] Y[{mt}..{mt+mh-1}]  {is_cur}"
+            )
+        lines.append(f"\nCursor GLOBAL:  ({cx}, {cy})")
+        lines.append(f"Cursor in:      M{cursor_mon}")
+        lines.append("")
+        lines.append(f"=== TARGET MONITOR: M{t_id} ===")
+        lines.append(f"  offset=({t_left},{t_top})  size={t_w}x{t_h}")
+        lines.append(f"  Cursor M{t_id}-relative: ({rel_x}, {rel_y})")
+        lines.append(f"  Cursor ON this monitor: {0 <= rel_x < t_w and 0 <= rel_y < t_h}")
+
+        # Active window
+        try:
+            win_data  = _api_get("/windows/active")
+            win_title = str(win_data.get("title", "?"))[:80]
+        except Exception:
+            win_title = "?"
+        lines.append(f"  Active window: {win_title}")
+        lines.append("")
+        lines.append("Screenshot below: red crosshair = cursor, grid labels = M-relative px coords.")
+        lines.append("Use these coords directly in act(x=..., y=..., monitor=N).")
+
+        # ── 6. Native screenshot of target monitor ────────────────────────────
+        with _mss.mss() as sct:
+            shot = sct.grab({"left": t_left, "top": t_top, "width": t_w, "height": t_h})
+            img  = _Img.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
+
+        draw = _Draw.Draw(img)
+
+        # Optional coordinate grid every 100px
+        if draw_grid:
+            grid_step = 100
+            grid_col  = (80, 80, 80)
+            label_col = (0, 200, 255)
+            for gx in range(0, t_w, grid_step):
+                draw.line([(gx, 0), (gx, t_h)], fill=grid_col, width=1)
+                if gx > 0:
+                    draw.text((gx + 2, 2), str(gx), fill=label_col)
+            for gy in range(0, t_h, grid_step):
+                draw.line([(0, gy), (t_w, gy)], fill=grid_col, width=1)
+                if gy > 0:
+                    draw.text((2, gy + 2), str(gy), fill=label_col)
+
+        # Red crosshair at cursor
+        if 0 <= rel_x < t_w and 0 <= rel_y < t_h:
+            arm = 30
+            lw  = 3
+            # Cross lines
+            draw.line([(rel_x - arm, rel_y), (rel_x + arm, rel_y)], fill=(255, 0, 0), width=lw)
+            draw.line([(rel_x, rel_y - arm), (rel_x, rel_y + arm)], fill=(255, 0, 0), width=lw)
+            # Circle
+            draw.ellipse(
+                [(rel_x - 10, rel_y - 10), (rel_x + 10, rel_y + 10)],
+                outline=(255, 0, 0), width=2,
+            )
+            # Coord label — black bg + yellow text
+            lbl = f"({rel_x},{rel_y})"
+            lx  = min(rel_x + 14, t_w - 120)
+            ly  = max(rel_y - 22, 2)
+            draw.rectangle([(lx - 2, ly - 2), (lx + 118, ly + 16)], fill=(0, 0, 0))
+            draw.text((lx, ly), lbl, fill=(255, 255, 0))
+
+        # Scale down
+        if scale < 1.0:
+            img = img.resize((int(t_w * scale), int(t_h * scale)), _Img.LANCZOS)
+
+        buf = _io.BytesIO()
+        img.save(buf, format="WEBP", quality=85)
+        img_b64 = _b64.b64encode(buf.getvalue()).decode()
+
+        return [
+            {"type": "text",  "text": "\n".join(lines)},
+            {"type": "image", "data": img_b64, "mimeType": "image/webp"},
+        ]
+
+    except Exception as e:
+        import traceback
+        return [{"type": "text", "text": f"map_environment error: {e}\n{traceback.format_exc()}"}]
 
 
 def handle_status(args: dict) -> dict:
@@ -3831,6 +4019,7 @@ HANDLERS = {
     "get_clipboard": handle_get_clipboard,
     # ── Pipeline / workspace management ──
     "find_on_screen":   handle_find_on_screen,
+    "map_environment":  handle_map_environment,
     "open_path":        handle_open_path,
     "open_on_monitor":  handle_open_on_monitor,
     # ── Recording (opt-in) ──

@@ -47,6 +47,7 @@ ALL_MCP_TOOLS = {
     "run_command", "read_file", "write_file", "get_clipboard",
     # Pipeline / workspace
     "find_on_screen",
+    "map_environment",
     "open_path",
     "open_on_monitor",
     # Recording
