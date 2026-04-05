@@ -938,10 +938,23 @@ TOOLS = [
     },
     {
         "name": "window_close",
-        "description": "Close a window.",
+        "description": (
+            "Close a window safely. PIPELINE: Checks for unsaved content (*, ●, modified indicators) "
+            "before closing — blocks if unsaved detected and returns instructions to save first. "
+            "High-risk apps: editors, IDEs, design tools, office apps. "
+            "Set force_close=true ONLY when you are certain data loss is acceptable."
+        ),
         "inputSchema": {
             "type": "object",
-            "properties": {"title": {"type": "string"}, "handle": {"type": "integer"}},
+            "properties": {
+                "title": {"type": "string", "description": "Window title (partial match)"},
+                "handle": {"type": "integer", "description": "Window handle from list_windows"},
+                "force_close": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Skip unsaved-content check. Only use when data loss is explicitly acceptable.",
+                },
+            },
         },
     },
     {
@@ -1845,18 +1858,218 @@ def handle_window_maximize(args: dict) -> list:
     return [{"type": "text", "text": f"Maximize {target}: {'SUCCESS' if data.get('success') else 'FAILED'}"}]
 
 
+def _detect_unsaved_content(title: str, handle: int = None) -> dict:
+    """
+    Universal unsaved-content detector. Checks window title for modification indicators
+    used by virtually every app on every OS:
+
+    Indicators scanned:
+      "●"  — VS Code, Sublime Text, many Electron apps (unsaved dot)
+      "*"  — Notepad, Word, Excel, most text editors (asterisk prefix/suffix)
+      "✎"  — some editors (pencil icon)
+      "modified" — terminal indicators
+      "[+]" — Vim-style editors
+      "unsaved" — explicit label
+      "sin guardar" / "no guardado" — Spanish locale
+      "not saved" / "hasn't been saved" — macOS apps
+
+    High-risk app types (editors, IDEs, design, office) get extra scrutiny.
+    Browser tabs with forms are flagged as medium risk.
+
+    Returns:
+      {
+        "has_unsaved": bool,
+        "confidence": "high" | "medium" | "low",
+        "indicator": str,      # what triggered detection
+        "app_type": str,       # editor | ide | design | office | browser | other
+        "recommendation": str  # what the agent should do
+      }
+    """
+    title_l = (title or "").lower().strip()
+    title_raw = (title or "").strip()
+
+    # ── Modification indicators in title ──────────────────────────────────────
+    UNSAVED_INDICATORS = [
+        ("●", "high", "unsaved dot (VS Code / Electron apps)"),
+        ("•", "high", "unsaved dot variant"),
+        (" * ", "high", "asterisk modified marker"),
+        ("*", "high", "asterisk modified marker"),
+        ("[modified]", "high", "explicit modified label"),
+        ("[+]", "high", "vim-style modified"),
+        (" ✎", "high", "edit pencil icon"),
+        ("unsaved", "high", "explicit unsaved label"),
+        ("sin guardar", "high", "unsaved (Spanish)"),
+        ("no guardado", "high", "not saved (Spanish)"),
+        ("not saved", "high", "not saved (English)"),
+        ("hasn't been saved", "high", "macOS unsaved"),
+        ("modified", "medium", "modified label"),
+        ("editando", "medium", "editing (Spanish)"),
+        ("editing", "medium", "editing"),
+    ]
+
+    for indicator, confidence, description in UNSAVED_INDICATORS:
+        if indicator.lower() in title_raw or indicator.lower() in title_l:
+            # Determine app type for recommendation
+            app_type = _classify_app_type(title_l)
+            return {
+                "has_unsaved": True,
+                "confidence": confidence,
+                "indicator": description,
+                "app_type": app_type,
+                "title": title_raw,
+                "recommendation": (
+                    f"Window '{title_raw[:60]}' has unsaved changes ({description}). "
+                    f"Save first (e.g. Ctrl+S), then close. "
+                    f"Pass force_close=true only if you are CERTAIN data loss is acceptable."
+                ),
+            }
+
+    # ── High-risk apps with no indicator — flag as medium risk ────────────────
+    app_type = _classify_app_type(title_l)
+    HIGH_RISK_TYPES = {"editor", "ide", "design", "office"}
+    if app_type in HIGH_RISK_TYPES:
+        # These apps might have unsaved state even without title indicator
+        # (e.g., Photoshop doesn't always show * in title)
+        return {
+            "has_unsaved": False,
+            "confidence": "low",
+            "indicator": f"high-risk app type ({app_type}) — cannot confirm saved state from title alone",
+            "app_type": app_type,
+            "title": title_raw,
+            "recommendation": (
+                f"'{title_raw[:60]}' is a {app_type} — consider saving before closing "
+                f"(Ctrl+S). No unsaved indicator detected in title, but state cannot be guaranteed."
+            ),
+        }
+
+    return {
+        "has_unsaved": False,
+        "confidence": "high",
+        "indicator": "none",
+        "app_type": app_type,
+        "title": title_raw,
+        "recommendation": "Safe to close.",
+    }
+
+
+def _classify_app_type(title_lower: str) -> str:
+    """Classify window type from title for risk assessment."""
+    IDE_KEYWORDS = ["visual studio", "vscode", "code", "intellij", "pycharm",
+                    "webstorm", "clion", "rider", "eclipse", "xcode", "android studio",
+                    "cursor", "sublime", "vim", "neovim", "emacs", "atom"]
+    EDITOR_KEYWORDS = ["notepad", "bloc de notas", "gedit", "kate", "notepad++",
+                       "textpad", "ultraedit", "editplus", "textedit"]
+    DESIGN_KEYWORDS = ["photoshop", "illustrator", "figma", "sketch", "affinity",
+                       "gimp", "inkscape", "lightroom", "premiere", "after effects",
+                       "blender", "autocad", "canva", "procreate", "davinci"]
+    OFFICE_KEYWORDS = ["word", "excel", "powerpoint", "outlook", "onenote",
+                       "libreoffice", "openoffice", "writer", "calc", "impress",
+                       "google docs", "sheets", "slides", "pages", "numbers"]
+    BROWSER_KEYWORDS = ["chrome", "brave", "firefox", "edge", "safari", "opera"]
+
+    if any(k in title_lower for k in IDE_KEYWORDS):
+        return "ide"
+    if any(k in title_lower for k in EDITOR_KEYWORDS):
+        return "editor"
+    if any(k in title_lower for k in DESIGN_KEYWORDS):
+        return "design"
+    if any(k in title_lower for k in OFFICE_KEYWORDS):
+        return "office"
+    if any(k in title_lower for k in BROWSER_KEYWORDS):
+        return "browser"
+    return "other"
+
+
 def handle_window_close(args: dict) -> list:
+    """
+    Close a window safely — checks for unsaved content before executing.
+
+    PIPELINE:
+    1. ANALYZE: detect unsaved content from window title (universal indicators)
+    2. PLAN: if unsaved detected → BLOCK and explain what to do
+    3. EXECUTE: only if clean or force_close=true explicitly provided
+    4. EVALUATE: confirm window closed
+
+    The agent should:
+      - Save first (act action=key keys=ctrl+s) then call window_close again
+      - OR pass force_close=true only if data loss is explicitly acceptable
+
+    This prevents silent data loss when closing editors, IDEs, design apps, offices.
+    """
     handle = args.get("handle")
     title = (args.get("title") or "").strip()
+    force_close = bool(args.get("force_close", False))
+
     if handle is None and not title:
         return [{"type": "text", "text": "Error: handle or title is required"}]
+
+    # ── ANALYZE: resolve window title if only handle provided ────────────────
+    window_title = title
+    window_monitor = None
+    if not window_title and handle is not None:
+        try:
+            windows_data = _api_get("/windows/list?visible_only=true")
+            for w in windows_data.get("windows", []):
+                if int(w.get("handle", -1)) == int(handle):
+                    window_title = str(w.get("title", ""))
+                    window_monitor = w.get("monitor_id")
+                    break
+        except Exception:
+            pass
+
+    # ── PLAN: check for unsaved content ──────────────────────────────────────
+    safety = _detect_unsaved_content(window_title, handle)
+
+    if safety["has_unsaved"] and not force_close:
+        # BLOCK — explain what to do
+        lines = [
+            f"## ⚠ window_close BLOCKED — Unsaved Content Detected",
+            f"",
+            f"**Window**: `{window_title[:80]}`" + (f" (M{window_monitor})" if window_monitor else ""),
+            f"**App type**: {safety['app_type']}",
+            f"**Indicator**: {safety['indicator']}",
+            f"**Confidence**: {safety['confidence']}",
+            f"",
+            f"**What to do**:",
+            f"1. Save first: `act(action='key', keys='ctrl+s')`",
+            f"2. Then close: `window_close(handle={handle})`",
+            f"",
+            f"OR if data loss is acceptable:",
+            f"`window_close(handle={handle}, force_close=True)`",
+        ]
+        return [{"type": "text", "text": "\n".join(lines)}]
+
+    # ── EXECUTE ───────────────────────────────────────────────────────────────
     if handle is not None:
         data = _api_post(f"/windows/close?handle={int(handle)}")
         target = f"handle={int(handle)}"
     else:
         data = _api_post(f"/windows/close?title={urllib.parse.quote(title)}")
         target = f"title='{title}'"
-    return [{"type": "text", "text": f"Close {target}: {'SUCCESS' if data.get('success') else 'FAILED'}"}]
+
+    success = data.get("success", False)
+
+    # ── EVALUATE ──────────────────────────────────────────────────────────────
+    # Verify window actually closed
+    if success and handle is not None:
+        try:
+            import time as _t; _t.sleep(0.3)
+            windows_after = _api_get("/windows/list?visible_only=true")
+            still_open = any(
+                int(w.get("handle", -1)) == int(handle)
+                for w in windows_after.get("windows", [])
+            )
+            if still_open:
+                success = False
+                return [{"type": "text", "text": (
+                    f"Close {target}: FAILED (window still open — "
+                    f"may have a save dialog pending. Check with list_windows.)"
+                )}]
+        except Exception:
+            pass
+
+    note = " [force_close=True]" if force_close else ""
+    return [{"type": "text", "text": f"Close {target}: {'SUCCESS' if success else 'FAILED'}{note}"}]
 
 
 def handle_move_window(args: dict) -> list:

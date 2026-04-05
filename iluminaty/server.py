@@ -4043,30 +4043,65 @@ async def open_on_monitor(
     if target_mon is None:
         raise HTTPException(404, f"Monitor {monitor_id} not found")
 
-    # 1. Launch the app
-    import subprocess as _sp
-    try:
-        _sp.Popen(app_path, shell=True, creationflags=0x00000008)  # DETACHED_PROCESS
-    except Exception as e:
-        return {"success": False, "step": "launch", "error": str(e)}
+    # Extract app stem for matching (notepad.exe → notepad)
+    app_stem = app_path.split("\\")[-1].split("/")[-1].lower()
+    if app_stem.endswith(".exe"):
+        app_stem = app_stem[:-4]
 
-    # 2. Wait for window to appear (poll every 500ms)
-    deadline = time.time() + wait_s
+    _APP_ALIASES = {
+        "notepad": ["notepad", "bloc de notas", "untitled", "sin t"],
+        "code": ["visual studio code", "code"],
+        "brave": ["brave"],
+        "chrome": ["chrome", "google chrome"],
+        "explorer": ["explorer", "file explorer", "explorador"],
+    }
+    stem_variants = _APP_ALIASES.get(app_stem, [app_stem])
+
+    # 0. Check if a window of this app is already open — reuse it instead of spawning new
+    already_open = None
+    if _state.windows:
+        for w in _state.windows.list_windows():
+            title_l   = str(w.title or "").lower()
+            appname_l = str(w.app_name or "").lower()
+            if any(v in title_l or v in appname_l for v in stem_variants):
+                # Skip windows already on the target monitor (already placed)
+                already_open = w
+                break
+
+    # 1. Launch the app only if no existing window found
+    import subprocess as _sp
+    if already_open is None:
+        try:
+            CREATE_NEW_CONSOLE = 0x00000010
+            launch_cmd = f'"{app_path}"' if " " in app_path and not app_path.startswith('"') else app_path
+            _sp.Popen(launch_cmd, shell=True, creationflags=CREATE_NEW_CONSOLE, close_fds=True)
+        except Exception as e:
+            return {"success": False, "step": "launch", "error": str(e)}
+
+    # 2. Find window — reuse existing if already on target monitor, else wait for new one
     found_handle = None
-    while time.time() < deadline:
-        await asyncio.sleep(0.5)
-        windows = _state.windows.list_windows()
-        for w in reversed(windows):  # newest windows tend to be last
-            if title_hint and title_hint.lower() not in str(w.title or "").lower():
-                continue
-            if app_path:
-                app_stem = app_path.split("\\")[-1].split("/")[-1].replace(".exe", "").lower()
-                if app_stem and app_stem not in str(w.title or "").lower() and app_stem not in str(w.app_name or "").lower():
+    if already_open is not None and getattr(already_open, "monitor_id", 0) == monitor_id:
+        # Already on the right monitor — reuse it
+        found_handle = already_open.handle
+    elif already_open is not None:
+        # Exists but on wrong monitor — will move it after this block
+        found_handle = already_open.handle
+    else:
+        # New window launched — poll until it appears
+        deadline = time.time() + wait_s
+        while time.time() < deadline:
+            await asyncio.sleep(0.5)
+            windows = _state.windows.list_windows()
+            for w in reversed(windows):
+                title_l   = str(w.title or "").lower()
+                appname_l = str(w.app_name or "").lower()
+                if title_hint and title_hint.lower() not in title_l:
                     continue
-            found_handle = w.handle
-            break
-        if found_handle:
-            break
+                if any(v in title_l or v in appname_l for v in stem_variants):
+                    found_handle = w.handle
+                    break
+            if found_handle:
+                break
 
     if not found_handle:
         return {
