@@ -56,7 +56,14 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14
 .scene-badge{display:inline-block;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700;font-family:var(--mono);background:rgba(123,97,255,0.15);color:var(--purple);margin-bottom:6px;}
 
 /* ── OCR ── */
-.ocr-box{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:8px;font-family:var(--mono);font-size:10px;color:var(--muted);max-height:160px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;line-height:1.5;}
+.ocr-tabs{display:flex;gap:3px;margin-bottom:6px;}
+.ocr-tab{background:var(--bg);border:1px solid var(--border);border-radius:4px 4px 0 0;padding:3px 10px;font-size:10px;font-family:var(--mono);color:var(--muted);cursor:pointer;transition:all 0.15s;}
+.ocr-tab.active{background:var(--card);border-bottom-color:var(--card);color:var(--accent);font-weight:700;}
+.ocr-tab:hover:not(.active){color:var(--text);}
+.ocr-pane{display:none;}
+.ocr-pane.active{display:block;}
+.ocr-box{background:var(--bg);border:1px solid var(--border);border-radius:0 6px 6px 6px;padding:8px;font-family:var(--mono);font-size:10px;color:var(--muted);max-height:160px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;line-height:1.5;}
+.ocr-label{font-size:9px;color:var(--dim);margin-bottom:3px;font-family:var(--mono);}
 
 /* ── Monitor mini-map ── */
 .monitor-grid{display:flex;flex-direction:column;gap:4px;}
@@ -160,10 +167,20 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14
       </div>
     </div>
 
-    <!-- 4. OCR Text -->
+    <!-- 4. OCR Text per monitor -->
     <div class="panel">
-      <div class="ptitle">Screen Text (OCR)</div>
-      <div class="ocr-box" id="ocr-text">Waiting for capture...</div>
+      <div class="ptitle" style="display:flex;justify-content:space-between;align-items:center;">
+        <span>Screen Text (OCR)</span>
+        <span style="font-size:9px;color:var(--dim);font-weight:400;text-transform:none;letter-spacing:0" id="ocr-latency"></span>
+      </div>
+      <div class="ocr-tabs" id="ocr-tabs">
+        <div class="ocr-tab active" data-mon="active" onclick="switchOcrTab(this,'active')">Active</div>
+      </div>
+      <div id="ocr-panes">
+        <div class="ocr-pane active" id="ocr-pane-active">
+          <div class="ocr-box" id="ocr-text-active">Waiting for capture...</div>
+        </div>
+      </div>
     </div>
 
     <!-- 5. System (technical, at bottom) -->
@@ -228,7 +245,7 @@ async function pollVision() {
     // Also update active window in ctx panel
     if (win) setText('ctx-window', win);
   }
-  if (d.ocr_text) setText('ocr-text', d.ocr_text.substring(0,2000));
+  // OCR for active monitor lives in pollOcr — skip here
 }
 
 // ── World State ───────────────────────────────────────────────────────────────
@@ -274,6 +291,12 @@ async function pollSpatial() {
   const wins = d.windows || [];
 
   setText('mon-count', monitors.length);
+
+  // Rebuild OCR tabs if monitor list changed
+  const monIds = monitors.map(m => m.id);
+  if (JSON.stringify(monIds) !== JSON.stringify(_ocrMonitors)) {
+    _rebuildOcrTabs(monIds);
+  }
 
   const grid = $('mon-grid');
   if (!grid || !monitors.length) return;
@@ -327,6 +350,82 @@ async function checkHealth() {
   const dot = $('status-dot');
   if (d?.status === 'alive') dot.classList.add('on');
   else dot.classList.remove('on');
+}
+
+// ── OCR per monitor ──────────────────────────────────────────────────────────
+let _ocrMonitors = [];   // [1,2,3] — built from spatial poll
+let _activeOcrTab = 'active';
+
+function switchOcrTab(el, monKey) {
+  _activeOcrTab = monKey;
+  document.querySelectorAll('.ocr-tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.ocr-pane').forEach(p => p.classList.remove('active'));
+  el.classList.add('active');
+  const pane = $('ocr-pane-'+monKey);
+  if (pane) pane.classList.add('active');
+  // Immediately load if not yet fetched
+  if (monKey !== 'active') fetchOcrForMonitor(parseInt(monKey));
+}
+
+function _rebuildOcrTabs(monitors) {
+  const tabs = $('ocr-tabs');
+  const panes = $('ocr-panes');
+  if (!tabs || !panes) return;
+
+  // Add tabs/panes for new monitors
+  monitors.forEach(mid => {
+    if (!$('ocr-tab-'+mid)) {
+      const tab = document.createElement('div');
+      tab.className = 'ocr-tab';
+      tab.id = 'ocr-tab-'+mid;
+      tab.dataset.mon = mid;
+      tab.textContent = 'M'+mid;
+      tab.onclick = function() { switchOcrTab(this, String(mid)); };
+      tabs.appendChild(tab);
+
+      const pane = document.createElement('div');
+      pane.className = 'ocr-pane';
+      pane.id = 'ocr-pane-'+mid;
+      pane.innerHTML = '<div class="ocr-label" id="ocr-meta-'+mid+'"></div><div class="ocr-box" id="ocr-text-'+mid+'">–</div>';
+      panes.appendChild(pane);
+    }
+  });
+  _ocrMonitors = monitors;
+}
+
+async function fetchOcrForMonitor(mid) {
+  const t0 = performance.now();
+  const d = await get('/vision/ocr?monitor_id='+mid);
+  const ms = (performance.now()-t0).toFixed(0);
+  const box = $('ocr-text-'+mid);
+  const meta = $('ocr-meta-'+mid);
+  if (!box) return;
+  if (!d) { box.textContent = 'unavailable'; return; }
+  const txt = (d.text || d.ocr_text || '').trim();
+  box.textContent = txt || '(no text detected)';
+  if (meta) meta.textContent = (d.width||'?')+'x'+(d.height||'?')+' · '+ms+'ms';
+}
+
+async function fetchOcrActive() {
+  const t0 = performance.now();
+  const d = await get('/vision/ocr');
+  const ms = (performance.now()-t0).toFixed(0);
+  const box = $('ocr-text-active');
+  if (!box) return;
+  if (!d) { box.textContent = 'unavailable'; return; }
+  const txt = (d.text || d.ocr_text || '').trim();
+  box.textContent = txt || '(no text detected)';
+  setText('ocr-latency', ms+'ms');
+}
+
+async function pollOcr() {
+  // Always refresh active tab
+  if (_activeOcrTab === 'active') {
+    await fetchOcrActive();
+  } else {
+    const mid = parseInt(_activeOcrTab);
+    if (!isNaN(mid)) await fetchOcrForMonitor(mid);
+  }
 }
 
 // ── Agents ────────────────────────────────────────────────────────────────────
@@ -412,7 +511,7 @@ async function removeAgent(agentId) {
 
 // ── Controls ─────────────────────────────────────────────────────────────────
 function refreshAll() {
-  checkHealth(); pollVision(); pollWorld(); pollPerception(); pollSpatial(); pollSystem(); pollAgents();
+  checkHealth(); pollVision(); pollWorld(); pollPerception(); pollSpatial(); pollSystem(); pollAgents(); pollOcr();
 }
 
 function copyApiUrl() {
@@ -429,7 +528,8 @@ refreshAll();
 setInterval(pollVision, 500);
 setInterval(() => { pollWorld(); pollPerception(); pollSystem(); checkHealth(); }, 2000);
 setInterval(pollSpatial, 5000);
-setInterval(pollAgents, 4000);   // agents change infrequently
+setInterval(pollAgents, 4000);
+setInterval(pollOcr, 3000);   // OCR refreshes on active tab every 3s
 </script>
 </body>
 </html>'''
