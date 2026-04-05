@@ -148,6 +148,7 @@ class _ServerState:
         self.behavior_cache: Optional[AppBehaviorCache] = None
         self.audio_interrupt: Optional[AudioInterruptDetector] = None
         self.agent_coordinator = None  # IPA v2: Multi-Agent Workbench
+        self.recording_engine = None   # Opt-in recording (disabled by default)
         self.cursor_tracker: Optional[CursorTracker] = None
         self.action_watcher: Optional[ActionCompletionWatcher] = None
         self.operating_mode: str = _normalize_operating_mode(os.environ.get("ILUMINATY_OPERATING_MODE"))  # SAFE | RAW | HYBRID
@@ -2646,6 +2647,15 @@ def init_server(
 
         # Visual Memory — persist context between AI sessions
         _state.visual_memory = VisualMemory()
+
+        # Recording Engine — opt-in local recording (disabled by default)
+        try:
+            from .recording import RecordingEngine
+            _state.recording_engine = RecordingEngine(_state.buffer)
+        except Exception as _rec_err:
+            _state.recording_engine = None
+            _state.bootstrap_warnings.append(f"recording_engine_init_failed: {_rec_err}")
+
         _state.vscode = VSCodeBridge()
         _state.terminal = TerminalManager()
         _state.git_ops = GitOps()
@@ -3767,6 +3777,176 @@ async def agent_get_messages(
         "agent_id": agent_id,
         "messages": [m.to_dict() for m in messages],
     }
+
+
+@app.post("/agents/dispatch")
+async def agent_dispatch(
+    request_body: dict,
+    x_api_key: Optional[str] = Header(None),
+):
+    """Dispatch a task from a PLANNER agent to an EXECUTOR agent.
+
+    Body:
+      to_agent  : target agent_id (or "*" to broadcast to all executors)
+      task      : natural language task description
+      monitor   : monitor_id where task should execute (default 1)
+      priority  : 0.0-1.0 (default 0.5)
+      from_agent: sender agent_id (optional)
+    """
+    _check_auth(x_api_key)
+    if not _state.agent_coordinator:
+        raise HTTPException(503, "Agent coordinator not initialized")
+
+    to_agent   = str(request_body.get("to_agent") or "*").strip()
+    task       = str(request_body.get("task") or "").strip()
+    monitor    = int(request_body.get("monitor", 1) or 1)
+    priority   = float(request_body.get("priority", 0.5) or 0.5)
+    from_agent = str(request_body.get("from_agent") or "planner").strip()
+
+    if not task:
+        raise HTTPException(400, "task is required")
+
+    payload = {"task": task, "monitor": monitor, "priority": priority}
+
+    if to_agent == "*":
+        msg = _state.agent_coordinator.send_message(
+            from_agent, "*", "task", payload
+        )
+    else:
+        if not _state.agent_coordinator.get_session(to_agent):
+            raise HTTPException(404, f"Agent {to_agent} not found")
+        msg = _state.agent_coordinator.send_message(
+            from_agent, to_agent, "task", payload
+        )
+
+    if not msg:
+        raise HTTPException(400, "Could not dispatch — check agent IDs")
+
+    # Also create a workers subgoal for scheduling
+    if _state.workers:
+        _state.workers.set_subgoal(
+            monitor_id=monitor, goal=task, priority=priority,
+            metadata={"msg_id": msg.id, "from": from_agent, "to": to_agent},
+        )
+
+    return {
+        "dispatched": True,
+        "msg_id": msg.id,
+        "from_agent": from_agent,
+        "to_agent": to_agent,
+        "task": task,
+        "monitor": monitor,
+        "priority": priority,
+    }
+
+
+@app.post("/agents/report")
+async def agent_report(
+    request_body: dict,
+    x_api_key: Optional[str] = Header(None),
+):
+    """Report task result from EXECUTOR/VERIFIER to another agent.
+
+    Body:
+      from_agent : reporting agent_id
+      to_agent   : recipient agent_id (or "*" for broadcast)
+      status     : "done" | "failed" | "verified" | "rejected"
+      result     : human-readable result description
+      payload    : optional extra data dict
+    """
+    _check_auth(x_api_key)
+    if not _state.agent_coordinator:
+        raise HTTPException(503, "Agent coordinator not initialized")
+
+    from_agent = str(request_body.get("from_agent") or "").strip()
+    to_agent   = str(request_body.get("to_agent") or "*").strip()
+    status     = str(request_body.get("status") or "done").strip()
+    result     = str(request_body.get("result") or "").strip()
+    extra      = dict(request_body.get("payload") or {})
+
+    if not from_agent:
+        raise HTTPException(400, "from_agent is required")
+
+    payload = {"status": status, "result": result, **extra}
+
+    if to_agent == "*":
+        msg = _state.agent_coordinator.send_message(from_agent, "*", "report", payload)
+    else:
+        if not _state.agent_coordinator.get_session(to_agent):
+            raise HTTPException(404, f"Agent {to_agent} not found")
+        msg = _state.agent_coordinator.send_message(from_agent, to_agent, "report", payload)
+
+    if not msg:
+        raise HTTPException(400, "Could not send report — check agent IDs")
+
+    return {
+        "reported": True,
+        "msg_id": msg.id,
+        "from_agent": from_agent,
+        "to_agent": to_agent,
+        "status": status,
+    }
+
+
+# ─── Recording (opt-in, zero-disk by default) ───
+
+@app.post("/recording/start")
+async def recording_start(
+    request_body: dict,
+    x_api_key: Optional[str] = Header(None),
+):
+    """Start screen recording to local disk.
+
+    Recording is disabled by default (zero-disk principle).
+    This endpoint enables it explicitly per-session.
+
+    Body:
+      monitors    : [1, 2, 3] or [] for all (default: all)
+      max_seconds : auto-stop after N seconds, max 600 (default: 300)
+      format      : "gif" | "webm" | "mp4" (default: "gif")
+      fps         : capture rate 0.5-10 (default: 2.0)
+    """
+    _check_auth(x_api_key)
+    if not _state.recording_engine:
+        raise HTTPException(503, "Recording engine not available")
+
+    monitors    = request_body.get("monitors") or []
+    max_seconds = int(request_body.get("max_seconds", 300) or 300)
+    fmt         = str(request_body.get("format", "gif") or "gif")
+    fps         = float(request_body.get("fps", 2.0) or 2.0)
+
+    session = _state.recording_engine.start(
+        monitors=monitors or None,
+        max_seconds=max_seconds,
+        fmt=fmt,
+        fps=fps,
+    )
+    return session.to_dict()
+
+
+@app.post("/recording/stop/{session_id}")
+async def recording_stop(
+    session_id: str,
+    x_api_key: Optional[str] = Header(None),
+):
+    """Stop a recording session. Returns final state with output paths."""
+    _check_auth(x_api_key)
+    if not _state.recording_engine:
+        raise HTTPException(503, "Recording engine not available")
+
+    session = _state.recording_engine.stop(session_id)
+    if not session:
+        raise HTTPException(404, f"Recording session {session_id} not found")
+    return session.to_dict()
+
+
+@app.get("/recording/status")
+async def recording_status(x_api_key: Optional[str] = Header(None)):
+    """Get current recording state (active sessions + recent completed)."""
+    _check_auth(x_api_key)
+    if not _state.recording_engine:
+        return {"active": [], "recent": [], "output_dir": None, "enabled": False}
+    return _state.recording_engine.status()
 
 
 # ─── Monitors (F10) ───

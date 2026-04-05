@@ -203,7 +203,52 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14
       </div>
     </div>
 
-    <!-- 7. Controls -->
+    <!-- 7. Command Bar -->
+    <div class="panel">
+      <div class="ptitle">Command</div>
+      <div style="display:flex;gap:6px;margin-bottom:6px;">
+        <select class="role-select" id="cmd-type" style="flex:0 0 90px;" onchange="updateCmdHint()">
+          <option value="act">act</option>
+          <option value="key">key</option>
+          <option value="type">type</option>
+          <option value="run">run</option>
+        </select>
+        <input id="cmd-input" type="text" placeholder='target or text...'
+          style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:4px 8px;color:var(--text);font-family:var(--mono);font-size:12px;outline:none;"
+          onkeydown="if(event.key==='Enter')sendCmd()"
+          onfocus="this.style.borderColor='var(--accent)'"
+          onblur="this.style.borderColor='var(--border)'"
+        />
+        <button class="btn-sm" onclick="sendCmd()">Run</button>
+      </div>
+      <div id="cmd-hint" style="font-size:10px;color:var(--dim);font-family:var(--mono);margin-bottom:4px;">click &quot;Save button&quot;</div>
+      <div id="cmd-result" style="font-size:10px;color:var(--muted);font-family:var(--mono);min-height:16px;"></div>
+    </div>
+
+    <!-- 8. Recording -->
+    <div class="panel">
+      <div class="ptitle" style="display:flex;justify-content:space-between;align-items:center;">
+        <span>Recording</span>
+        <span id="rec-status-badge" style="font-size:9px;color:var(--dim);font-family:var(--mono);">off</span>
+      </div>
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+        <select class="role-select" id="rec-fmt">
+          <option value="gif">GIF</option>
+          <option value="webm">WebM</option>
+          <option value="mp4">MP4</option>
+        </select>
+        <select class="role-select" id="rec-duration">
+          <option value="30">30s</option>
+          <option value="60">1min</option>
+          <option value="120">2min</option>
+          <option value="300">5min</option>
+        </select>
+        <button class="btn-sm" id="rec-btn" onclick="toggleRecording()">Start</button>
+      </div>
+      <div id="rec-info" style="font-size:10px;color:var(--dim);font-family:var(--mono);margin-top:4px;"></div>
+    </div>
+
+    <!-- 9. Controls -->
     <div class="panel">
       <div class="ptitle">Controls</div>
       <div class="btn-row">
@@ -254,7 +299,9 @@ async function pollWorld() {
   if (!d) return;
 
   // Surface — strip full exe paths
-  const surface = (d.active_surface||'').replace(/.*[\\/]([^\\/]+)\.exe.*/i,'$1');
+  const rawSurf = (d.active_surface||'');
+  const surfParts = rawSurf.split(/[\\/]/);
+  const surface = (surfParts[surfParts.length-1]||rawSurf).replace(/\.exe.*/i,'');
   setText('ctx-surface', surface.substring(0,40) || '--');
   setText('ctx-phase', d.task_phase || '--');
   setText('ctx-domain', d.domain_pack || '--');
@@ -507,6 +554,96 @@ async function removeAgent(agentId) {
     await fetch(API+'/agents/'+agentId, {method:'DELETE', headers:HEADERS});
     pollAgents();
   } catch(e) { alert('Error: '+e); }
+}
+
+// ── Command bar ───────────────────────────────────────────────────────────────
+const CMD_HINTS = {
+  act:  'click "Save button"',
+  key:  'ctrl+s',
+  type: 'hello world',
+  run:  'echo test',
+};
+function updateCmdHint() {
+  const t = $('cmd-type')?.value || 'act';
+  setText('cmd-hint', CMD_HINTS[t] || '');
+}
+
+async function sendCmd() {
+  const type  = $('cmd-type')?.value || 'act';
+  const input = ($('cmd-input')?.value || '').trim();
+  if (!input) return;
+  const res = $('cmd-result');
+  if (res) { res.textContent = 'running...'; res.style.color = 'var(--muted)'; }
+
+  let ok = false, msg = '';
+  try {
+    if (type === 'run') {
+      const r = await fetch(API+`/terminal/exec?cmd=${encodeURIComponent(input)}&timeout=15`,
+        {method:'POST', headers:HEADERS});
+      const d = await r.json();
+      ok = d.success !== false;
+      msg = (d.stdout || d.stderr || '').substring(0,200) || (ok ? 'done' : 'failed');
+    } else if (type === 'key') {
+      const r = await fetch(API+`/actions/act`,
+        {method:'POST', headers:{...HEADERS,'Content-Type':'application/json'},
+         body:JSON.stringify({action:'key', key:input})});
+      const d = await r.json(); ok = d.success !== false; msg = d.message || (ok?'sent':'failed');
+    } else if (type === 'type') {
+      const r = await fetch(API+`/actions/act`,
+        {method:'POST', headers:{...HEADERS,'Content-Type':'application/json'},
+         body:JSON.stringify({action:'type', text:input})});
+      const d = await r.json(); ok = d.success !== false; msg = d.message || (ok?'typed':'failed');
+    } else {
+      // act — treat input as target for click
+      const r = await fetch(API+`/actions/act`,
+        {method:'POST', headers:{...HEADERS,'Content-Type':'application/json'},
+         body:JSON.stringify({action:'click', target:input})});
+      const d = await r.json(); ok = d.success !== false; msg = d.message || (ok?'clicked':'failed');
+    }
+  } catch(e) { msg = String(e); }
+
+  if (res) {
+    res.textContent = msg;
+    res.style.color = ok ? 'var(--accent)' : 'var(--danger)';
+  }
+}
+
+// ── Recording ─────────────────────────────────────────────────────────────────
+let _activeRecId = null;
+
+async function toggleRecording() {
+  if (_activeRecId) {
+    // Stop
+    try {
+      const r = await fetch(API+`/recording/stop/${_activeRecId}`,{method:'POST',headers:HEADERS});
+      const d = await r.json();
+      _activeRecId = null;
+      $('rec-btn').textContent = 'Start';
+      $('rec-status-badge').textContent = 'off';
+      $('rec-status-badge').style.color = 'var(--dim)';
+      const paths = Object.values(d.paths||{});
+      const recPath = paths.length ? paths[0] : '';
+      const recFile = recPath ? recPath.split(/[\\/]/).pop() : '';
+      setText('rec-info', recFile ? recFile + ` (${d.size_mb}MB)` : 'saved');
+    } catch(e) { setText('rec-info', 'Stop failed: '+e); }
+  } else {
+    // Start
+    const fmt = $('rec-fmt')?.value || 'gif';
+    const dur = parseInt($('rec-duration')?.value || '30');
+    try {
+      const r = await fetch(API+'/recording/start', {
+        method:'POST', headers:{...HEADERS,'Content-Type':'application/json'},
+        body: JSON.stringify({format:fmt, max_seconds:dur, fps:2}),
+      });
+      if (!r.ok) { const e=await r.json(); setText('rec-info','Error: '+(e.detail||r.status)); return; }
+      const d = await r.json();
+      _activeRecId = d.id;
+      $('rec-btn').textContent = 'Stop';
+      $('rec-status-badge').textContent = 'REC';
+      $('rec-status-badge').style.color = 'var(--danger)';
+      setText('rec-info', `${d.id.substring(0,8)} · ${fmt.toUpperCase()} · max ${dur}s`);
+    } catch(e) { setText('rec-info', 'Start failed: '+e); }
+  }
 }
 
 // ── Controls ─────────────────────────────────────────────────────────────────

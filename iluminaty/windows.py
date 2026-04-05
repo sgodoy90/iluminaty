@@ -148,23 +148,58 @@ class WindowManager:
         return windows
 
     def _list_windows_mac(self) -> list[WindowInfo]:
+        """List windows on macOS via osascript. Returns handle=PID (no true HWND on Mac)."""
         try:
-            script = '''
-            tell application "System Events"
-                set windowList to {}
-                repeat with proc in (every process whose visible is true)
-                    repeat with win in (every window of proc)
-                        set end of windowList to {name of win, name of proc, position of win, size of win}
-                    end repeat
-                end repeat
-                return windowList
-            end tell
-            '''
-            result = subprocess.run(["osascript", "-e", script],
-                                    capture_output=True, text=True, timeout=5)
-            # Parse AppleScript output (simplified)
-            return []  # TODO: parse AppleScript list output
-        except Exception:
+            # Returns: "title|procname|x|y|w|h\n..." — pipe-delimited for easy parsing
+            script = (
+                'set out to ""\n'
+                'tell application "System Events"\n'
+                '  repeat with proc in (every process whose visible is true)\n'
+                '    set pname to name of proc\n'
+                '    set ppid to unix id of proc\n'
+                '    repeat with win in (every window of proc)\n'
+                '      set wtitle to name of win\n'
+                '      set pos to position of win\n'
+                '      set sz to size of win\n'
+                '      set out to out & wtitle & "|" & pname & "|" & ppid & "|"\n'
+                '        & (item 1 of pos) & "|" & (item 2 of pos) & "|"\n'
+                '        & (item 1 of sz)  & "|" & (item 2 of sz)  & "\n"\n'
+                '    end repeat\n'
+                '  end repeat\n'
+                'end tell\n'
+                'return out\n'
+            )
+            result = subprocess.run(
+                ["osascript", "-e", script],
+                capture_output=True, text=True, timeout=8,
+            )
+            if result.returncode != 0:
+                return []
+            windows = []
+            for line in result.stdout.strip().splitlines():
+                parts = line.split("|")
+                if len(parts) < 7:
+                    continue
+                title, pname, ppid_s, x_s, y_s, w_s, h_s = parts[:7]
+                try:
+                    ppid = int(ppid_s)
+                    x, y = int(x_s), int(y_s)
+                    w, h = int(w_s), int(h_s)
+                except ValueError:
+                    continue
+                windows.append(WindowInfo(
+                    handle=ppid,   # Mac: use PID as pseudo-handle
+                    title=title.strip(),
+                    pid=ppid,
+                    x=x, y=y, width=w, height=h,
+                    is_visible=True,
+                    is_minimized=False,
+                    is_maximized=False,
+                    app_name=pname.strip(),
+                ))
+            return windows
+        except Exception as e:
+            logger.debug("_list_windows_mac failed: %s", e)
             return []
 
     def _list_windows_linux(self) -> list[WindowInfo]:

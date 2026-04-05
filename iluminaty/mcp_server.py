@@ -2995,6 +2995,161 @@ def handle_save_session_memory(args: dict) -> list:
     return [{"type": "text", "text": "Memory save failed — will retry on server shutdown."}]
 
 
+def handle_screen_record(args: dict) -> list:
+    """Record screen to local disk (opt-in). Zero-disk by default.
+
+    Args:
+      action   : "start" | "stop" | "status"
+      session_id: required for action="stop"
+      monitors : [1,2,3] or omit for all
+      duration : max seconds (default 30 for quick capture, max 600)
+      format   : "gif" | "webm" | "mp4" (default: "gif")
+      fps      : capture rate (default: 2)
+    """
+    action = str(args.get("action", "start")).strip().lower()
+
+    if action == "status":
+        try:
+            data = _api_get("/recording/status")
+            active = data.get("active", [])
+            lines = ["## Recording Status"]
+            lines.append(f"Output dir: {data.get('output_dir','~/.iluminaty/recordings/')}")
+            if active:
+                for s in active:
+                    lines.append(f"- [{s['id'][:8]}] M{s['monitors']} {s['format']} {s['duration_s']}s {s['frames']} frames")
+            else:
+                lines.append("No active recordings.")
+            return [{"type": "text", "text": "\n".join(lines)}]
+        except Exception as e:
+            return [{"type": "text", "text": f"Recording status failed: {e}"}]
+
+    if action == "stop":
+        session_id = str(args.get("session_id") or "").strip()
+        if not session_id:
+            return [{"type": "text", "text": "Error: session_id required to stop recording"}]
+        try:
+            data = _api_post(f"/recording/stop/{session_id}")
+        except Exception as e:
+            return [{"type": "text", "text": f"Stop recording failed: {e}"}]
+        paths = list(data.get("paths", {}).values())
+        return [{"type": "text", "text": (
+            f"Recording stopped: {data.get('duration_s','?')}s, "
+            f"{data.get('frames','?')} frames, {data.get('size_mb','?')}MB\n"
+            f"Saved to: {', '.join(paths)}"
+        )}]
+
+    # action == "start"
+    body = {
+        "monitors":    args.get("monitors") or [],
+        "max_seconds": int(args.get("duration", 30) or 30),
+        "format":      str(args.get("format", "gif") or "gif"),
+        "fps":         float(args.get("fps", 2.0) or 2.0),
+    }
+    try:
+        data = _api_post("/recording/start", body=body)
+    except Exception as e:
+        return [{"type": "text", "text": f"Start recording failed: {e}"}]
+
+    return [{"type": "text", "text": (
+        f"Recording started: id={data.get('id','?')[:12]} "
+        f"monitors={data.get('monitors','?')} fmt={data.get('format','?')} "
+        f"max={data.get('max_seconds','?')}s\n"
+        f"Stop with: screen_record(action='stop', session_id='{data.get('id','?')}')"
+    )}]
+
+
+def handle_agent_dispatch(args: dict) -> list:
+    """Dispatch a task from this agent to another agent.
+
+    Use when you have role=planner and want to assign work to an executor.
+    The executor will receive the task in their next inbox() call.
+    """
+    to_agent   = str(args.get("to_agent") or "*").strip()
+    task       = str(args.get("task") or "").strip()
+    monitor    = args.get("monitor", 1)
+    priority   = float(args.get("priority", 0.5))
+    from_agent = str(args.get("from_agent") or "planner").strip()
+
+    if not task:
+        return [{"type": "text", "text": "Error: task is required"}]
+
+    body = {"to_agent": to_agent, "task": task, "monitor": monitor,
+            "priority": priority, "from_agent": from_agent}
+    try:
+        data = _api_post("/agents/dispatch", body=body)
+    except Exception as e:
+        return [{"type": "text", "text": f"Dispatch failed: {e}"}]
+
+    return [{"type": "text", "text": (
+        f"Task dispatched to {to_agent}: '{task[:80]}' "
+        f"(msg_id={data.get('msg_id','?')}, monitor={monitor}, priority={priority})"
+    )}]
+
+
+def handle_agent_inbox(args: dict) -> list:
+    """Check pending messages in this agent's inbox.
+
+    Returns tasks dispatched by a planner, reports from executors,
+    or verification results from verifiers.
+    """
+    agent_id  = str(args.get("agent_id") or "").strip()
+    max_count = int(args.get("max_count", 10))
+
+    if not agent_id:
+        return [{"type": "text", "text": "Error: agent_id is required"}]
+
+    try:
+        data = _api_get(f"/agents/{agent_id}/messages?max_count={max_count}")
+    except Exception as e:
+        return [{"type": "text", "text": f"Inbox failed: {e}"}]
+
+    messages = data.get("messages", [])
+    if not messages:
+        return [{"type": "text", "text": f"Inbox empty for {agent_id}"}]
+
+    lines = [f"## Inbox ({len(messages)} messages)"]
+    for m in messages:
+        lines.append(
+            f"\n**[{m.get('type','?').upper()}]** from={m.get('from','?')} "
+            f"id={m.get('id','?')[:10]}"
+        )
+        payload = m.get("payload", {})
+        if "task" in payload:
+            lines.append(f"  Task: {payload['task'][:120]}")
+            lines.append(f"  Monitor: {payload.get('monitor','?')} | Priority: {payload.get('priority','?')}")
+        elif "status" in payload:
+            lines.append(f"  Status: {payload['status']} | Result: {str(payload.get('result',''))[:120]}")
+        else:
+            lines.append(f"  Payload: {str(payload)[:120]}")
+    return [{"type": "text", "text": "\n".join(lines)}]
+
+
+def handle_agent_report(args: dict) -> list:
+    """Report task completion or verification result to another agent.
+
+    Use after finishing a task (executor→planner) or after verification (verifier→planner).
+    """
+    from_agent = str(args.get("from_agent") or "").strip()
+    to_agent   = str(args.get("to_agent") or "*").strip()
+    status     = str(args.get("status") or "done").strip()
+    result     = str(args.get("result") or "").strip()
+
+    if not from_agent:
+        return [{"type": "text", "text": "Error: from_agent is required"}]
+
+    body = {"from_agent": from_agent, "to_agent": to_agent,
+            "status": status, "result": result}
+    try:
+        data = _api_post("/agents/report", body=body)
+    except Exception as e:
+        return [{"type": "text", "text": f"Report failed: {e}"}]
+
+    return [{"type": "text", "text": (
+        f"Report sent from {from_agent} to {to_agent}: "
+        f"status={status} (msg_id={data.get('msg_id','?')})"
+    )}]
+
+
 HANDLERS = {
     # ── Vision (IPA v3 + OCR) ──
     "see_screen": handle_see_screen,
@@ -3038,6 +3193,12 @@ HANDLERS = {
     "read_file": handle_read_file,
     "write_file": handle_write_file,
     "get_clipboard": handle_get_clipboard,
+    # ── Recording (opt-in) ──
+    "screen_record":    handle_screen_record,
+    # ── Multi-agent coordination ──
+    "agent_dispatch":   handle_agent_dispatch,
+    "agent_inbox":      handle_agent_inbox,
+    "agent_report":     handle_agent_report,
     # ── Status ──
     "screen_status": handle_status,
     "agent_status": handle_agent_status,

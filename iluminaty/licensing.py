@@ -45,6 +45,10 @@ ALL_MCP_TOOLS = {
     "browser_navigate", "browser_tabs",
     # Files / system
     "run_command", "read_file", "write_file", "get_clipboard",
+    # Recording
+    "screen_record",
+    # Multi-agent coordination
+    "agent_dispatch", "agent_inbox", "agent_report",
     # Status
     "screen_status", "agent_status", "get_audio_level",
     "os_dialog_status", "os_dialog_resolve",
