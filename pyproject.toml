@@ -42,6 +42,8 @@ ocr = [
     "rapidocr>=3.0",
     "onnxruntime>=1.15",
     "opencv-python>=4.5",
+    # Tip: replace opencv-python with opencv-python-headless to save ~40MB disk space:
+    #   pip install opencv-python-headless  (no GUI dependencies)
 ]
 vlm = [
     "torch>=2.3",
