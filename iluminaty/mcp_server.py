@@ -1181,22 +1181,25 @@ TOOLS = [
     {
         "name": "map_environment",
         "description": (
-            "SPATIAL AWARENESS TOOL — call this ONCE at the start of any UI task and after every click to verify precision.\n\n"
-            "Returns in a single call:\n"
-            "  1. Global desktop map: all monitors, their pixel offsets, sizes, and positions relative to each other\n"
-            "  2. Cursor position: global (x,y) AND monitor-relative (x,y) for every monitor\n"
-            "  3. Which monitor contains the cursor RIGHT NOW\n"
-            "  4. Active window title + which monitor it is on\n"
-            "  5. Native screenshot of the target monitor with:\n"
-            "       - Red crosshair marking EXACT cursor position\n"
-            "       - Coordinate labels on the crosshair (monitor-relative pixels)\n"
-            "       - Grid lines every 100px with labels for precise element measurement\n\n"
-            "HOW TO USE:\n"
-            "  Step 1: call map_environment(monitor=N) — study the image, read element positions from the grid\n"
-            "  Step 2: note the pixel coords of the target element (monitor-relative)\n"
-            "  Step 3: act(click, x=<that_x>, y=<that_y>, monitor=N)\n"
-            "  Step 4: call map_environment(monitor=N) again — verify crosshair landed on correct element\n\n"
-            "This is the equivalent of Computer Use's coordinate system but for multi-monitor setups."
+            "UNIVERSAL VISUAL GROUNDING TOOL — the ONLY way to know where elements are before acting.\n\n"
+            "Use this for ANY task that requires knowing what is on screen: clicking buttons, filling forms,\n"
+            "opening apps, navigating menus, dragging windows, reading text — anything visual.\n\n"
+            "Returns in ONE call:\n"
+            "  1. Global desktop map: all monitors, offsets, sizes, topology (which monitor is left/right/top)\n"
+            "  2. Cursor: global (x,y) + monitor-relative (x,y) + which monitor it is in RIGHT NOW\n"
+            "  3. Active window title and which monitor it is on\n"
+            "  4. Native 1:1 screenshot of the target monitor with:\n"
+            "       - Red crosshair at EXACT current cursor position\n"
+            "       - Grid lines every 100px with pixel labels for precise element measurement\n\n"
+            "UNIVERSAL PIPELINE (same for every task):\n"
+            "  BEFORE acting: map_environment(scale=1.0, grid=True)\n"
+            "    → Read element coords from the grid. These are the ONLY coords you may use.\n"
+            "  ACT: act(click/type/key, x=<from_image>, y=<from_image>, monitor=N)\n"
+            "  AFTER acting: map_environment(scale=1.0, grid=False)\n"
+            "    → Verify the crosshair landed on the correct element.\n"
+            "    → If it did NOT land correctly: STOP. Diagnose. Do not retry blindly.\n\n"
+            "Never skip the BEFORE step. Never use coords from memory or a previous call.\n"
+            "The image in this call is ground truth — everything else is a guess."
         ),
         "inputSchema": {
             "type": "object",
@@ -4246,15 +4249,13 @@ def run_mcp_stdio():
                         # and enforces mandatory visual check before every action.
                         _PIPELINE_REMINDER = (
                             "\n\n---\n"
-                            "**[ILUMINATY PROTOCOL — MANDATORY]**\n"
-                            "1. 👁 **SEE BEFORE YOU ACT** — `see_now` FIRST, always. "
-                            "No exceptions. If you don't know what's on screen RIGHT NOW, you will fail.\n"
-                            "2. 📍 **MAP COORDS** — After `see_now`, call `map_environment(monitor=N)` "
-                            "to get exact pixel coords with crosshair + grid before any click.\n"
-                            "3. 🎯 **ACT** — `open_path` / `operate_cycle` / `act` with the verified coords.\n"
-                            "4. ✅ **VERIFY** — `map_environment` again after the action. "
-                            "Crosshair must land on target. If it didn't, diagnose before retrying.\n"
-                            "⛔ Never skip step 1. Never click without step 2. Never assume — always verify with eyes."
+                            "**[ILUMINATY — UNIVERSAL PIPELINE]**\n"
+                            "Every action, every task, no exceptions:\n"
+                            "BEFORE → `map_environment(scale=1.0, grid=True)` — read coords from the image.\n"
+                            "ACT    → use ONLY coords read from that image.\n"
+                            "AFTER  → `map_environment(scale=1.0, grid=False)` — verify crosshair landed correctly.\n"
+                            "If crosshair is wrong: STOP and diagnose. Never retry blindly.\n"
+                            "This pipeline is the same for forms, apps, menus, files — everything."
                         )
                         # Append to last text block only — avoid polluting image/binary content
                         if content and content[-1].get("type") == "text":
