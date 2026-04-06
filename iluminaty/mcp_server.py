@@ -591,7 +591,42 @@ VISION_MODE = os.environ.get("ILUMINATY_VISION_MODE", "medium_res")
 
 # ─── MCP Tool Definitions ───
 
-TOOLS = [
+# ── M003 S03: 20 essential tools only ───────────────────────────────────────
+# Everything else removed to reduce AI confusion and token waste.
+# To restore a tool: add its name back to _ALLOWED_TOOLS.
+_ALLOWED_TOOLS = {
+    # Vision — real eyes for the AI
+    "see_now",          # screenshot → saves to disk → use Read(path) to view
+    "see_region",       # zoom into specific area
+    "what_changed",     # what changed since last frame (no screenshot needed)
+    "verify_action",    # did my last action have a visual effect?
+    # Spatial awareness — multimonitor
+    "get_spatial_context",  # monitor layout, active window, user focus
+    "map_environment",      # coordinate grid overlay per monitor
+    # Wait for events
+    "watch_and_notify", # wait until condition (window_changed, text_visible, idle...)
+    # Actions — no coordinates needed
+    "act_on",           # click/type by element name via UIA (most reliable)
+    "act",              # click/type by coordinates (fallback)
+    # UI inspection
+    "uia_find_all",     # list all interactive elements in active window
+    "uia_focused",      # which element has keyboard focus right now
+    "find_on_screen",   # locate element by text/description
+    # Window management
+    "list_windows",     # what windows are open and where
+    "focus_window",     # bring a window to the front
+    # System
+    "open_path",        # open file / app / URL
+    "run_command",      # run a shell command
+    "os_dialog_resolve", # close blocking system dialogs (save/open/error)
+    # Files
+    "read_file",        # read a file
+    "write_file",       # write a file
+    # Status
+    "screen_status",    # ILUMINATY server status
+}
+
+_TOOLS_RAW = [
     # ── Vision — IPA v3 + real frames ────────────────────────────────────────
     {
         "name": "see_now",
@@ -1379,6 +1414,9 @@ TOOLS = [
         },
     },
 ]
+
+# Filter to only allowed tools — keeps the list clean for the AI
+TOOLS = [t for t in _TOOLS_RAW if t.get("name") in _ALLOWED_TOOLS]
 
 
 # ─── Tool Handlers ───
