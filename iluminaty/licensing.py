@@ -50,6 +50,7 @@ ALL_MCP_TOOLS = {
     "map_environment",
     "uia_focused",
     "uia_element_at",
+    "uia_find_all",
     "open_path",
     "open_on_monitor",
     # Recording

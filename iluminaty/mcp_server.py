@@ -1258,6 +1258,39 @@ TOOLS = [
         },
     },
     {
+        "name": "uia_find_all",
+        "description": (
+            "Ask the OS: list ALL interactive UI elements in the active window.\n\n"
+            "Returns every Button, Input, CheckBox, RadioButton, ComboBox, Link, and Slider\n"
+            "with their exact name, control type, and monitor-relative center coords.\n\n"
+            "USE THIS at the start of any task to map a form, dialog, or app — one call gives you\n"
+            "the complete field inventory with OS-verified coordinates, ready to use with act().\n\n"
+            "Parameters:\n"
+            "  window_title: (optional) target a specific window by title substring.\n"
+            "                Defaults to the currently active/foreground window.\n"
+            "  monitor:      (optional) which monitor to report coords relative to (default: auto).\n\n"
+            "Example output:\n"
+            "  Edit       'Customer name:'    M1(206, 141)\n"
+            "  Edit       'Telephone:'        M1(171, 178)\n"
+            "  RadioButton 'Small'            M1(35, 291)\n"
+            "  CheckBox   'Bacon'             M1(34, 451)\n"
+            "  Button     'Submit order'      M1(54, 720)"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "window_title": {
+                    "type": "string",
+                    "description": "Target window title substring (optional, defaults to foreground window)",
+                },
+                "monitor": {
+                    "type": "integer",
+                    "description": "Monitor number for relative coords (optional, auto-detected)",
+                },
+            },
+        },
+    },
+    {
         "name": "screen_status",
         "description": "System status: buffer stats, capture state, FPS, active window.",
         "inputSchema": {"type": "object", "properties": {}},
@@ -1602,6 +1635,129 @@ def handle_uia_element_at(args: dict) -> list:
     except Exception as e:
         import traceback
         return [{"type": "text", "text": f"uia_element_at error: {e}\n{traceback.format_exc()}"}]
+
+
+def handle_uia_find_all(args: dict) -> list:
+    """List all interactive UI elements in the active (or specified) window — OS verified."""
+    window_title = args.get("window_title", "").strip()
+    force_monitor = args.get("monitor", None)
+
+    # Interactive control types to include
+    INTERACTIVE = {
+        50000: "Button",
+        50002: "CheckBox",
+        50003: "ComboBox",
+        50004: "Edit/Input",
+        50005: "Hyperlink",
+        50009: "RadioButton",
+        50011: "Slider",
+        50012: "Spinner",
+        50013: "RadioButton",
+        50016: "Spinner",
+        50028: "SplitButton",
+    }
+
+    try:
+        import ctypes, ctypes.wintypes as _wt
+        uia, _UIA = _uia_init()
+
+        # Resolve target window
+        if window_title:
+            # Search all top-level windows for title match
+            root = uia.GetRootElement()
+            cond = uia.CreatePropertyCondition(
+                _UIA.UIA_NamePropertyId, window_title
+            )
+            # Try exact first, then fall back to scanning children
+            target = None
+            cond_win = uia.CreatePropertyCondition(
+                _UIA.UIA_ControlTypePropertyId, 50029  # Window
+            )
+            wins = root.FindAll(_UIA.TreeScope_Children, cond_win)
+            for i in range(wins.Length):
+                w = wins.GetElement(i)
+                if window_title.lower() in (w.CurrentName or "").lower():
+                    target = w
+                    break
+            if target is None:
+                return [{"type": "text", "text": f"uia_find_all: no window matching '{window_title}' found"}]
+        else:
+            # Use foreground window
+            fg_hwnd = ctypes.windll.user32.GetForegroundWindow()
+            if not fg_hwnd:
+                return [{"type": "text", "text": "uia_find_all: no foreground window"}]
+            target = uia.ElementFromHandle(fg_hwnd)
+
+        win_name = target.CurrentName or "(unknown)"
+
+        # Collect monitor layout once via mss
+        mon_layout = []
+        try:
+            import mss as _mss
+            with _mss.mss() as sct:
+                for idx, m in enumerate(sct.monitors[1:], start=1):
+                    mon_layout.append((idx, m["left"], m["top"], m["width"], m["height"]))
+        except Exception:
+            pass
+
+        def to_mon_rel(cx, cy):
+            if force_monitor is not None:
+                for mid, ml, mt, mw, mh in mon_layout:
+                    if mid == force_monitor:
+                        return mid, cx - ml, cy - mt
+            for mid, ml, mt, mw, mh in mon_layout:
+                if ml <= cx < ml + mw and mt <= cy < mt + mh:
+                    return mid, cx - ml, cy - mt
+            return "?", cx, cy
+
+        # Find all interactive elements
+        cond_true = uia.CreateTrueCondition()
+        all_elems = target.FindAll(_UIA.TreeScope_Descendants, cond_true)
+
+        rows = []
+        seen_rects = set()  # deduplicate overlapping elements
+        for i in range(all_elems.Length):
+            e = all_elems.GetElement(i)
+            ct = e.CurrentControlType
+            if ct not in INTERACTIVE:
+                continue
+            try:
+                name = (e.CurrentName or "").strip()
+                r    = e.CurrentBoundingRectangle
+                # Skip zero-size elements
+                if r.right <= r.left or r.bottom <= r.top:
+                    continue
+                cx = (r.left + r.right) // 2
+                cy = (r.top + r.bottom) // 2
+                key = (r.left, r.top, r.right, r.bottom)
+                if key in seen_rects:
+                    continue
+                seen_rects.add(key)
+                mid, rx, ry = to_mon_rel(cx, cy)
+                rows.append((INTERACTIVE[ct], name, mid, rx, ry, r.left, r.top, r.right, r.bottom))
+            except Exception:
+                continue
+
+        if not rows:
+            return [{"type": "text", "text": f"uia_find_all: no interactive elements found in '{win_name}'"}]
+
+        # Sort top-to-bottom, left-to-right (reading order)
+        rows.sort(key=lambda r: (r[4], r[3]))
+
+        lines = [f"[INTERACTIVE ELEMENTS — '{win_name}'] ({len(rows)} found, OS verified)\n"]
+        lines.append(f"  {'Type':<18} {'Name':<40} {'Coords'}")
+        lines.append(f"  {'-'*18} {'-'*40} {'-'*20}")
+        for ct_name, name, mid, rx, ry, l, t, rr, b in rows:
+            name_str = repr(name)[:38] if name else "(no name)"
+            lines.append(f"  {ct_name:<18} {name_str:<40} M{mid}({rx}, {ry})")
+
+        lines.append(f"\nUse the M#(x, y) coords directly with act(click, x=..., y=..., monitor=...).")
+        lines.append("Verify with uia_focused() after each click before typing.")
+        return [{"type": "text", "text": "\n".join(lines)}]
+
+    except Exception as e:
+        import traceback
+        return [{"type": "text", "text": f"uia_find_all error: {e}\n{traceback.format_exc()}"}]
 
 
 def _parse_mon(m: dict) -> tuple:
@@ -4219,6 +4375,7 @@ HANDLERS = {
     "map_environment":  handle_map_environment,
     "uia_focused":      handle_uia_focused,
     "uia_element_at":   handle_uia_element_at,
+    "uia_find_all":     handle_uia_find_all,
     "open_path":        handle_open_path,
     "open_on_monitor":  handle_open_on_monitor,
     # ── Recording (opt-in) ──
