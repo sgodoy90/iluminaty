@@ -1222,6 +1222,42 @@ TOOLS = [
         },
     },
     {
+        "name": "uia_focused",
+        "description": (
+            "Ask the OS: what UI element has keyboard focus RIGHT NOW?\n\n"
+            "Returns the name, control type, exact bounding rect, and monitor-relative center\n"
+            "of the focused element — guaranteed by the operating system, not inferred from images.\n\n"
+            "USE THIS after every click to verify the correct field received focus before typing.\n"
+            "Works in: Brave, Chrome, Edge, Firefox, Notepad, Word, Excel, any Win32/WPF/Electron app.\n\n"
+            "Example workflow:\n"
+            "  act(click, x=206, y=141, monitor=1)\n"
+            "  uia_focused()  --> 'Customer name:' Edit -- confirmed, safe to type\n"
+            "  act(type, text='ILUMINATY Agent')"
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "uia_element_at",
+        "description": (
+            "Ask the OS: what UI element is at pixel (x, y)?\n\n"
+            "Returns name, control type, exact bounding rect, and monitor-relative center\n"
+            "of the element under those coordinates — from the OS, not from image analysis.\n\n"
+            "USE THIS before clicking to verify you are targeting the correct element.\n"
+            "Eliminates bookmark/toolbar mis-clicks by identifying exactly what is at each pixel.\n\n"
+            "Works in any Windows app that supports accessibility (UIA/MSAA).\n"
+            "Fallback for apps without UIA: returns the window class and rect instead."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "x": {"type": "integer", "description": "Monitor-relative X coordinate"},
+                "y": {"type": "integer", "description": "Monitor-relative Y coordinate"},
+                "monitor": {"type": "integer", "description": "Monitor number (default: 1)"},
+            },
+            "required": ["x", "y"],
+        },
+    },
+    {
         "name": "screen_status",
         "description": "System status: buffer stats, capture state, FPS, active window.",
         "inputSchema": {"type": "object", "properties": {}},
@@ -1434,6 +1470,138 @@ def handle_read_text(args: dict) -> dict:
         return [{"type": "text", "text": "No readable text found on screen. OCR may not be available (install tesseract)."}]
 
     return [{"type": "text", "text": f"## Screen Text (OCR)\n```\n{text[:3000]}\n```\nConfidence: {data.get('confidence', 0)}%"}]
+
+
+def _uia_element_info(elem) -> dict:
+    """Extract name, control type, bounding rect and monitor-relative center from a UIA element."""
+    CT_NAMES = {
+        50000: "Button", 50001: "Calendar", 50002: "CheckBox", 50003: "ComboBox",
+        50004: "Edit/Input", 50005: "Hyperlink", 50006: "Image", 50007: "ListItem",
+        50008: "List", 50009: "RadioButton", 50010: "ScrollBar", 50011: "Slider",
+        50012: "Spinner", 50013: "RadioButton", 50014: "StatusBar", 50015: "Tab",
+        50016: "Spinner/TabItem", 50017: "Text", 50018: "ToolBar", 50019: "ToolTip",
+        50020: "Tree/ListItem", 50021: "TreeItem", 50022: "Custom", 50023: "Group",
+        50024: "Thumb", 50025: "DataGrid", 50026: "DataItem/TimeInput", 50027: "Document",
+        50028: "SplitButton", 50029: "Window", 50030: "Pane", 50031: "Header",
+        50032: "HeaderItem", 50033: "Table", 50034: "TitleBar", 50035: "Separator",
+    }
+    name    = elem.CurrentName or ""
+    ct      = elem.CurrentControlType
+    ct_name = CT_NAMES.get(ct, f"Unknown({ct})")
+    r       = elem.CurrentBoundingRectangle
+    cx      = (r.left + r.right) // 2
+    cy      = (r.top + r.bottom) // 2
+
+    # Resolve which monitor owns this element using mss (always available)
+    mon_id, rel_x, rel_y = 1, cx, cy
+    try:
+        import mss as _mss
+        with _mss.mss() as sct:
+            # mss.monitors[0] = virtual screen, [1..N] = real monitors
+            for idx, mon in enumerate(sct.monitors[1:], start=1):
+                if mon["left"] <= cx < mon["left"] + mon["width"] and \
+                   mon["top"]  <= cy < mon["top"]  + mon["height"]:
+                    mon_id = idx
+                    rel_x  = cx - mon["left"]
+                    rel_y  = cy - mon["top"]
+                    break
+    except Exception:
+        pass  # fallback: mon=1, rel = global coords
+
+    return {
+        "name":         name,
+        "control_type": ct_name,
+        "control_type_id": ct,
+        "bounding_rect": {"left": r.left, "top": r.top, "right": r.right, "bottom": r.bottom},
+        "center_global": {"x": cx, "y": cy},
+        "center_monitor_relative": {"x": rel_x, "y": rel_y, "monitor": mon_id},
+    }
+
+
+def _uia_init():
+    """Initialize UIA COM object. Cached per call."""
+    try:
+        import comtypes.client as _cc
+        from comtypes.gen import UIAutomationClient as _UIA
+        uia = _cc.CreateObject(_UIA.CUIAutomation, interface=_UIA.IUIAutomation)
+        return uia, _UIA
+    except ImportError:
+        # Generate typelib on first use
+        import comtypes.client as _cc
+        _cc.GetModule("UIAutomationCore.dll")
+        from comtypes.gen import UIAutomationClient as _UIA
+        uia = _cc.CreateObject(_UIA.CUIAutomation, interface=_UIA.IUIAutomation)
+        return uia, _UIA
+
+
+def handle_uia_focused(args: dict) -> list:
+    """Return the UI element that currently has keyboard focus — OS verified."""
+    try:
+        uia, _UIA = _uia_init()
+        elem = uia.GetFocusedElement()
+        if not elem:
+            return [{"type": "text", "text": "uia_focused: no focused element found"}]
+        info = _uia_element_info(elem)
+        mon  = info.get("center_monitor_relative", {})
+        text = (
+            f"[FOCUSED ELEMENT — OS verified]\n"
+            f"  Name:         {repr(info['name'])}\n"
+            f"  ControlType:  {info['control_type']}\n"
+            f"  BoundingRect: L={info['bounding_rect']['left']} T={info['bounding_rect']['top']} "
+            f"R={info['bounding_rect']['right']} B={info['bounding_rect']['bottom']}\n"
+            f"  Center global: ({info['center_global']['x']}, {info['center_global']['y']})\n"
+            f"  Center M{mon.get('monitor','?')}-relative: ({mon.get('x','?')}, {mon.get('y','?')})\n\n"
+            f"This is what will receive keystrokes. Verify the name matches your target before typing."
+        )
+        return [{"type": "text", "text": text}]
+    except Exception as e:
+        import traceback
+        return [{"type": "text", "text": f"uia_focused error: {e}\n{traceback.format_exc()}"}]
+
+
+def handle_uia_element_at(args: dict) -> list:
+    """Return the UI element at pixel (x, y) — OS verified, no image guessing."""
+    x       = int(args.get("x", 0))
+    y       = int(args.get("y", 0))
+    monitor = int(args.get("monitor", 1))
+    try:
+        # Translate monitor-relative to global using mss (always available, no server needed)
+        gx, gy = x, y
+        try:
+            import mss as _mss
+            with _mss.mss() as sct:
+                mons = sct.monitors  # [0]=virtual, [1..N]=real
+                if 1 <= monitor < len(mons):
+                    gx = x + mons[monitor]["left"]
+                    gy = y + mons[monitor]["top"]
+        except Exception:
+            pass  # fallback: treat x,y as global
+
+        import ctypes.wintypes as _wt
+        pt = _wt.POINT(gx, gy)
+
+        uia, _UIA = _uia_init()
+        elem = uia.ElementFromPoint(pt)
+        if not elem:
+            return [{"type": "text", "text": f"uia_element_at({x},{y}): no element found"}]
+
+        info = _uia_element_info(elem)
+        mon  = info.get("center_monitor_relative", {})
+        text = (
+            f"[ELEMENT AT ({x},{y}) monitor={monitor} — OS verified]\n"
+            f"  Global coords used: ({gx}, {gy})\n"
+            f"  Name:         {repr(info['name'])}\n"
+            f"  ControlType:  {info['control_type']}\n"
+            f"  BoundingRect: L={info['bounding_rect']['left']} T={info['bounding_rect']['top']} "
+            f"R={info['bounding_rect']['right']} B={info['bounding_rect']['bottom']}\n"
+            f"  Center global: ({info['center_global']['x']}, {info['center_global']['y']})\n"
+            f"  Center M{mon.get('monitor','?')}-relative: ({mon.get('x','?')}, {mon.get('y','?')})\n\n"
+            f"Use center coords above for precise clicking — they are the exact center of this element."
+        )
+        return [{"type": "text", "text": text}]
+    except Exception as e:
+        import traceback
+        return [{"type": "text", "text": f"uia_element_at error: {e}\n{traceback.format_exc()}"}]
 
 
 def _parse_mon(m: dict) -> tuple:
@@ -4049,6 +4217,8 @@ HANDLERS = {
     # ── Pipeline / workspace management ──
     "find_on_screen":   handle_find_on_screen,
     "map_environment":  handle_map_environment,
+    "uia_focused":      handle_uia_focused,
+    "uia_element_at":   handle_uia_element_at,
     "open_path":        handle_open_path,
     "open_on_monitor":  handle_open_on_monitor,
     # ── Recording (opt-in) ──

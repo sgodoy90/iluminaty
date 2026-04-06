@@ -48,6 +48,8 @@ ALL_MCP_TOOLS = {
     # Pipeline / workspace
     "find_on_screen",
     "map_environment",
+    "uia_focused",
+    "uia_element_at",
     "open_path",
     "open_on_monitor",
     # Recording
