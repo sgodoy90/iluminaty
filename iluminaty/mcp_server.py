@@ -1483,14 +1483,9 @@ def handle_see_screen(args: dict) -> dict:
     mode = args.get("mode", VISION_MODE)
     monitor = args.get("monitor")
 
-    # Save screenshot to a fixed path so the agent can read it via the Read tool.
-    # pi's MCP client serializes image content blocks as JSON.stringify instead of
-    # passing them as real image attachments — so the image path workaround is the
-    # only reliable way to get real visual verification.
-    import pathlib as _pl, os as _os
-    snap_path = str(_pl.Path.home() / "Desktop" / f"NOW_M{monitor or 'auto'}.webp")
-
-    query = f"/vision/smart?mode={mode}&save_to={urllib.parse.quote(snap_path)}"
+    # Read frame directly from RAM ring buffer — no disk I/O.
+    # pi MCP client now passes image blocks natively (fixed in index.js).
+    query = f"/vision/smart?mode={mode}"
     if monitor is not None:
         query += f"&monitor_id={int(monitor)}"
     data = _api_get(query)
@@ -1506,10 +1501,11 @@ def handle_see_screen(args: dict) -> dict:
         )}]
 
     monitor_info = f"monitor={data.get('monitor_id', monitor if monitor is not None else 'auto')}"
-    saved = data.get("saved_path", "")
+    img_w = data.get("image_width") or data.get("width", "?")
+    img_h = data.get("image_height") or data.get("height", "?")
     tokens_info = (
-        f"\n\n---\n[{monitor_info} | Token mode: {mode} | "
-        f"~{data.get('token_estimate', '?')} tokens | Total used: {data.get('tokens_used_total', '?')}]"
+        f"\n\n---\n[{monitor_info} | {img_w}x{img_h}px | mode={mode} | "
+        f"~{data.get('token_estimate', '?')} tokens | RAM-direct, no disk]"
     )
 
     # text_only mode: just return text
@@ -1519,12 +1515,9 @@ def handle_see_screen(args: dict) -> dict:
             text += f"\n\n### OCR Text\n{data['ocr_text']}"
         return [{"type": "text", "text": text + tokens_info}]
 
-    # Path FIRST — most important line for the AI to read the image via Read tool.
-    # Image content block also included (works if pi ever fixes image passthrough).
-    path_line = f"📸 READ THIS IMAGE: Read(path='{saved}')\n\n" if saved else ""
     scene_info = data.get("ai_prompt", "")
     return [
-        {"type": "text", "text": path_line + scene_info + tokens_info},
+        {"type": "text", "text": scene_info + tokens_info},
         {
             "type": "image",
             "data": data["image_base64"],
@@ -3309,42 +3302,40 @@ def handle_zoom(args: dict) -> list:
     monitor_id = args.get("monitor_id", 1)
     image_w = args.get("image_w")
     image_h = args.get("image_h")
-    save_to = args.get("save_to")
+    grid = args.get("grid", True)
+    grid_step = args.get("grid_step", 50)
 
-    body = {"x1": x1, "y1": y1, "x2": x2, "y2": y2, "monitor_id": monitor_id}
+    # No save_to — frame goes RAM → base64 → model directly
+    body = {
+        "x1": x1, "y1": y1, "x2": x2, "y2": y2,
+        "monitor_id": monitor_id,
+        "grid": grid, "grid_step": grid_step,
+    }
     if image_w:
         body["image_w"] = image_w
     if image_h:
         body["image_h"] = image_h
-    if save_to:
-        body["save_to"] = save_to
 
     data = _api_post("/vision/zoom", body=body)
     if not data or data.get("error"):
         return [{"type": "text", "text": f"zoom failed: {data}"}]
 
-    # Return image + usage hint
     b64 = data.get("image_b64", "")
     size = data.get("region_size", {})
     offset = data.get("region_offset", {})
     usage = data.get("usage", "")
-    saved = data.get("saved_path", "")
 
-    result = [{"type": "text", "text": (
-        f"✓ Zoomed region ({x1},{y1})-({x2},{y2}) → "
-        f"{size.get('width')}x{size.get('height')} px at 1:1 monitor resolution\n"
-        f"Region offset in monitor: ({offset.get('x')}, {offset.get('y')})\n"
-        f"{('Saved: ' + saved + chr(10)) if saved else ''}"
-        f"\n{usage}\n\n"
-        f"Now look at the image and identify the exact pixel of your target."
-    )}]
-
-    if b64:
-        result.append({"type": "image", "data": b64, "mimeType": "image/webp"})
-    if saved:
-        result[0]["text"] = f"Image saved to: {saved}\n\n" + result[0]["text"]
-
-    return result
+    return [
+        {"type": "text", "text": (
+            f"✓ Zoomed ({x1},{y1})-({x2},{y2}) → "
+            f"{size.get('width')}x{size.get('height')}px | "
+            f"RAM-direct, no disk\n"
+            f"Region offset: ({offset.get('x')}, {offset.get('y')})\n"
+            f"{usage}\n\n"
+            f"Grid lines every {grid_step}px — read (zx,zy) from image, then click_at."
+        )},
+        {"type": "image", "data": b64, "mimeType": "image/webp"},
+    ]
 
 
 def handle_click_at(args: dict) -> list:
