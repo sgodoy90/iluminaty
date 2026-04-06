@@ -4551,85 +4551,37 @@ def handle_agent_report(args: dict) -> list:
     )}]
 
 
+# ── M003 S04: Only handlers for the 20 active tools ─────────────────────────
 HANDLERS = {
-    # ── Verification ──
-    "verify_action": handle_verify_action,
-    # ── Vision (IPA v3 + OCR) ──
-    "see_screen": handle_see_screen,
-    "see_now":    handle_see_now,
-    "see_region": handle_see_region,
-    "what_changed": handle_what_changed,
-    "see_changes": handle_see_changes,
-    "see_monitor": handle_see_monitor,
-    "read_screen_text": handle_read_text,
-    "vision_query": handle_vision_query,
-    # ── Perception / context ──
-    "perception": handle_perception,
-    "perception_world": handle_perception_world,
-    "get_context": handle_context,
+    # Vision
+    "see_now":             handle_see_now,
+    "see_region":          handle_see_region,
+    "what_changed":        handle_what_changed,
+    "verify_action":       handle_verify_action,
+    # Spatial
     "get_spatial_context": handle_get_spatial_context,
-    "refresh_monitors":    lambda args: (
-        lambda d: [{"type": "text", "text": (
-            f"Monitor layout refreshed. "
-            f"Detected {d.get('count', '?')} monitor(s).\n"
-            + "\n".join(
-                f"  M{m.get('id')} {m.get('width')}x{m.get('height')} "
-                f"at ({m.get('left')},{m.get('top')})"
-                for m in d.get("monitors", [])
-            )
-            + "\n\nCall get_spatial_context() to update your spatial map."
-        )}]
-    )(_api_post("/monitors/refresh")),
-    "spatial_state": handle_spatial_state,
-    # ── Watch Engine ──
+    "map_environment":     handle_map_environment,
+    # Watch
     "watch_and_notify":    handle_watch_and_notify,
-    "monitor_until":       handle_monitor_until,
-    # ── Visual Memory ──
-    "get_session_memory":  handle_get_session_memory,
-    "save_session_memory": handle_save_session_memory,
-    # ── Grounding ──
-    # ── Computer Use ──
-    "do_action": handle_do_action,
-    "operate_cycle": handle_operate_cycle,
-    "set_operating_mode": handle_set_operating_mode,
-    "act": handle_act,
-    "drag_screen": handle_drag_screen,
-    # ── Windows ──
-    "list_windows": handle_list_windows,
-    "focus_window": handle_focus_window,
-    "window_minimize": handle_window_minimize,
-    "window_maximize": handle_window_maximize,
-    "window_close": handle_window_close,
-    "move_window": handle_move_window,
-    # ── Browser ──
-    "browser_navigate": handle_browser_navigate,
-    "browser_tabs": handle_browser_tabs,
-    # ── Files / system ──
-    "run_command": handle_run_command,
-    "read_file": handle_read_file,
-    "write_file": handle_write_file,
-    "get_clipboard": handle_get_clipboard,
-    # ── Pipeline / workspace management ──
-    "find_on_screen":   handle_find_on_screen,
-    "map_environment":  handle_map_environment,
-    "uia_focused":      handle_uia_focused,
-    "uia_element_at":   handle_uia_element_at,
-    "uia_find_all":     handle_uia_find_all,
-    "act_on":           handle_act_on,
-    "open_path":        handle_open_path,
-    "open_on_monitor":  handle_open_on_monitor,
-    # ── Recording (opt-in) ──
-    "screen_record":    handle_screen_record,
-    # ── Multi-agent coordination ──
-    "agent_dispatch":   handle_agent_dispatch,
-    "agent_inbox":      handle_agent_inbox,
-    "agent_report":     handle_agent_report,
-    # ── Status ──
-    "screen_status": handle_status,
-    "agent_status": handle_agent_status,
-    "get_audio_level": handle_audio_level,
-    "os_dialog_status": handle_os_dialog_status,
-    "os_dialog_resolve": handle_os_dialog_resolve,
+    # Actions
+    "act_on":              handle_act_on,
+    "act":                 handle_act,
+    # UI inspection
+    "uia_find_all":        handle_uia_find_all,
+    "uia_focused":         handle_uia_focused,
+    "find_on_screen":      handle_find_on_screen,
+    # Windows
+    "list_windows":        handle_list_windows,
+    "focus_window":        handle_focus_window,
+    # System
+    "open_path":           handle_open_path,
+    "run_command":         handle_run_command,
+    "os_dialog_resolve":   handle_os_dialog_resolve,
+    # Files
+    "read_file":           handle_read_file,
+    "write_file":          handle_write_file,
+    # Status
+    "screen_status":       handle_status,
 }
 
 
