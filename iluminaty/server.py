@@ -3145,19 +3145,38 @@ async def vision_zoom(
         mx1, my1, mx2, my2 = x1, y1, x2, y2
 
     # Capture only the region using mss
+    grid = body.get("grid", True)   # draw coordinate grid by default
+    grid_step = int(body.get("grid_step", 50))
+
     loop = asyncio.get_event_loop()
     def _capture_region():
         import mss, io
-        from PIL import Image
+        from PIL import Image, ImageDraw
         with mss.mss() as sct:
             region = {
                 "left": mon_left + mx1,
                 "top": mon_top + my1,
-                "width": mx2 - mx1,
-                "height": my2 - my1,
+                "width": max(1, mx2 - mx1),
+                "height": max(1, my2 - my1),
             }
             shot = sct.grab(region)
             img = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
+
+            # Draw coordinate grid so AI can read exact pixel positions visually
+            if grid and img.width > 10 and img.height > 10:
+                draw = ImageDraw.Draw(img)
+                step = grid_step
+                for gx in range(0, img.width, step):
+                    draw.line([(gx, 0), (gx, img.height)], fill=(255, 0, 0), width=1)
+                    if gx > 0:
+                        draw.text((gx + 2, 2), str(gx), fill=(255, 255, 0))
+                for gy in range(0, img.height, step):
+                    draw.line([(0, gy), (img.width, gy)], fill=(255, 0, 0), width=1)
+                    if gy > 0:
+                        draw.text((2, gy + 2), str(gy), fill=(255, 255, 0))
+                # Always label origin
+                draw.text((2, 2), "0", fill=(255, 255, 0))
+
             buf = io.BytesIO()
             img.save(buf, format="WEBP", quality=95)
             return buf.getvalue(), img.size
