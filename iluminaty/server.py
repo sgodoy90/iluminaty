@@ -2014,10 +2014,8 @@ async def lifespan(app: FastAPI):
             except Exception:
                 pass
 
-    reap_task = asyncio.create_task(_reap_agents_loop())
     watchdog_task = asyncio.create_task(_watchdog_loop())
     yield
-    reap_task.cancel()
     watchdog_task.cancel()
     # Cleanup
     if _state.cursor_tracker:

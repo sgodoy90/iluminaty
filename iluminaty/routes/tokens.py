@@ -290,6 +290,11 @@ async def vision_smart(
 
         d["mode"] = active_mode
         d["monitor_id"] = int(getattr(slot, "monitor_id", resolved_mid or 0) or (resolved_mid or 0))
+        # Ensure width/height always present — needed by AI for coordinate scaling
+        if not d.get("width") and slot:
+            d["width"] = int(getattr(slot, "width", 0) or 0) or None
+        if not d.get("height") and slot:
+            d["height"] = int(getattr(slot, "height", 0) or 0) or None
         result = d
 
     # Save to disk if requested
