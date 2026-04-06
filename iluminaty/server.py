@@ -59,7 +59,7 @@ from .audit import AuditLog
 from .licensing import LicenseManager, get_license, init_license
 from .grounding import GroundingEngine
 from .smart_locate import SmartLocateEngine, LocateResult
-from .ocr_worker import OCRWorker, init_ocr_worker, get_ocr_worker
+from .fast_ocr import ocr_image as _fast_ocr_image, engine_name as _fast_ocr_engine
 from .watch_engine import WatchEngine, WatchResult
 from .host_telemetry import HostTelemetry
 from .os_surface import OSSurfaceSignals
@@ -118,7 +118,7 @@ class _ServerState:
         self.perception = None  # PerceptionEngine (lazy import)
         self.grounding: Optional[GroundingEngine] = None
         self.smart_locator: Optional[SmartLocateEngine] = None
-        self.ocr_worker: Optional[OCRWorker] = None
+        self.ocr_worker = None  # removed: fast_ocr replaces subprocess worker
         self.watch_engine: Optional[WatchEngine] = None
         self.host_telemetry: Optional[HostTelemetry] = None
         self.os_surface: Optional[OSSurfaceSignals] = None
@@ -2826,17 +2826,8 @@ def init_server(
             monitor_bounds=_monitor_bounds_dict(),
         )
 
-        # OCR Worker subprocess — runs OCR in a separate process (no GIL blocking)
-        try:
-            _state.ocr_worker = init_ocr_worker()
-            if _state.ocr_worker.available:
-                logger.info("OCR worker subprocess started")
-            else:
-                logger.warning("OCR worker subprocess unavailable -- falling back to in-process OCR")
-                _state.ocr_worker = None
-        except Exception as _e:
-            logger.warning("OCR worker init failed: %s", _e)
-            _state.ocr_worker = None
+        # fast_ocr replaces the subprocess OCR worker — no subprocess needed
+        logger.info("fast_ocr engine: %s", _fast_ocr_engine())
 
         # Watch Engine — active monitoring without token consumption
         def _ocr_text_for_watch(monitor_id=None):
@@ -3100,18 +3091,20 @@ async def vision_ocr(
             logger.debug("Native OCR policy path failed: %s", e)
 
     if has_region and not native_used:
-        # Legacy behavior: region over buffered frame.
-        result = _state.vision.ocr.extract_region(
-            slot.frame_bytes,
-            int(region_x or 0),
-            int(region_y or 0),
-            int(region_w or 0),
-            int(region_h or 0),
-            zoom_factor=zoom_factor,
-        )
+        # Crop region from frame bytes
+        try:
+            from PIL import Image
+            import io as _io
+            img = Image.open(_io.BytesIO(slot.frame_bytes))
+            rx, ry, rw, rh = int(region_x or 0), int(region_y or 0), int(region_w or 0), int(region_h or 0)
+            cropped = img.crop((rx, ry, rx + rw, ry + rh))
+            buf = _io.BytesIO(); cropped.save(buf, format='PNG'); ocr_bytes = buf.getvalue()
+        except Exception:
+            ocr_bytes = slot.frame_bytes
         source = "buffer_region"
-    else:
-        result = _state.vision.ocr.extract_text(ocr_bytes)
+
+    ocr_r = _fast_ocr_image(ocr_bytes, phash=getattr(slot, 'phash', None))
+    result = {"text": ocr_r.text, "blocks": ocr_r.blocks, "latency_ms": ocr_r.latency_ms, "engine": ocr_r.engine}
 
     if isinstance(result, dict):
         result.setdefault(

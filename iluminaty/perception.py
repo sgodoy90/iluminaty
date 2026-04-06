@@ -1670,80 +1670,39 @@ class PerceptionEngine:
             mon_state.consecutive_unchanged += 1
             mon_state.motion_reported = False
 
-        # ── Gate 4: OCR diff (expensive, only on major changes, max every 3s) ──
+        # ── Gate 4: OCR diff — fast_ocr native engine (~5-30ms, no subprocess) ──
         ocr_interval = self._ocr_active_interval_s if is_active_monitor else self._ocr_inactive_interval_s
-        needs_initial_ocr = not mon_state.last_ocr_blocks  # force first OCR even on static screen
-        if (self._ocr and self._ocr.available
-                and (needs_initial_ocr or change > self._ocr_change_threshold or phash_dist > self._ocr_phash_threshold)
-                and (now - mon_state.last_ocr_time) > ocr_interval):
+        needs_initial_ocr = not mon_state.last_ocr_blocks
+        if (needs_initial_ocr or change > self._ocr_change_threshold or phash_dist > self._ocr_phash_threshold) \
+                and (now - mon_state.last_ocr_time) > ocr_interval:
             mon_state.last_ocr_time = now
-
-            # Prefer OCR worker subprocess (no GIL blocking) over in-process OCR
-            ocr_worker = None
             try:
-                from .ocr_worker import get_ocr_worker
-                ocr_worker = get_ocr_worker()
-            except Exception:
-                pass
+                from .fast_ocr import ocr_image as _fast_ocr
+                ocr_result = _fast_ocr(slot.frame_bytes, phash=slot.phash)
+                current_text = ocr_result.text
+                if ocr_result.blocks:
+                    mon_state.last_ocr_blocks = ocr_result.blocks
 
-            if ocr_worker and ocr_worker.available:
-                # Non-blocking: enqueue frame, read latest result in next cycle
-                ocr_worker.enqueue(slot.frame_bytes, slot.phash, monitor_id)
-                # Read any completed results for this monitor
-                worker_result = ocr_worker.get_result(monitor_id)
-                if worker_result:
-                    current_text = worker_result.get("text", "")
-                    new_blocks = worker_result.get("blocks", [])
-                    if new_blocks:
-                        mon_state.last_ocr_blocks = new_blocks
-                    if current_text and current_text != mon_state.last_ocr_text:
-                        old_words = set(mon_state.last_ocr_text.split())
-                        new_words = set(current_text.split())
-                        appeared = new_words - old_words
-                        disappeared = old_words - new_words
-                        if len(appeared) > 10:
-                            sample = " ".join(list(appeared)[:12])
-                            self._add_event("text_appeared", f"New content: {sample}...",
-                                            importance=0.5, monitor=monitor_id,
-                                            uncertainty=event_uncertainty,
-                                            new_word_count=len(appeared))
-                        if len(disappeared) > 15 and len(appeared) > 15:
-                            self._add_event("page_navigation",
-                                            f"Page content replaced in {self._last_window}",
-                                            importance=0.7, monitor=monitor_id,
-                                            uncertainty=event_uncertainty)
-                            mon_state.loading_detected = True
-                        mon_state.last_ocr_text = current_text
-            else:
-                # Fallback: in-process OCR (blocks GIL but works without subprocess)
-                try:
-                    ocr_result = self._ocr.extract_text(slot.frame_bytes, frame_hash=slot.phash, monitor_id=monitor_id)
-                    current_text = ocr_result.get("text", "")
-                    mon_state.last_ocr_blocks = ocr_result.get("blocks", [])
-
-                    if current_text and current_text != mon_state.last_ocr_text:
-                        old_words = set(mon_state.last_ocr_text.split())
-                        new_words = set(current_text.split())
-                        appeared = new_words - old_words
-                        disappeared = old_words - new_words
-
-                        if len(appeared) > 10:
-                            sample = " ".join(list(appeared)[:12])
-                            self._add_event("text_appeared", f"New content: {sample}...",
-                                            importance=0.5, monitor=monitor_id,
-                                            uncertainty=event_uncertainty,
-                                            new_word_count=len(appeared))
-
-                        if len(disappeared) > 15 and len(appeared) > 15:
-                            self._add_event("page_navigation",
-                                            f"Page content replaced in {self._last_window}",
-                                            importance=0.7, monitor=monitor_id,
-                                            uncertainty=event_uncertainty)
-                            mon_state.loading_detected = True
-
-                        mon_state.last_ocr_text = current_text
-                except Exception as e:
-                    logger.debug("OCR diff step failed on monitor %s: %s", monitor_id, e)
+                if current_text and current_text != mon_state.last_ocr_text:
+                    old_words = set(mon_state.last_ocr_text.split())
+                    new_words = set(current_text.split())
+                    appeared = new_words - old_words
+                    disappeared = old_words - new_words
+                    if len(appeared) > 10:
+                        sample = " ".join(list(appeared)[:12])
+                        self._add_event("text_appeared", f"New content: {sample}...",
+                                        importance=0.5, monitor=monitor_id,
+                                        uncertainty=event_uncertainty,
+                                        new_word_count=len(appeared))
+                    if len(disappeared) > 15 and len(appeared) > 15:
+                        self._add_event("page_navigation",
+                                        f"Page content replaced in {self._last_window}",
+                                        importance=0.7, monitor=monitor_id,
+                                        uncertainty=event_uncertainty)
+                        mon_state.loading_detected = True
+                    mon_state.last_ocr_text = current_text
+            except Exception as e:
+                logger.debug("fast_ocr step failed on monitor %s: %s", monitor_id, e)
 
         mon_state.last_hash = slot.phash
         boundary_reason = ""
