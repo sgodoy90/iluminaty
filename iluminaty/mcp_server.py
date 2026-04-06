@@ -958,10 +958,19 @@ _TOOLS_RAW = [
             "  move_mouse     — move cursor without clicking\n"
             "  wait           — pause for duration seconds (default 0.5)\n"
             "\n"
-            "SMART LOCATE: pass target= to resolve coordinates automatically via UITree+OCR.\n"
+            "COORDINATE PRECISION — USE IN THIS ORDER:\n"
+            "  1. BEST  → act_on(target='Save button', action='click')  OS resolves coords, pixel-perfect, never misses\n"
+            "  2. GOOD  → act(action='click', target='Save button')      Smart-locate via UITree+OCR, very reliable\n"
+            "  3. OK    → act(action='click', x=px, y=py, monitor=N, image_w=W, image_h=H)  scales image→native coords\n"
+            "  4. AVOID → act(action='click', x=px, y=py, monitor=N)  WITHOUT image_w/image_h — coords not scaled, WILL MISS\n\n"
+            "When using x,y from see_now image: ALWAYS pass image_w and image_h from the image dimensions shown in see_now.\n"
+            "Example:\n"
+            "  see_now() returns [IMAGE COORDS — M1 | 768x432px]\n"
+            "  Button appears at pixel (400, 200) in that image\n"
+            "  → act(action='click', x=400, y=200, monitor=1, image_w=768, image_h=432)  ← correct\n"
+            "  → act(action='click', x=400, y=200, monitor=1)                            ← WRONG, misses\n\n"
             "  act(action='click', target='Save button')           — finds element, clicks exactly\n"
             "  act(action='type', target='email field', text='x')  — finds field, clicks, types\n"
-            "  act(action='click', x=500, y=300)                   — direct coords from see_now\n"
             "  act(action='triple_click', target='search box')     — select all text in field\n"
             "  act(action='right_click', target='file icon')       — open context menu\n"
             "  act(action='mouse_down', x=100, y=200)              — start drag sequence\n"
@@ -981,8 +990,10 @@ _TOOLS_RAW = [
                     ]
                 },
                 "target":   {"type": "string",  "description": "Natural language element name. Smart-locates via UITree+OCR. Takes priority over x,y."},
-                "x":        {"type": "integer", "description": "X coordinate (global or monitor-relative)"},
-                "y":        {"type": "integer", "description": "Y coordinate (global or monitor-relative)"},
+                "x":        {"type": "integer", "description": "X coordinate in image pixels from see_now (NOT global). Requires image_w+image_h for correct scaling, or use act_on(target=) instead."},
+                "y":        {"type": "integer", "description": "Y coordinate in image pixels from see_now (NOT global). Requires image_w+image_h for correct scaling, or use act_on(target=) instead."},
+                "image_w":  {"type": "integer", "description": "Width of the see_now image in pixels. REQUIRED when passing x,y coords from a see_now screenshot — enables correct scaling to native monitor resolution."},
+                "image_h":  {"type": "integer", "description": "Height of the see_now image in pixels. REQUIRED when passing x,y coords from a see_now screenshot — enables correct scaling to native monitor resolution."},
                 "text":     {"type": "string",  "description": "Text to type (action=type)"},
                 "keys":     {"type": "string",  "description": "Key or combo: 'ctrl+s', 'enter', 'F2', 'win+r', 'shift' (action=key|hold_key)"},
                 "button":   {"type": "string",  "default": "left",  "enum": ["left", "right", "middle"]},
@@ -1500,12 +1511,22 @@ def handle_see_screen(args: dict) -> dict:
             f"Switch to text_only mode or increase budget with set_token_budget."
         )}]
 
-    monitor_info = f"monitor={data.get('monitor_id', monitor if monitor is not None else 'auto')}"
-    img_w = data.get("image_width") or data.get("width", "?")
-    img_h = data.get("image_height") or data.get("height", "?")
+    mon_id_val = data.get('monitor_id', monitor if monitor is not None else 'auto')
+    monitor_info = f"monitor={mon_id_val}"
+    img_w = data.get("width") or data.get("image_width", "?")
+    img_h = data.get("height") or data.get("image_height", "?")
+    coord_hint = ""
+    if img_w != "?" and img_h != "?":
+        coord_hint = (
+            f"\n[IMAGE COORDS — M{mon_id_val} | {img_w}x{img_h}px]\n"
+            f"⚠ x,y in this image are NOT global coords. Use:\n"
+            f"  BEST → act_on(target='name', action='click')\n"
+            f"  GOOD → click_at(x=<px>, y=<px>, monitor_id={mon_id_val}, image_w={img_w}, image_h={img_h})\n"
+            f"  OK   → act(action='click', x=<px>, y=<px>, monitor={mon_id_val}, image_w={img_w}, image_h={img_h})"
+        )
     tokens_info = (
         f"\n\n---\n[{monitor_info} | {img_w}x{img_h}px | mode={mode} | "
-        f"~{data.get('token_estimate', '?')} tokens | RAM-direct, no disk]"
+        f"~{data.get('token_estimate', '?')} tokens | RAM-direct, no disk]{coord_hint}"
     )
 
     # text_only mode: just return text
@@ -3455,17 +3476,66 @@ def handle_act(args: dict) -> list:
         if action == "click":
             x, y = int(args.get("x", 0)), int(args.get("y", 0))
             button = args.get("button", "left")
-            query = f"/action/click?x={x}&y={y}&button={urllib.parse.quote(str(button))}"
-            if args.get("monitor") is not None:
-                query += f"&monitor_id={int(args['monitor'])}&relative_to_monitor=true"
-            data = _api_post(query)
-            ok = data.get("success", False)
-            ctx = _post_action_context(monitor=_mon, action_type="click", result_ok=ok)
-            msg = f"click ({x},{y}) {button}: {'OK' if ok else 'FAIL'}{loc_note} {data.get('message','')}"
+            image_w = args.get("image_w")
+            image_h = args.get("image_h")
+            monitor_arg = args.get("monitor")
+
+            # Route to /vision/click_at when:
+            #   (a) monitor= is specified (multi-monitor — coords are image-space), OR
+            #   (b) image_w/image_h explicitly provided (AI is passing image coords)
+            # /vision/click_at scales image-coords → native monitor coords correctly.
+            # /action/click with relative_to_monitor=true does NOT scale — causes misses.
+            if monitor_arg is not None or (image_w and image_h):
+                body: dict = {
+                    "x": x, "y": y,
+                    "monitor_id": int(monitor_arg) if monitor_arg is not None else 1,
+                    "button": button,
+                    "double": False,
+                }
+                if image_w:
+                    body["image_w"] = image_w
+                if image_h:
+                    body["image_h"] = image_h
+                data = _api_post("/vision/click_at", body=body)
+                ok = data.get("clicked", False)
+                gc = data.get("global_coords", {})
+                sc = data.get("scale", {})
+                ctx = _post_action_context(monitor=monitor_arg, action_type="click", result_ok=ok)
+                msg = (
+                    f"click image({x},{y}) M{monitor_arg} → "
+                    f"global({gc.get('x')},{gc.get('y')}) "
+                    f"scale={sc.get('x',1):.2f}x: {'OK' if ok else 'FAIL'}{loc_note}"
+                )
+            else:
+                # No monitor specified + no image dims → treat as global coords
+                query = f"/action/click?x={x}&y={y}&button={urllib.parse.quote(str(button))}"
+                data = _api_post(query)
+                ok = data.get("success", False)
+                ctx = _post_action_context(monitor=None, action_type="click", result_ok=ok)
+                msg = f"click global({x},{y}) {button}: {'OK' if ok else 'FAIL'}{loc_note} {data.get('message','')}"
             return [{"type": "text", "text": f"{msg}\n\n[POST-ACTION STATE]\n{ctx}" if ctx else msg}]
 
         elif action == "double_click":
             x, y = int(args.get("x", 0)), int(args.get("y", 0))
+            monitor_arg = args.get("monitor")
+            image_w = args.get("image_w")
+            image_h = args.get("image_h")
+            if monitor_arg is not None or (image_w and image_h):
+                body = {
+                    "x": x, "y": y,
+                    "monitor_id": int(monitor_arg) if monitor_arg is not None else 1,
+                    "button": "left", "double": True,
+                }
+                if image_w:
+                    body["image_w"] = image_w
+                if image_h:
+                    body["image_h"] = image_h
+                data = _api_post("/vision/click_at", body=body)
+                ok = data.get("clicked", False)
+                gc = data.get("global_coords", {})
+                ctx = _post_action_context(monitor=monitor_arg, action_type="click", result_ok=ok)
+                msg = f"double_click image({x},{y}) M{monitor_arg} → global({gc.get('x')},{gc.get('y')}): {'OK' if ok else 'FAIL'}{loc_note}"
+                return [{"type": "text", "text": f"{msg}\n\n[POST-ACTION STATE]\n{ctx}" if ctx else msg}]
             data = _api_post(f"/action/double_click?x={x}&y={y}")
             ok = data.get("success", False)
             ctx = _post_action_context(monitor=_mon, action_type="click", result_ok=ok)
@@ -4059,6 +4129,20 @@ def handle_see_now(args: dict) -> list:
     # Perception context fallback
     perception_text = data.get("ai_prompt", "")
     header = ipa_context or perception_text or "Screen capture"
+
+    # Attach image dimensions so the AI always knows the coordinate space
+    img_w = data.get("width") or data.get("image_width")
+    img_h = data.get("height") or data.get("image_height")
+    mon_id = data.get("monitor_id", monitor if monitor is not None else "auto")
+
+    if img_w and img_h:
+        header += (
+            f"\n\n[IMAGE COORDS — M{mon_id} | {img_w}x{img_h}px]\n"
+            f"⚠ x,y in this image ARE NOT global coords. Use one of:\n"
+            f"  BEST → act_on(target='button name', action='click')  — OS resolves, pixel-perfect\n"
+            f"  GOOD → click_at(x=<px>, y=<px>, monitor_id={mon_id}, image_w={img_w}, image_h={img_h})  — auto-scales\n"
+            f"  AVOID → act(action='click', x=<px>, y=<px>) without image_w/image_h — coords NOT scaled"
+        )
 
     result.append({"type": "text", "text": header})
 

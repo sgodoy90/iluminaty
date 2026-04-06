@@ -207,24 +207,27 @@ async def vision_smart(
                         buf = _io.BytesIO()
                         img.save(buf, format="WEBP",
                                  quality=75 if active_mode != "full_res" else 90)
-                        return buf.getvalue()
+                        return buf.getvalue(), img.width, img.height
 
                 webp = await _aio.get_running_loop().run_in_executor(None, _snap_sync)
                 if webp:
+                    webp_bytes, snap_w, snap_h = webp
                     # Save to disk if requested (lets agents read it via Read tool)
                     saved_path = None
                     if save_to:
                         try:
                             import pathlib as _pl
-                            _pl.Path(save_to).write_bytes(webp)
+                            _pl.Path(save_to).write_bytes(webp_bytes)
                             saved_path = save_to
                         except Exception as _se:
                             log.warning(f"save_to failed: {_se}")
                     return JSONResponse({
                         "mode": active_mode,
                         "monitor_id": _mid_for_snap,
-                        "image_base64": _b64.b64encode(webp).decode(),
+                        "image_base64": _b64.b64encode(webp_bytes).decode(),
                         "mime_type": "image/webp",
+                        "width": snap_w,
+                        "height": snap_h,
                         "timestamp": _t.time(),
                         "active_window": "",
                         "ocr_text": "",
@@ -274,6 +277,16 @@ async def vision_smart(
             d["image_base64"] = base64.b64encode(buf.getvalue()).decode()
             d["width"] = new_size[0]
             d["height"] = new_size[1]
+        elif d.get("image_base64") and not d.get("width"):
+            # full_res: decode once to get actual dimensions
+            try:
+                import base64
+                img_bytes = base64.b64decode(d["image_base64"])
+                img = Image.open(io.BytesIO(img_bytes))
+                d["width"] = img.width
+                d["height"] = img.height
+            except Exception:
+                pass
 
         d["mode"] = active_mode
         d["monitor_id"] = int(getattr(slot, "monitor_id", resolved_mid or 0) or (resolved_mid or 0))
