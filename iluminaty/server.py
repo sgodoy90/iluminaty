@@ -2899,7 +2899,7 @@ def init_server(
             return []
 
         _state.watch_engine = WatchEngine(
-            ipa_bridge=_state.ipa_bridge,
+            perception=_state.perception,   # push-based: wakes on new events
             ocr_fn=_ocr_text_for_watch,
             ui_tree_fn=_element_found_for_watch,
             windows_fn=_windows_for_watch,

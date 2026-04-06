@@ -736,6 +736,8 @@ class PerceptionEngine:
         self._events: deque[PerceptionEvent] = deque(maxlen=max_events)
         self._lock = threading.Lock()
         self._running = False
+        # Event notification: watchers subscribe to get woken up on new events
+        self._event_notify = threading.Event()  # set each time _add_event fires
         self._thread: Optional[threading.Thread] = None
         self._deep_thread: Optional[threading.Thread] = None
         self._fast_loop_interval = max(0.08, min(0.25, 1.0 / max(1.0, fast_loop_hz)))
@@ -1056,6 +1058,17 @@ class PerceptionEngine:
             except Exception as e:
                 logger.debug("CPU throttle check failed: %s", e)
 
+    def wait_for_event(self, timeout: float = 0.5) -> bool:
+        """Block until a new perception event fires or timeout expires.
+
+        Used by WatchEngine to avoid busy-polling: instead of sleep(0.5),
+        wait on the threading.Event — wakes up immediately when something happens.
+        Returns True if an event fired, False if timeout expired.
+        """
+        fired = self._event_notify.wait(timeout=timeout)
+        self._event_notify.clear()
+        return fired
+
     def _add_event(self, event_type: str, description: str,
                    importance: float = 0.5, monitor: int = 0,
                    uncertainty: Optional[float] = None, **details):
@@ -1072,6 +1085,8 @@ class PerceptionEngine:
         )
         with self._lock:
             self._events.append(evt)
+        # Wake up any waiting watchers immediately
+        self._event_notify.set()
         try:
             self._temporal.add_semantic_transition(
                 tick_id=self._world.tick_id,
