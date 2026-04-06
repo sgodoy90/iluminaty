@@ -86,7 +86,12 @@ def _get_conn() -> http.client.HTTPConnection:
     return conn
 
 def _api_request(method: str, path: str, body: dict | None = None) -> dict:
-    """Single keep-alive request. Falls back to new connection on error."""
+    """Single keep-alive request with retry on connection error.
+
+    Retries up to 3 times with short backoff when the server is restarting.
+    Returns {"error": "server_unavailable"} instead of raising — callers
+    show a friendly message to the AI instead of crashing the MCP process.
+    """
     headers: dict[str, str] = {"Accept": "application/json"}
     if API_KEY:
         headers["x-api-key"] = API_KEY
@@ -95,7 +100,9 @@ def _api_request(method: str, path: str, body: dict | None = None) -> dict:
         raw_body = json.dumps(body).encode()
         headers["Content-Type"] = "application/json"
         headers["Content-Length"] = str(len(raw_body))
-    for attempt in range(2):
+
+    max_attempts = 3
+    for attempt in range(max_attempts):
         try:
             conn = _get_conn()
             conn.request(method, path, body=raw_body, headers=headers)
@@ -107,12 +114,20 @@ def _api_request(method: str, path: str, body: dict | None = None) -> dict:
             return json.loads(data.decode())
         except json.JSONDecodeError as e:
             return {"error": f"Invalid JSON: {e}", "raw": data.decode()[:200] if data else ""}
-        except Exception:
-            # Force connection reset on next call
+        except Exception as exc:
+            # Force connection reset
             _CONN["conn"] = None
             _CONN["ts"] = 0.0
-            if attempt == 1:
-                raise
+            if attempt < max_attempts - 1:
+                # Short backoff before retry (server may be restarting)
+                time.sleep(0.5 * (attempt + 1))
+            else:
+                # All retries exhausted — return structured error, don't raise
+                return {
+                    "error": "server_unavailable",
+                    "detail": str(exc)[:120],
+                    "hint": "ILUMINATY server is not reachable. Start it with: python main.py start --port 8420 --api-key ILUM-dev-local",
+                }
 
 def _api_get(path: str) -> dict:
     """GET request to ILUMINATY API (keep-alive)."""
@@ -121,6 +136,13 @@ def _api_get(path: str) -> dict:
 def _api_post(path: str, body: dict | None = None) -> dict:
     """POST request to ILUMINATY API (keep-alive)."""
     return _api_request("POST", path, body)
+
+def _server_unavailable_response(data: dict) -> list | None:
+    """Return MCP error content if data indicates server is unavailable, else None."""
+    if data.get("error") == "server_unavailable":
+        hint = data.get("hint", "Start ILUMINATY server first.")
+        return [{"type": "text", "text": f"⚠️ ILUMINATY server not reachable.\n{hint}"}]
+    return None
 
 
 # ─── Human-like Operation Helpers ───
@@ -1367,10 +1389,22 @@ TOOLS = [
 def handle_see_screen(args: dict) -> dict:
     mode = args.get("mode", VISION_MODE)
     monitor = args.get("monitor")
-    query = f"/vision/smart?mode={mode}"
+
+    # Save screenshot to a fixed path so the agent can read it via the Read tool.
+    # pi's MCP client serializes image content blocks as JSON.stringify instead of
+    # passing them as real image attachments — so the image path workaround is the
+    # only reliable way to get real visual verification.
+    import pathlib as _pl, os as _os
+    snap_path = str(_pl.Path.home() / "Desktop" / f"NOW_M{monitor or 'auto'}.webp")
+
+    query = f"/vision/smart?mode={mode}&save_to={urllib.parse.quote(snap_path)}"
     if monitor is not None:
         query += f"&monitor_id={int(monitor)}"
     data = _api_get(query)
+
+    unavail = _server_unavailable_response(data)
+    if unavail:
+        return unavail
 
     if data.get("error") == "token_budget_exceeded":
         return [{"type": "text", "text": (
@@ -1379,6 +1413,7 @@ def handle_see_screen(args: dict) -> dict:
         )}]
 
     monitor_info = f"monitor={data.get('monitor_id', monitor if monitor is not None else 'auto')}"
+    saved = data.get("saved_path", "")
     tokens_info = (
         f"\n\n---\n[{monitor_info} | Token mode: {mode} | "
         f"~{data.get('token_estimate', '?')} tokens | Total used: {data.get('tokens_used_total', '?')}]"
@@ -1391,9 +1426,12 @@ def handle_see_screen(args: dict) -> dict:
             text += f"\n\n### OCR Text\n{data['ocr_text']}"
         return [{"type": "text", "text": text + tokens_info}]
 
-    # Image modes: return image + text
+    # Path FIRST — most important line for the AI to read the image via Read tool.
+    # Image content block also included (works if pi ever fixes image passthrough).
+    path_line = f"📸 READ THIS IMAGE: Read(path='{saved}')\n\n" if saved else ""
+    scene_info = data.get("ai_prompt", "")
     return [
-        {"type": "text", "text": data.get("ai_prompt", "") + tokens_info},
+        {"type": "text", "text": path_line + scene_info + tokens_info},
         {
             "type": "image",
             "data": data["image_base64"],
@@ -4696,22 +4734,6 @@ def run_mcp_stdio():
                 if handler:
                     try:
                         content = handler(tool_args)
-                        # ── Pipeline reminder injected into every tool response ──────
-                        # Keeps the AI from drifting to run_command for UI actions
-                        # and enforces mandatory visual check before every action.
-                        _PIPELINE_REMINDER = (
-                            "\n\n---\n"
-                            "**[ILUMINATY — UNIVERSAL PIPELINE]**\n"
-                            "Every action, every task, no exceptions:\n"
-                            "BEFORE → `map_environment(scale=1.0, grid=True)` — read coords from the image.\n"
-                            "ACT    → use ONLY coords read from that image.\n"
-                            "AFTER  → `map_environment(scale=1.0, grid=False)` — verify crosshair landed correctly.\n"
-                            "If crosshair is wrong: STOP and diagnose. Never retry blindly.\n"
-                            "This pipeline is the same for forms, apps, menus, files — everything."
-                        )
-                        # Append to last text block only — avoid polluting image/binary content
-                        if content and content[-1].get("type") == "text":
-                            content[-1]["text"] += _PIPELINE_REMINDER
                         send({
                             "jsonrpc": "2.0",
                             "id": msg_id,

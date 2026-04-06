@@ -6135,7 +6135,12 @@ async def clipboard_write(text: str = Query(...), x_api_key: Optional[str] = Hea
 @app.get("/clipboard/history")
 async def clipboard_history(count: int = Query(20), x_api_key: Optional[str] = Header(None)):
     _check_auth(x_api_key)
-    return {"history": _state.clipboard.get_history(count) if _state.clipboard else []}
+    if not _state.clipboard:
+        return {"history": []}
+    import asyncio
+    loop = asyncio.get_event_loop()
+    history = await loop.run_in_executor(None, lambda: _state.clipboard.get_history(count))
+    return {"history": history}
 
 
 # ─── Capa 1: Process Manager ───
@@ -6192,7 +6197,10 @@ async def ui_find(
     _check_auth(x_api_key)
     if not _state.ui_tree:
         return {"element": None}
-    return {"element": _state.ui_tree.find_element(name=name, role=role)}
+    import asyncio
+    loop = asyncio.get_event_loop()
+    element = await loop.run_in_executor(None, lambda: _state.ui_tree.find_element(name=name, role=role))
+    return {"element": element}
 
 
 @app.get("/ui/find_all")
@@ -6202,7 +6210,12 @@ async def ui_find_all(
     x_api_key: Optional[str] = Header(None),
 ):
     _check_auth(x_api_key)
-    return {"elements": _state.ui_tree.find_all(name=name, role=role) if _state.ui_tree else []}
+    if not _state.ui_tree:
+        return {"elements": []}
+    import asyncio
+    loop = asyncio.get_event_loop()
+    elements = await loop.run_in_executor(None, lambda: _state.ui_tree.find_all(name=name, role=role))
+    return {"elements": elements}
 
 
 @app.get("/locate")
@@ -6546,7 +6559,11 @@ async def browser_eval(expression: str = Query(...), x_api_key: Optional[str] = 
 @app.get("/files/read")
 async def files_read(path: str = Query(...), x_api_key: Optional[str] = Header(None)):
     _check_auth(x_api_key)
-    return _state.filesystem.read_file(path) if _state.filesystem else {"success": False}
+    if not _state.filesystem:
+        return {"success": False}
+    import asyncio
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, lambda: _state.filesystem.read_file(path))
 
 
 class _FileWriteBody(BaseModel):
@@ -6560,7 +6577,11 @@ async def files_write(
 ):
     """M-2 fix: content in request body (not URL query param) to avoid log exposure."""
     _check_auth(x_api_key)
-    return _state.filesystem.write_file(body.path, body.content) if _state.filesystem else {"success": False}
+    if not _state.filesystem:
+        return {"success": False}
+    import asyncio
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, lambda: _state.filesystem.write_file(body.path, body.content))
 
 
 @app.get("/files/list")
@@ -6570,7 +6591,11 @@ async def files_list(
     x_api_key: Optional[str] = Header(None),
 ):
     _check_auth(x_api_key)
-    return _state.filesystem.list_dir(path, pattern) if _state.filesystem else {"success": False}
+    if not _state.filesystem:
+        return {"success": False}
+    import asyncio
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, lambda: _state.filesystem.list_dir(path, pattern))
 
 
 @app.get("/files/search")
@@ -6581,7 +6606,11 @@ async def files_search(
     x_api_key: Optional[str] = Header(None),
 ):
     _check_auth(x_api_key)
-    return _state.filesystem.search_files(pattern, contains, path) if _state.filesystem else {"success": False}
+    if not _state.filesystem:
+        return {"success": False}
+    import asyncio
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, lambda: _state.filesystem.search_files(pattern, contains, path))
 
 
 @app.delete("/files/delete")
@@ -6882,6 +6911,7 @@ async def tokens_reset(x_api_key: Optional[str] = Header(None)):
 async def vision_smart(
     mode: Optional[str] = Query(None),
     monitor_id: Optional[int] = Query(None, description="Optional monitor id. Defaults to active monitor."),
+    save_to: Optional[str] = Query(None, description="Save screenshot to this file path (e.g. C:/Users/jgodo/Desktop/snap.webp)"),
     x_api_key: Optional[str] = Header(None),
 ):
     """
@@ -6972,6 +7002,15 @@ async def vision_smart(
 
                 webp = await _aio.get_running_loop().run_in_executor(None, _snap_sync)
                 if webp:
+                    # Save to disk if requested (lets agents read it via Read tool)
+                    saved_path = None
+                    if save_to:
+                        try:
+                            import pathlib as _pl
+                            _pl.Path(save_to).write_bytes(webp)
+                            saved_path = save_to
+                        except Exception as _se:
+                            log.warning(f"save_to failed: {_se}")
                     return JSONResponse({
                         "mode": active_mode,
                         "monitor_id": _mid_for_snap,
@@ -6985,6 +7024,7 @@ async def vision_smart(
                             "captured on-demand, always fresh]"
                         ),
                         "on_demand": True,
+                        "saved_path": saved_path,
                     })
         except Exception as _ode:
             log.warning(f"on-demand snapshot M{_mid_for_snap} failed: {_ode}")
@@ -7029,6 +7069,15 @@ async def vision_smart(
         d["mode"] = active_mode
         d["monitor_id"] = int(getattr(slot, "monitor_id", resolved_mid or 0) or (resolved_mid or 0))
         result = d
+
+    # Save to disk if requested
+    if save_to and result.get("image_base64"):
+        try:
+            import pathlib as _pl, base64 as _b64s
+            _pl.Path(save_to).write_bytes(_b64s.b64decode(result["image_base64"]))
+            result["saved_path"] = save_to
+        except Exception as _se:
+            log.warning(f"save_to failed: {_se}")
 
     # Track tokens
     est = _tokens.estimate(active_mode)
