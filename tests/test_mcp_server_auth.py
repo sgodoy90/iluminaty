@@ -56,19 +56,17 @@ def test_mcp_forwards_api_key_header(monkeypatch):
 
 def test_mcp_registers_v21_tools():
     tool_names = {t["name"] for t in mcp.TOOLS}
-    # Core tools that must always exist — final 33-tool set
+    # Core 20 tools — M003 S03 final set
     required = {
-        "see_now", "see_screen", "what_changed", "see_changes",
-        "see_monitor", "read_screen_text", "vision_query",
-        "get_context", "perception", "perception_world", "spatial_state",
-        "do_action", "operate_cycle", "act", "drag_screen",
-        "set_operating_mode",
+        "see_now", "see_region", "what_changed", "verify_action",
+        "get_spatial_context", "map_environment",
+        "watch_and_notify",
+        "act_on", "act",
+        "uia_find_all", "uia_focused", "find_on_screen",
         "list_windows", "focus_window",
-        "window_minimize", "window_maximize", "window_close", "move_window",
-        "browser_navigate", "browser_tabs",
-        "run_command", "read_file", "write_file", "get_clipboard",
-        "screen_status", "agent_status", "get_audio_level",
-        "os_dialog_status", "os_dialog_resolve",
+        "open_path", "run_command", "os_dialog_resolve",
+        "read_file", "write_file",
+        "screen_status",
     }
     for name in required:
         assert name in tool_names, f"Missing tool: {name}"

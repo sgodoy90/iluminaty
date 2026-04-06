@@ -39,12 +39,8 @@ from .vision import VisionIntelligence, Annotation
 from .dashboard import DASHBOARD_HTML
 from .smart_diff import SmartDiff
 from .audio import AudioRingBuffer, AudioCapture, TranscriptionEngine, AudioInterruptDetector
-from .context import ContextEngine
-from .plugin_system import PluginManager
 from .monitors import MonitorManager
-from .memory import TemporalMemory
 from .watchdog import Watchdog
-from .router import AIRouter
 from .ipa_bridge import IPABridge
 
 # v1.0 imports: Computer Use capas
@@ -53,26 +49,18 @@ from .windows import WindowManager
 from .clipboard import ClipboardManager
 from .process_mgr import ProcessManager
 from .ui_tree import UITree
-from .vscode import VSCodeBridge
-from .terminal import TerminalManager
-from .git_ops import GitOps
-from .browser import BrowserBridge
 from .filesystem import FileSystemSandbox
 from .resolver import ActionResolver
 from .intent import IntentClassifier, Intent
-from .planner import TaskPlanner
 from .verifier import ActionVerifier
 from .recovery import ErrorRecovery
 from .safety import SafetySystem
-from .autonomy import AutonomyManager, AutonomyLevel
 from .audit import AuditLog
 from .licensing import LicenseManager, get_license, init_license
 from .grounding import GroundingEngine
 from .smart_locate import SmartLocateEngine, LocateResult
 from .ocr_worker import OCRWorker, init_ocr_worker, get_ocr_worker
 from .watch_engine import WatchEngine, WatchResult
-from .visual_memory import VisualMemory, SessionMemory
-from .ui_semantics import UISemanticsEngine
 from .host_telemetry import HostTelemetry
 from .os_surface import OSSurfaceSignals
 from .cursor_tracker import CursorTracker
@@ -109,32 +97,22 @@ class _ServerState:
         self.audio_buffer: Optional[AudioRingBuffer] = None
         self.audio_capture: Optional[AudioCapture] = None
         self.transcriber: Optional[TranscriptionEngine] = None
-        self.context: Optional[ContextEngine] = None
-        self.plugin_mgr: Optional[PluginManager] = None
         self.monitor_mgr: Optional[MonitorManager] = None
-        self.memory: Optional[TemporalMemory] = None
         self.watchdog: Optional[Watchdog] = None
-        self.router: Optional[AIRouter] = None
         self.ipa_bridge: Optional[IPABridge] = None
         self.ws_clients: set = set()
-        # v1.0: Computer Use capas
+        # Computer Use capas
         self.actions: Optional[ActionBridge] = None
         self.windows: Optional[WindowManager] = None
         self.clipboard: Optional[ClipboardManager] = None
         self.process_mgr: Optional[ProcessManager] = None
         self.ui_tree: Optional[UITree] = None
-        self.vscode: Optional[VSCodeBridge] = None
-        self.terminal: Optional[TerminalManager] = None
-        self.git_ops: Optional[GitOps] = None
-        self.browser: Optional[BrowserBridge] = None
         self.filesystem: Optional[FileSystemSandbox] = None
         self.resolver: Optional[ActionResolver] = None
         self.intent: Optional[IntentClassifier] = None
-        self.planner: Optional[TaskPlanner] = None
         self.verifier: Optional[ActionVerifier] = None
         self.recovery: Optional[ErrorRecovery] = None
         self.safety: Optional[SafetySystem] = None
-        self.autonomy: Optional[AutonomyManager] = None
         self.audit: Optional[AuditLog] = None
         self.license: Optional[LicenseManager] = None
         self.perception = None  # PerceptionEngine (lazy import)
@@ -142,14 +120,25 @@ class _ServerState:
         self.smart_locator: Optional[SmartLocateEngine] = None
         self.ocr_worker: Optional[OCRWorker] = None
         self.watch_engine: Optional[WatchEngine] = None
-        self.visual_memory: Optional[VisualMemory] = None
-        self.ui_semantics: Optional[UISemanticsEngine] = None
         self.host_telemetry: Optional[HostTelemetry] = None
         self.os_surface: Optional[OSSurfaceSignals] = None
         self.behavior_cache: Optional[AppBehaviorCache] = None
         self.audio_interrupt: Optional[AudioInterruptDetector] = None
-        self.agent_coordinator = None  # IPA v2: Multi-Agent Workbench
+        self.agent_coordinator = None  # legacy stub — module removed M003 S04
         self.recording_engine = None   # Opt-in recording (disabled by default)
+        # Removed modules — kept as None stubs so endpoints fail gracefully
+        self.context = None
+        self.plugin_mgr = None
+        self.memory = None
+        self.router = None
+        self.autonomy = None
+        self.visual_memory = None
+        self.ui_semantics = None
+        self.vscode = None
+        self.terminal = None
+        self.git_ops = None
+        self.browser = None
+        self.planner = None
         self.cursor_tracker: Optional[CursorTracker] = None
         self.action_watcher: Optional[ActionCompletionWatcher] = None
         self.operating_mode: str = _normalize_operating_mode(os.environ.get("ILUMINATY_OPERATING_MODE"))  # SAFE | RAW | HYBRID
@@ -2625,10 +2614,6 @@ def init_server(
         except Exception as e:
             _state.behavior_cache = None
             _state.bootstrap_warnings.append(f"app_behavior_cache_init_failed: {e}")
-        _state.context = ContextEngine()
-
-        _state.plugin_mgr = PluginManager()
-        _state.plugin_mgr.load_from_directory()
         _state.monitor_mgr = MonitorManager()
         _state.monitor_mgr.refresh()
 
@@ -2745,17 +2730,6 @@ def init_server(
             _state.perception = None
             _state.bootstrap_warnings.append(f"perception_init_failed: {e}")
 
-        # IPA v2: Multi-Agent Workbench
-        try:
-            from .agents import AgentCoordinator
-            _state.agent_coordinator = AgentCoordinator()
-            if _state.perception:
-                _state.perception._agent_coordinator = _state.agent_coordinator
-        except Exception as e:
-            _state.agent_coordinator = None
-            _state.bootstrap_warnings.append(f"agent_coordinator_init_failed: {e}")
-
-        _state.memory = TemporalMemory(enabled=False)
         _state.watchdog = Watchdog()
         try:
             _state.host_telemetry = HostTelemetry()
@@ -2770,7 +2744,6 @@ def init_server(
         except Exception as e:
             _state.os_surface = None
             _state.bootstrap_warnings.append(f"os_surface_init_failed: {e}")
-        _state.router = AIRouter()
         # IPA v3 bridge — connect to ring buffer after capture is initialized
         try:
             if _state.buffer is not None:
@@ -2783,10 +2756,8 @@ def init_server(
 
         # ─── v1.0: Computer Use capas ───
 
-        # Capa 7: Safety (primero, todo pasa por aqui)
+        # Capa 7: Safety
         _state.safety = SafetySystem()
-        _state.autonomy = AutonomyManager()
-        _state.autonomy.set_level(autonomy_level)
         _state.audit = AuditLog()
 
         # Capa 1: OS Control
@@ -2905,9 +2876,6 @@ def init_server(
             windows_fn=_windows_for_watch,
         )
 
-        # Visual Memory — persist context between AI sessions
-        _state.visual_memory = VisualMemory()
-
         # Recording Engine — opt-in local recording (disabled by default)
         try:
             from .recording import RecordingEngine
@@ -2915,13 +2883,6 @@ def init_server(
         except Exception as _rec_err:
             _state.recording_engine = None
             _state.bootstrap_warnings.append(f"recording_engine_init_failed: {_rec_err}")
-
-        _state.vscode = VSCodeBridge()
-        _state.terminal = TerminalManager()
-        _state.git_ops = GitOps()
-
-        # Capa 4: Web
-        _state.browser = BrowserBridge(debug_port=browser_debug_port)
 
         # Capa 5: File System
         # Block sensitive config paths from filesystem access
@@ -2957,22 +2918,13 @@ def init_server(
         _state.resolver.set_layers(
             actions=_state.actions,
             ui_tree=_state.ui_tree,
-            vscode=_state.vscode,
-            browser=_state.browser,
             filesystem=_state.filesystem,
         )
         _state.intent = IntentClassifier()
-        _state.planner = TaskPlanner()
-        if _state.behavior_cache and hasattr(_state.planner, "set_behavior_cache"):
-            try:
-                _state.planner.set_behavior_cache(_state.behavior_cache)
-            except Exception as e:
-                _state.bootstrap_warnings.append(f"planner_behavior_cache_set_failed: {e}")
         _state.verifier = ActionVerifier()
         _state.verifier.set_layers(
             filesystem=_state.filesystem,
             ui_tree=_state.ui_tree,
-            browser=_state.browser,
             actions=_state.actions,
         )
         _state.recovery = ErrorRecovery()
@@ -2992,13 +2944,6 @@ def init_server(
         # Grounding disabled — replaced by direct `act` tool (Claude decides coordinates)
         # _state.grounding = GroundingEngine()
         # _state.grounding.set_layers(ui_tree, vision, perception, buffer)
-        _state.ui_semantics = UISemanticsEngine()
-        _state.ui_semantics.set_layers(
-            ui_tree=_state.ui_tree,
-            vision=_state.vision,
-            monitor_mgr=_state.monitor_mgr,
-            buffer=_state.buffer,
-        )
 
 
 # ─── Vision / AI-ready endpoints ───
@@ -5377,12 +5322,9 @@ async def set_autonomy_level(
     level: str = Query(..., description="suggest, confirm, auto"),
     x_api_key: Optional[str] = Header(None),
 ):
-    """Cambia el nivel de autonomia."""
+    """Stub — autonomy module removed in M003 S04."""
     _check_auth(x_api_key)
-    if not _state.autonomy:
-        raise HTTPException(503, "Not initialized")
-    _state.autonomy.set_level(AutonomyLevel(level))
-    return {"level": level}
+    return {"level": level, "note": "autonomy module removed"}
 
 
 @app.get("/audit/recent")

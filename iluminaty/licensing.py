@@ -61,6 +61,8 @@ ALL_MCP_TOOLS = {
     # Status
     "screen_status", "agent_status", "get_audio_level",
     "os_dialog_status", "os_dialog_resolve",
+    # Verification (M003 S03)
+    "verify_action",
 }
 
 # Aliases for backward compat (code that imports these)
