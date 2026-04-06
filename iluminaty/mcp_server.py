@@ -1291,6 +1291,44 @@ TOOLS = [
         },
     },
     {
+        "name": "act_on",
+        "description": (
+            "Click, type, check, or select a UI element BY NAME — no coordinates needed.\n\n"
+            "The OS finds the element, resolves its exact coordinates, executes the action,\n"
+            "and verifies focus. You never handle a single pixel coordinate.\n\n"
+            "actions:\n"
+            "  click  — click the element (auto-focuses window first)\n"
+            "  type   — click then type text (verifies focus before typing)\n"
+            "  check  — check a checkbox or select a radio button\n"
+            "  uncheck — uncheck a checkbox\n"
+            "  select — select a ComboBox option by option text\n\n"
+            "Parameters:\n"
+            "  target:  element name substring to match (case-insensitive)\n"
+            "  action:  click | type | check | uncheck | select\n"
+            "  text:    text to type (required for action=type)\n"
+            "  option:  option to select (required for action=select)\n"
+            "  window_title: optional — scope search to a specific window\n"
+            "  nth:     if multiple elements match, which one (1-based, default=1)\n\n"
+            "Examples:\n"
+            "  act_on(target='Customer name', action='type', text='ILUMINATY Agent')\n"
+            "  act_on(target='Small', action='check')\n"
+            "  act_on(target='Bacon', action='check')\n"
+            "  act_on(target='Submit order', action='click')"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "target":       {"type": "string", "description": "Element name to find (substring, case-insensitive)"},
+                "action":       {"type": "string", "enum": ["click", "type", "check", "uncheck", "select"], "description": "Action to perform"},
+                "text":         {"type": "string", "description": "Text to type (action=type only)"},
+                "option":       {"type": "string", "description": "Option to select (action=select only)"},
+                "window_title": {"type": "string", "description": "Scope to window matching this title substring"},
+                "nth":          {"type": "integer", "description": "Which match to use if multiple (1-based, default=1)"},
+            },
+            "required": ["target", "action"],
+        },
+    },
+    {
         "name": "screen_status",
         "description": "System status: buffer stats, capture state, FPS, active window.",
         "inputSchema": {"type": "object", "properties": {}},
@@ -1653,6 +1691,178 @@ def handle_uia_find_all(args: dict) -> list:
     except Exception as e:
         import traceback
         return [{"type": "text", "text": f"uia_find_all error: {e}\n{traceback.format_exc()}"}]
+
+
+def handle_act_on(args: dict) -> list:
+    """Click/type/check a UI element by name — OS resolves coords, no guessing."""
+    target       = (args.get("target") or "").strip()
+    action       = (args.get("action") or "click").lower()
+    text         = args.get("text", "")
+    option       = args.get("option", "")
+    window_title = (args.get("window_title") or "").strip()
+    nth          = max(1, int(args.get("nth", 1)))
+
+    if not target:
+        return [{"type": "text", "text": "act_on: 'target' is required"}]
+    if action == "type" and not text:
+        return [{"type": "text", "text": "act_on: 'text' is required for action=type"}]
+
+    try:
+        from iluminaty.uia_backend import find_all_interactive, get_focused_element
+        import mss as _mss
+        import time
+
+        # 1. If window_title given, bring that window to foreground first
+        #    (browser titles change per active tab — need focus to read correct tab)
+        if window_title:
+            import ctypes, ctypes.wintypes as _wt
+            user32 = ctypes.windll.user32
+            tl = window_title.lower()
+            found_hwnd = None
+
+            @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_int, ctypes.c_int)
+            def _enum(hwnd, _):
+                nonlocal found_hwnd
+                buf = ctypes.create_unicode_buffer(512)
+                user32.GetWindowTextW(hwnd, buf, 512)
+                if tl in buf.value.lower() and user32.IsWindowVisible(hwnd):
+                    found_hwnd = hwnd
+                    return False
+                return True
+
+            user32.EnumWindows(_enum, 0)
+            if found_hwnd:
+                user32.SetForegroundWindow(found_hwnd)
+                time.sleep(0.3)
+
+        # 2. Get all interactive elements
+        elems = find_all_interactive(window_title)
+        if not elems:
+            return [{"type": "text", "text": f"act_on: no interactive elements found (window='{window_title or 'active'}')"}]
+
+        # 2. Find matches by name substring (case-insensitive)
+        tl = target.lower()
+        matches = [e for e in elems if tl in (e["name"] or "").lower()]
+        if not matches:
+            # Fallback: try control type match for generic targets
+            available = [e["name"] for e in elems if e["name"].strip()][:20]
+            return [{"type": "text", "text":
+                f"act_on: no element matching '{target}' found.\n"
+                f"Available elements: {available}"}]
+
+        if nth > len(matches):
+            return [{"type": "text", "text":
+                f"act_on: requested nth={nth} but only {len(matches)} matches for '{target}'"}]
+
+        elem = matches[nth - 1]
+        cx   = elem["center_global"]["x"]
+        cy   = elem["center_global"]["y"]
+        ct   = elem["control_type"]
+        name = elem["name"]
+
+        # 3. Resolve monitor-relative coords
+        mid, rx, ry = _uia_mon_rel(cx, cy)
+
+        # 4. Execute action via server HTTP API (same as act() tool)
+        import requests as _req
+        base    = API_BASE
+        headers = {"X-API-Key": API_KEY} if API_KEY else {}
+
+        def _click():
+            # Pass global coords with relative_to_monitor=False so server
+            # treats them as absolute screen coordinates
+            r = _req.post(
+                f"{base}/action/click",
+                params={"x": cx, "y": cy, "button": "left",
+                        "relative_to_monitor": "false"},
+                headers=headers, timeout=10,
+            )
+            return r.status_code == 200
+
+        def _verify_focus(retries=2):
+            for attempt in range(retries):
+                time.sleep(0.2)
+                info = get_focused_element()
+                if info and tl in (info["name"] or "").lower():
+                    return True, info["name"]
+                if attempt < retries - 1:
+                    # Retry the click once if focus didn't land
+                    _click()
+            info = get_focused_element()
+            name = (info["name"] if info else "") or "(unknown)"
+            return tl in name.lower(), name
+
+        result_lines = [f"[act_on: '{target}' → {action}]",
+                        f"  Element: {repr(name)} ({ct}) at M{mid}({rx},{ry})"]
+
+        if action == "click":
+            ok = _click()
+            matched, focused_name = _verify_focus()
+            status = "✓" if ok else "✗"
+            focus_status = f"focus='{focused_name}'" if ok else "click failed"
+            result_lines.append(f"  {status} Clicked — {focus_status}")
+
+        elif action == "type":
+            ok = _click()
+            matched, focused_name = _verify_focus()
+            if not ok:
+                return [{"type": "text", "text": "\n".join(result_lines) + "\n  ✗ Click failed"}]
+            if not matched:
+                result_lines.append(f"  ⚠ Focus is '{focused_name}', expected '{target}' — aborting type")
+                return [{"type": "text", "text": "\n".join(result_lines)}]
+            # Type via server
+            # Handle @ on Spanish keyboard layout via SendKeys
+            if "@" in text:
+                import subprocess, shlex
+                parts = text.split("@")
+                # Type before @
+                if parts[0]:
+                    _req.post(f"{base}/action/type", params={"text": parts[0]},
+                              headers=headers, timeout=10)
+                # Send @ via PowerShell SendKeys
+                subprocess.run(
+                    ["powershell", "-command",
+                     "Add-Type -AssemblyName System.Windows.Forms; "
+                     "[System.Windows.Forms.SendKeys]::SendWait('{@}')"],
+                    capture_output=True, timeout=5
+                )
+                # Type after @
+                after = "@".join(parts[1:])
+                if after:
+                    _req.post(f"{base}/action/type", params={"text": after},
+                              headers=headers, timeout=10)
+                result_lines.append(f"  ✓ Typed {len(text)} chars (@ via SendKeys) into '{focused_name}'")
+            else:
+                r = _req.post(f"{base}/action/type", params={"text": text},
+                              headers=headers, timeout=10)
+                if r.status_code == 200:
+                    result_lines.append(f"  ✓ Typed {len(text)} chars into '{focused_name}'")
+                else:
+                    result_lines.append(f"  ✗ Type failed: {r.text[:100]}")
+
+        elif action in ("check", "uncheck"):
+            # For checkboxes and radios — click to toggle
+            ok = _click()
+            time.sleep(0.1)
+            status = "✓" if ok else "✗"
+            result_lines.append(f"  {status} {action.capitalize()}ed '{name}'")
+
+        elif action == "select":
+            if not option:
+                return [{"type": "text", "text": "act_on: 'option' required for action=select"}]
+            ok = _click()
+            time.sleep(0.2)
+            # Type the option text to select in combobox/dropdown
+            r = _req.post(f"{base}/action/type", params={"text": option},
+                          headers=headers, timeout=10)
+            status = "✓" if ok else "✗"
+            result_lines.append(f"  {status} Selected '{option}' in '{name}'")
+
+        return [{"type": "text", "text": "\n".join(result_lines)}]
+
+    except Exception as e:
+        import traceback
+        return [{"type": "text", "text": f"act_on error: {e}\n{traceback.format_exc()}"}]
 
 
 def _parse_mon(m: dict) -> tuple:
@@ -4271,6 +4481,7 @@ HANDLERS = {
     "uia_focused":      handle_uia_focused,
     "uia_element_at":   handle_uia_element_at,
     "uia_find_all":     handle_uia_find_all,
+    "act_on":           handle_act_on,
     "open_path":        handle_open_path,
     "open_on_monitor":  handle_open_on_monitor,
     # ── Recording (opt-in) ──

@@ -120,17 +120,44 @@ def _win_find_all(window_title: str = "") -> list[dict]:
     uia, UIA = _win_init()
 
     if window_title:
-        root  = uia.GetRootElement()
-        cond_w = uia.CreatePropertyCondition(UIA.UIA_ControlTypePropertyId, 50029)
-        wins   = root.FindAll(UIA.TreeScope_Children, cond_w)
-        target = None
-        for i in range(wins.Length):
-            w = wins.GetElement(i)
-            if window_title.lower() in (w.CurrentName or "").lower():
-                target = w
-                break
-        if target is None:
+        # Enumerate all top-level hwnds via EnumWindows and match by title
+        # Also searches UIA Name property for browser tabs (title changes with active tab)
+        user32 = ctypes.windll.user32
+        tl = window_title.lower()
+        candidates = []
+
+        @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_int, ctypes.c_int)
+        def enum_cb(hwnd, lParam):
+            if not user32.IsWindowVisible(hwnd):
+                return True
+            buf = ctypes.create_unicode_buffer(512)
+            user32.GetWindowTextW(hwnd, buf, 512)
+            if tl in buf.value.lower():
+                candidates.append(hwnd)
+            return True
+
+        user32.EnumWindows(enum_cb, 0)
+
+        # If no title match, fall back to UIA Name search (catches browser tabs)
+        if not candidates:
+            root = uia.GetRootElement()
+            cond_all = uia.CreateTrueCondition()
+            # Walk only one level to find windows
+            all_top = root.FindAll(UIA.TreeScope_Children, cond_all)
+            for i in range(all_top.Length):
+                w = all_top.GetElement(i)
+                name = (w.CurrentName or "").lower()
+                if tl in name:
+                    try:
+                        h = w.CurrentNativeWindowHandle
+                        if h:
+                            candidates.append(h)
+                    except Exception:
+                        pass
+
+        if not candidates:
             return []
+        target = uia.ElementFromHandle(candidates[0])
     else:
         fg = ctypes.windll.user32.GetForegroundWindow()
         if not fg:
@@ -142,19 +169,22 @@ def _win_find_all(window_title: str = "") -> list[dict]:
 
     results, seen = [], set()
     for i in range(all_e.Length):
-        e  = all_e.GetElement(i)
-        ct = e.CurrentControlType
-        if ct not in INTERACTIVE_WIN:
-            continue
-        d = _win_elem_to_dict(e)
-        if d is None:
-            continue
-        key = (d["bounding_rect"]["left"], d["bounding_rect"]["top"],
-               d["bounding_rect"]["right"], d["bounding_rect"]["bottom"])
-        if key in seen:
-            continue
-        seen.add(key)
-        results.append(d)
+        try:
+            e  = all_e.GetElement(i)
+            ct = e.CurrentControlType
+            if ct not in INTERACTIVE_WIN:
+                continue
+            d = _win_elem_to_dict(e)
+            if d is None:
+                continue
+            key = (d["bounding_rect"]["left"], d["bounding_rect"]["top"],
+                   d["bounding_rect"]["right"], d["bounding_rect"]["bottom"])
+            if key in seen:
+                continue
+            seen.add(key)
+            results.append(d)
+        except Exception:
+            continue  # element destroyed mid-scan (dynamic DOM update)
     return results
 
 

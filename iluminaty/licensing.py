@@ -51,6 +51,7 @@ ALL_MCP_TOOLS = {
     "uia_focused",
     "uia_element_at",
     "uia_find_all",
+    "act_on",
     "open_path",
     "open_on_monitor",
     # Recording
