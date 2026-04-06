@@ -6115,13 +6115,21 @@ async def clipboard_read(x_api_key: Optional[str] = Header(None)):
     _check_auth(x_api_key)
     if not _state.clipboard:
         return {"text": ""}
-    return {"text": _state.clipboard.read()}
+    import asyncio
+    loop = asyncio.get_event_loop()
+    text = await loop.run_in_executor(None, _state.clipboard.read)
+    return {"text": text}
 
 
 @app.post("/clipboard/write")
 async def clipboard_write(text: str = Query(...), x_api_key: Optional[str] = Header(None)):
     _check_auth(x_api_key)
-    return {"success": _state.clipboard.write(text) if _state.clipboard else False}
+    if not _state.clipboard:
+        return {"success": False}
+    import asyncio
+    loop = asyncio.get_event_loop()
+    ok = await loop.run_in_executor(None, lambda: _state.clipboard.write(text))
+    return {"success": ok}
 
 
 @app.get("/clipboard/history")

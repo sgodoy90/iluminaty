@@ -114,60 +114,29 @@ class ClipboardManager:
     # ─── Platform implementations ───
 
     def _read_win(self) -> str:
+        # OpenClipboard(0) hangs in threads without a Win32 message queue (uvicorn workers).
+        # Use PowerShell subprocess with strict timeout instead — safe from any thread.
         try:
-            import ctypes
-            user32 = ctypes.windll.user32
-            kernel32 = ctypes.windll.kernel32
-
-            user32.OpenClipboard(0)
-            try:
-                handle = user32.GetClipboardData(13)  # CF_UNICODETEXT
-                if not handle:
-                    return ""
-                data = ctypes.c_wchar_p(handle)
-                return data.value or ""
-            finally:
-                user32.CloseClipboard()
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", "Get-Clipboard"],
+                capture_output=True, text=True, timeout=3
+            )
+            return result.stdout.strip()
         except Exception:
-            # Fallback: usar powershell
-            try:
-                result = subprocess.run(
-                    ["powershell", "-command", "Get-Clipboard"],
-                    capture_output=True, text=True, timeout=3
-                )
-                return result.stdout.strip()
-            except Exception:
-                return ""
+            return ""
 
     def _write_win(self, text: str) -> bool:
+        # Same issue as _read_win: OpenClipboard(0) hangs in non-GUI threads.
+        # PowerShell Set-Clipboard is safe from any thread.
         try:
-            import ctypes
-            user32 = ctypes.windll.user32
-            kernel32 = ctypes.windll.kernel32
-
-            user32.OpenClipboard(0)
-            try:
-                user32.EmptyClipboard()
-                data = text.encode("utf-16-le") + b"\x00\x00"
-                h_mem = kernel32.GlobalAlloc(0x0042, len(data))  # GMEM_MOVEABLE | GMEM_ZEROINIT
-                ptr = kernel32.GlobalLock(h_mem)
-                ctypes.memmove(ptr, data, len(data))
-                kernel32.GlobalUnlock(h_mem)
-                user32.SetClipboardData(13, h_mem)  # CF_UNICODETEXT
-                return True
-            finally:
-                user32.CloseClipboard()
+            subprocess.run(
+                ["powershell", "-NoProfile", "-Command",
+                 f"Set-Clipboard -Value {repr(text)}"],
+                capture_output=True, timeout=3
+            )
+            return True
         except Exception:
-            # Fallback: usar powershell (pass text via stdin to avoid injection)
-            try:
-                subprocess.run(
-                    ["powershell", "-Command", "Set-Clipboard"],
-                    input=text, text=True,
-                    capture_output=True, timeout=3
-                )
-                return True
-            except Exception:
-                return False
+            return False
 
     def _read_mac(self) -> str:
         try:

@@ -2774,7 +2774,7 @@ def handle_read_file(args: dict) -> list:
 def handle_write_file(args: dict) -> list:
     path = args.get("path", "")
     content = args.get("content", "")
-    data = _api_post(f"/files/write?path={urllib.parse.quote(path)}", body={"content": content})
+    data = _api_post("/files/write", body={"path": path, "content": content})
     if data.get("success"):
         return [{"type": "text", "text": f"Written {data.get('size', 0)}B to {path}"}]
     return [{"type": "text", "text": f"Failed to write {path}: {data.get('error', 'unknown')}"}]
