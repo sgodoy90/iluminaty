@@ -1324,6 +1324,7 @@ TOOLS = [
                 "option":       {"type": "string", "description": "Option to select (action=select only)"},
                 "window_title": {"type": "string", "description": "Scope to window matching this title substring"},
                 "nth":          {"type": "integer", "description": "Which match to use if multiple (1-based, default=1)"},
+                "submit":       {"type": "boolean", "description": "Press Enter after typing (default: false). Use for address bars, search fields, forms."},
             },
             "required": ["target", "action"],
         },
@@ -1701,6 +1702,7 @@ def handle_act_on(args: dict) -> list:
     option       = args.get("option", "")
     window_title = (args.get("window_title") or "").strip()
     nth          = max(1, int(args.get("nth", 1)))
+    submit       = bool(args.get("submit", False))
 
     if not target:
         return [{"type": "text", "text": "act_on: 'target' is required"}]
@@ -1842,6 +1844,20 @@ def handle_act_on(args: dict) -> list:
                     result_lines.append(f"  ✓ Typed {len(text)} chars into '{focused_name}'")
                 else:
                     result_lines.append(f"  ✗ Type failed: {r.text[:100]}")
+
+            # Submit: press Enter — focus the top-level window at click coords
+            if submit:
+                import ctypes as _ct, ctypes.wintypes as _cwt, time as _t
+                GA_ROOT = 2
+                _hwnd_child = _ct.windll.user32.WindowFromPoint(_cwt.POINT(cx, cy))
+                _hwnd_top   = _ct.windll.user32.GetAncestor(_hwnd_child, GA_ROOT) or _hwnd_child
+                # SetForegroundWindow directly — most reliable way
+                _ct.windll.user32.SetForegroundWindow(_hwnd_top)
+                _t.sleep(0.15)
+                sr = _req.post(f"{base}/action/hotkey",
+                               params={"keys": "enter", "focus_handle": _hwnd_top},
+                               headers=headers, timeout=10)
+                result_lines.append(f"  {'✓' if sr.status_code == 200 else '✗'} Enter pressed (hwnd={_hwnd_top})")
 
         elif action in ("check", "uncheck"):
             # For checkboxes and radios — click to toggle

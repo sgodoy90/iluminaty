@@ -166,6 +166,27 @@ def _win_find_all(window_title: str = "") -> list[dict]:
             return True
         _u32.EnumWindows(_enum_title, 0)
 
+        # Fallback: search by window class name (e.g. 'Brave' → Chrome_WidgetWin_1)
+        CLASS_ALIASES = {
+            "brave": "Chrome_WidgetWin_1",
+            "chrome": "Chrome_WidgetWin_1",
+            "edge": "Chrome_WidgetWin_1",
+            "firefox": "MozillaWindowClass",
+        }
+        if not candidates:
+            cls_name = CLASS_ALIASES.get(tl)
+            if cls_name:
+                @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_int, ctypes.c_int)
+                def _enum_cls(hwnd, _):
+                    if not _u32.IsWindowVisible(hwnd):
+                        return True
+                    cls_buf = ctypes.create_unicode_buffer(256)
+                    _u32.GetClassNameW(hwnd, cls_buf, 256)
+                    if cls_buf.value == cls_name:
+                        candidates.append(hwnd)
+                    return True
+                _u32.EnumWindows(_enum_cls, 0)
+
         if not candidates:
             return []
 

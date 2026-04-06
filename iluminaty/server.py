@@ -5443,10 +5443,35 @@ async def action_click(
     _check_auth(x_api_key)
     if not _state.actions:
         raise HTTPException(503, "Actions not initialized")
-    if _state.windows and (focus_handle is not None or (focus_title and focus_title.strip())):
-        _state.windows.focus_window(title=focus_title, handle=focus_handle)
-        await asyncio.sleep(0.08)  # non-blocking: yield event loop during focus settle
+
+    # ── Auto-focus: find and focus the window under the target coords ─────────
+    # Problem: when focus is on a different monitor (e.g. M3/pi), clicking on M1
+    # will first "activate" the window (consuming the click) instead of hitting
+    # the target element. Fix: always focus the window at the target coords first.
     rx, ry = _translate_click_coords(int(x), int(y), monitor_id, bool(relative_to_monitor))
+
+    if _state.windows:
+        # Explicit handle/title takes priority
+        if focus_handle is not None or (focus_title and focus_title.strip()):
+            _state.windows.focus_window(title=focus_title, handle=focus_handle)
+            await asyncio.sleep(0.15)
+        else:
+            # Auto: find window at global coords and focus it
+            try:
+                import ctypes as _c
+                hwnd_at = _c.windll.user32.WindowFromPoint(_c.wintypes.POINT(rx, ry))
+                if hwnd_at:
+                    # Walk up to the top-level window
+                    parent = _c.windll.user32.GetAncestor(hwnd_at, 2)  # GA_ROOT=2
+                    top_hwnd = parent if parent else hwnd_at
+                    fg_hwnd = _c.windll.user32.GetForegroundWindow()
+                    if int(top_hwnd) != int(fg_hwnd):
+                        # Window at target is not in focus — focus it first
+                        _state.windows.focus_window(handle=int(top_hwnd))
+                        await asyncio.sleep(0.15)  # wait for focus to settle
+            except Exception:
+                pass  # auto-focus best-effort; don't block click
+
     result = _state.actions.click(rx, ry, button)
     payload = result.to_dict()
     payload["requested_x"] = int(x)
@@ -5513,8 +5538,34 @@ async def action_hotkey(
         raise HTTPException(503, "Actions not initialized")
     if _state.windows and (focus_handle is not None or (focus_title and focus_title.strip())):
         _state.windows.focus_window(title=focus_title, handle=focus_handle)
-        await asyncio.sleep(0.08)  # non-blocking: yield event loop during focus settle
+        await asyncio.sleep(0.15)  # give OS time to switch focus
     key_list = [k.strip() for k in keys.split("+")]
+    # For single-key submit (enter/tab/escape) when a focus_handle is given,
+    # use PostMessage directly — guarantees delivery regardless of system focus
+    if focus_handle and len(key_list) == 1 and key_list[0].lower() in ("enter", "tab", "escape", "return"):
+        import ctypes as _ct, ctypes.wintypes as _cwt
+        VK = {"enter": 0x0D, "return": 0x0D, "tab": 0x09, "escape": 0x1B}
+        vk = VK[key_list[0].lower()]
+        # SetForegroundWindow then SendInput — works with Chromium's input pipeline
+        _ct.windll.user32.SetForegroundWindow(int(focus_handle))
+        import time as _t; _t.sleep(0.1)
+        # INPUT struct for keyboard event
+        class _KEYBDINPUT(_ct.Structure):
+            _fields_ = [("wVk", _ct.c_ushort), ("wScan", _ct.c_ushort),
+                        ("dwFlags", _ct.c_ulong), ("time", _ct.c_ulong),
+                        ("dwExtraInfo", _ct.POINTER(_ct.c_ulong))]
+        class _INPUT(_ct.Structure):
+            class _I(_ct.Union):
+                _fields_ = [("ki", _KEYBDINPUT)]
+            _anonymous_ = ("_i",)
+            _fields_ = [("type", _ct.c_ulong), ("_i", _I)]
+        KEYEVENTF_KEYUP = 0x0002
+        inputs = (_INPUT * 2)(
+            _INPUT(type=1, ki=_KEYBDINPUT(wVk=vk, wScan=0, dwFlags=0, time=0, dwExtraInfo=None)),
+            _INPUT(type=1, ki=_KEYBDINPUT(wVk=vk, wScan=0, dwFlags=KEYEVENTF_KEYUP, time=0, dwExtraInfo=None)),
+        )
+        _ct.windll.user32.SendInput(2, inputs, _ct.sizeof(_INPUT))
+        return {"action": "hotkey", "success": True, "message": f"SendInput {key_list[0]} to hwnd={focus_handle}"}
     return _state.actions.hotkey(*key_list).to_dict()
 
 
