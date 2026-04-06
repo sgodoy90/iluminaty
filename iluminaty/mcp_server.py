@@ -594,8 +594,8 @@ TOOLS = [
                 "mode": {
                     "type": "string",
                     "enum": ["low_res", "medium_res", "full_res"],
-                    "description": "Image resolution. low_res recommended for most tasks.",
-                    "default": "low_res",
+                    "description": "Image resolution. medium_res (768px) is default — sufficient to verify UI state, canvas content, field text. Use low_res only for orientation (which app/monitor). Use full_res for dense text.",
+                    "default": "medium_res",
                 },
                 "monitor": {
                     "type": "integer",
@@ -3757,7 +3757,7 @@ def handle_see_now(args: dict) -> list:
     plus a compact IPA v3 narrative (~100 tokens) of what's happening.
     """
     monitor = args.get("monitor")
-    mode = args.get("mode", "low_res")   # low_res default — ~5K tokens with real image
+    mode = args.get("mode", "medium_res")   # medium_res default — 768px, enough to verify UI state
 
     # Get frame image from server
     query = f"/vision/smart?mode={mode}"
