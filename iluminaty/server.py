@@ -3085,6 +3085,119 @@ async def vision_stream(
     )
 
 
+@app.post("/vision/zoom")
+async def vision_zoom(
+    request: Request,
+    x_api_key: Optional[str] = Header(None),
+):
+    """
+    Computer-Use style ZOOM — inspect a region at full resolution.
+
+    Like Anthropic's 'zoom' action: when you see something small in a screenshot
+    and need pixel-perfect coordinates, zoom into that region first.
+
+    Body:
+      {
+        "x1": 100,         // left edge in image coords
+        "y1": 50,          // top edge in image coords
+        "x2": 300,         // right edge in image coords
+        "y2": 150,         // bottom edge in image coords
+        "monitor_id": 1,   // which monitor
+        "image_w": 1280,   // width of the reference image (from see_now)
+        "image_h": 720,    // height of the reference image
+        "save_to": null    // optional save path (.webp)
+      }
+
+    Returns the zoomed region as a base64 WebP image.
+    Coords in the returned image are 1:1 with monitor pixels in that region.
+    Use click_at() with the zoomed image coords + the region offset to click precisely.
+    """
+    _check_auth(x_api_key)
+    body = await request.json()
+
+    x1 = int(body.get("x1", 0))
+    y1 = int(body.get("y1", 0))
+    x2 = int(body.get("x2", 200))
+    y2 = int(body.get("y2", 100))
+    monitor_id = body.get("monitor_id", 1)
+    image_w = body.get("image_w")
+    image_h = body.get("image_h")
+    save_to = body.get("save_to")
+
+    mon_geo = _monitor_geometry(monitor_id)
+    if not mon_geo:
+        raise HTTPException(404, f"Monitor {monitor_id} not found")
+
+    mon_w = mon_geo["width"]
+    mon_h = mon_geo["height"]
+    mon_left = mon_geo["left"]
+    mon_top = mon_geo["top"]
+
+    # Scale image coords → monitor coords
+    if image_w and image_h and image_w > 0 and image_h > 0:
+        sx = mon_w / image_w
+        sy = mon_h / image_h
+        mx1 = max(0, round(x1 * sx))
+        my1 = max(0, round(y1 * sy))
+        mx2 = min(mon_w, round(x2 * sx))
+        my2 = min(mon_h, round(y2 * sy))
+    else:
+        mx1, my1, mx2, my2 = x1, y1, x2, y2
+
+    # Capture only the region using mss
+    loop = asyncio.get_event_loop()
+    def _capture_region():
+        import mss, io
+        from PIL import Image
+        with mss.mss() as sct:
+            region = {
+                "left": mon_left + mx1,
+                "top": mon_top + my1,
+                "width": mx2 - mx1,
+                "height": my2 - my1,
+            }
+            shot = sct.grab(region)
+            img = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
+            buf = io.BytesIO()
+            img.save(buf, format="WEBP", quality=95)
+            return buf.getvalue(), img.size
+
+    img_bytes, (rw, rh) = await loop.run_in_executor(None, _capture_region)
+
+    # Optionally save
+    saved_path = None
+    if save_to:
+        try:
+            import pathlib
+            p = pathlib.Path(save_to)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(img_bytes)
+            saved_path = str(p)
+        except Exception:
+            pass
+
+    import base64
+    b64 = base64.b64encode(img_bytes).decode()
+
+    return {
+        "zoomed": True,
+        "monitor_id": monitor_id,
+        "image_region": {"x1": x1, "y1": y1, "x2": x2, "y2": y2},
+        "monitor_region": {"x1": mx1, "y1": my1, "x2": mx2, "y2": my2},
+        "region_size": {"width": rw, "height": rh},
+        "image_w": rw,
+        "image_h": rh,
+        "region_offset": {"x": mx1, "y": my1},
+        "saved_path": saved_path,
+        "image_b64": b64,
+        "usage": (
+            f"Coords in this zoomed image are 1:1 with monitor pixels. "
+            f"To click at zoomed(zx,zy): use click_at(x=zx+{mx1}, y=zy+{my1}, "
+            f"monitor_id={monitor_id}, image_w={mon_w}, image_h={mon_h})"
+        ),
+    }
+
+
 @app.get("/vision/view")
 async def vision_view(
     monitor_id: Optional[int] = Query(None),

@@ -607,6 +607,7 @@ _ALLOWED_TOOLS = {
     "watch_and_notify", # wait until condition (window_changed, text_visible, idle...)
     # Actions — no coordinates needed
     "act_on",           # click/type by element name via UIA (most reliable)
+    "zoom",             # Computer-Use style: zoom region to full-res for precision
     "click_at",         # Computer-Use style: click at image coords from see_now
     "act",              # click/type by global coordinates (last resort)
     # UI inspection
@@ -1316,6 +1317,35 @@ _TOOLS_RAW = [
                     "description": "Monitor number for relative coords (optional, auto-detected)",
                 },
             },
+        },
+    },
+    {
+        "name": "zoom",
+        "description": (
+            "🔍 ZOOM REGION — inspect any area at full monitor resolution.\n\n"
+            "Use when a target is too small in the see_now screenshot to click precisely.\n\n"
+            "Workflow:\n"
+            "1. see_now() → full screenshot, spot the target area\n"
+            "2. zoom(x1=..., y1=..., x2=..., y2=..., image_w=..., image_h=...) → zoomed image\n"
+            "3. Look at zoomed image → identify exact pixel (zx, zy)\n"
+            "4. click_at(zx + offset_x, zy + offset_y, image_w=mon_w, image_h=mon_h)\n"
+            "   (the response includes a 'usage' hint with the exact formula)\n\n"
+            "This is identical to Anthropic Computer Use 'zoom' action.\n"
+            "Zoomed image coords are 1:1 with real monitor pixels in that region."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "x1": {"type": "integer", "description": "Left edge in see_now image coords"},
+                "y1": {"type": "integer", "description": "Top edge in see_now image coords"},
+                "x2": {"type": "integer", "description": "Right edge in see_now image coords"},
+                "y2": {"type": "integer", "description": "Bottom edge in see_now image coords"},
+                "monitor_id": {"type": "integer", "description": "Monitor id (1..N)", "default": 1},
+                "image_w": {"type": "integer", "description": "Width of the see_now image"},
+                "image_h": {"type": "integer", "description": "Height of the see_now image"},
+                "save_to": {"type": "string", "description": "Optional path to save the zoomed image (.webp)"},
+            },
+            "required": ["x1", "y1", "x2", "y2"],
         },
     },
     {
@@ -3260,6 +3290,63 @@ def _post_action_context(monitor=None, action_type="", result_ok=True) -> str:
     return "\n".join(parts) if parts else ""
 
 
+def handle_zoom(args: dict) -> list:
+    """
+    Computer-Use style ZOOM: inspect a region at full monitor resolution.
+    Use after see_now() when you need pixel-perfect coords for a small element.
+
+    Workflow:
+      1. see_now()                  → full screenshot, note target area
+      2. zoom(x1,y1,x2,y2, ...)    → zoomed region at 1:1 monitor pixels
+      3. Look at zoomed image       → identify exact pixel coords (zx, zy)
+      4. click_at(zx + offset_x, zy + offset_y, image_w=mon_w, image_h=mon_h)
+      OR just use the 'usage' hint returned in the response.
+    """
+    x1 = args.get("x1", 0)
+    y1 = args.get("y1", 0)
+    x2 = args.get("x2", 200)
+    y2 = args.get("y2", 100)
+    monitor_id = args.get("monitor_id", 1)
+    image_w = args.get("image_w")
+    image_h = args.get("image_h")
+    save_to = args.get("save_to")
+
+    body = {"x1": x1, "y1": y1, "x2": x2, "y2": y2, "monitor_id": monitor_id}
+    if image_w:
+        body["image_w"] = image_w
+    if image_h:
+        body["image_h"] = image_h
+    if save_to:
+        body["save_to"] = save_to
+
+    data = _api_post("/vision/zoom", body=body)
+    if not data or data.get("error"):
+        return [{"type": "text", "text": f"zoom failed: {data}"}]
+
+    # Return image + usage hint
+    b64 = data.get("image_b64", "")
+    size = data.get("region_size", {})
+    offset = data.get("region_offset", {})
+    usage = data.get("usage", "")
+    saved = data.get("saved_path", "")
+
+    result = [{"type": "text", "text": (
+        f"✓ Zoomed region ({x1},{y1})-({x2},{y2}) → "
+        f"{size.get('width')}x{size.get('height')} px at 1:1 monitor resolution\n"
+        f"Region offset in monitor: ({offset.get('x')}, {offset.get('y')})\n"
+        f"{('Saved: ' + saved + chr(10)) if saved else ''}"
+        f"\n{usage}\n\n"
+        f"Now look at the image and identify the exact pixel of your target."
+    )}]
+
+    if b64:
+        result.append({"type": "image", "data": b64, "mimeType": "image/webp"})
+    if saved:
+        result[0]["text"] = f"Image saved to: {saved}\n\n" + result[0]["text"]
+
+    return result
+
+
 def handle_click_at(args: dict) -> list:
     """
     Computer-Use style click: provide image coords from see_now screenshot.
@@ -4639,6 +4726,7 @@ HANDLERS = {
     "watch_and_notify":    handle_watch_and_notify,
     # Actions
     "act_on":              handle_act_on,
+    "zoom":                handle_zoom,
     "click_at":            handle_click_at,
     "act":                 handle_act,
     # UI inspection
