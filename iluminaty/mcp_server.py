@@ -1505,85 +1505,63 @@ def handle_read_text(args: dict) -> dict:
     return [{"type": "text", "text": f"## Screen Text (OCR)\n```\n{text[:3000]}\n```\nConfidence: {data.get('confidence', 0)}%"}]
 
 
-def _uia_element_info(elem) -> dict:
-    """Extract name, control type, bounding rect and monitor-relative center from a UIA element."""
-    CT_NAMES = {
-        50000: "Button", 50001: "Calendar", 50002: "CheckBox", 50003: "ComboBox",
-        50004: "Edit/Input", 50005: "Hyperlink", 50006: "Image", 50007: "ListItem",
-        50008: "List", 50009: "RadioButton", 50010: "ScrollBar", 50011: "Slider",
-        50012: "Spinner", 50013: "RadioButton", 50014: "StatusBar", 50015: "Tab",
-        50016: "Spinner/TabItem", 50017: "Text", 50018: "ToolBar", 50019: "ToolTip",
-        50020: "Tree/ListItem", 50021: "TreeItem", 50022: "Custom", 50023: "Group",
-        50024: "Thumb", 50025: "DataGrid", 50026: "DataItem/TimeInput", 50027: "Document",
-        50028: "SplitButton", 50029: "Window", 50030: "Pane", 50031: "Header",
-        50032: "HeaderItem", 50033: "Table", 50034: "TitleBar", 50035: "Separator",
-    }
-    name    = elem.CurrentName or ""
-    ct      = elem.CurrentControlType
-    ct_name = CT_NAMES.get(ct, f"Unknown({ct})")
-    r       = elem.CurrentBoundingRectangle
-    cx      = (r.left + r.right) // 2
-    cy      = (r.top + r.bottom) // 2
+# ---------------------------------------------------------------------------
+# UIA handlers — delegate to uia_backend (Windows/macOS/Linux)
+# ---------------------------------------------------------------------------
 
-    # Resolve which monitor owns this element using mss (always available)
-    mon_id, rel_x, rel_y = 1, cx, cy
+def _uia_mon_rel(cx: int, cy: int, force_monitor=None) -> tuple:
+    """Resolve global (cx,cy) → (monitor_id, rel_x, rel_y) using mss."""
     try:
         import mss as _mss
         with _mss.mss() as sct:
-            # mss.monitors[0] = virtual screen, [1..N] = real monitors
-            for idx, mon in enumerate(sct.monitors[1:], start=1):
-                if mon["left"] <= cx < mon["left"] + mon["width"] and \
-                   mon["top"]  <= cy < mon["top"]  + mon["height"]:
-                    mon_id = idx
-                    rel_x  = cx - mon["left"]
-                    rel_y  = cy - mon["top"]
-                    break
+            mons = sct.monitors[1:]
+            if force_monitor is not None:
+                idx = int(force_monitor) - 1
+                if 0 <= idx < len(mons):
+                    m = mons[idx]
+                    return int(force_monitor), cx - m["left"], cy - m["top"]
+            for i, m in enumerate(mons, start=1):
+                if m["left"] <= cx < m["left"] + m["width"] and \
+                   m["top"]  <= cy < m["top"]  + m["height"]:
+                    return i, cx - m["left"], cy - m["top"]
     except Exception:
-        pass  # fallback: mon=1, rel = global coords
-
-    return {
-        "name":         name,
-        "control_type": ct_name,
-        "control_type_id": ct,
-        "bounding_rect": {"left": r.left, "top": r.top, "right": r.right, "bottom": r.bottom},
-        "center_global": {"x": cx, "y": cy},
-        "center_monitor_relative": {"x": rel_x, "y": rel_y, "monitor": mon_id},
-    }
+        pass
+    return "?", cx, cy
 
 
-def _uia_init():
-    """Initialize UIA COM object. Cached per call."""
-    try:
-        import comtypes.client as _cc
-        from comtypes.gen import UIAutomationClient as _UIA
-        uia = _cc.CreateObject(_UIA.CUIAutomation, interface=_UIA.IUIAutomation)
-        return uia, _UIA
-    except ImportError:
-        # Generate typelib on first use
-        import comtypes.client as _cc
-        _cc.GetModule("UIAutomationCore.dll")
-        from comtypes.gen import UIAutomationClient as _UIA
-        uia = _cc.CreateObject(_UIA.CUIAutomation, interface=_UIA.IUIAutomation)
-        return uia, _UIA
+def _uia_format_elem(info: dict, header: str) -> str:
+    cx  = info["center_global"]["x"]
+    cy  = info["center_global"]["y"]
+    mid, rx, ry = _uia_mon_rel(cx, cy)
+    r   = info["bounding_rect"]
+    return (
+        f"{header}\n"
+        f"  Name:         {repr(info['name'])}\n"
+        f"  ControlType:  {info['control_type']}\n"
+        f"  BoundingRect: L={r['left']} T={r['top']} R={r['right']} B={r['bottom']}\n"
+        f"  Center global: ({cx}, {cy})\n"
+        f"  Center M{mid}-relative: ({rx}, {ry})"
+    )
 
 
 def handle_uia_focused(args: dict) -> list:
     """Return the UI element that currently has keyboard focus — OS verified."""
     try:
-        uia, _UIA = _uia_init()
-        elem = uia.GetFocusedElement()
-        if not elem:
+        from iluminaty.uia_backend import get_focused_element, os_name
+        info = get_focused_element()
+        if not info:
             return [{"type": "text", "text": "uia_focused: no focused element found"}]
-        info = _uia_element_info(elem)
-        mon  = info.get("center_monitor_relative", {})
+        cx  = info["center_global"]["x"]
+        cy  = info["center_global"]["y"]
+        mid, rx, ry = _uia_mon_rel(cx, cy)
+        r   = info["bounding_rect"]
         text = (
-            f"[FOCUSED ELEMENT — OS verified]\n"
+            f"[FOCUSED ELEMENT — OS verified | {os_name()}]\n"
             f"  Name:         {repr(info['name'])}\n"
             f"  ControlType:  {info['control_type']}\n"
-            f"  BoundingRect: L={info['bounding_rect']['left']} T={info['bounding_rect']['top']} "
-            f"R={info['bounding_rect']['right']} B={info['bounding_rect']['bottom']}\n"
-            f"  Center global: ({info['center_global']['x']}, {info['center_global']['y']})\n"
-            f"  Center M{mon.get('monitor','?')}-relative: ({mon.get('x','?')}, {mon.get('y','?')})\n\n"
+            f"  BoundingRect: L={r['left']} T={r['top']} R={r['right']} B={r['bottom']}\n"
+            f"  Center global: ({cx}, {cy})\n"
+            f"  Center M{mid}-relative: ({rx}, {ry})\n\n"
             f"This is what will receive keystrokes. Verify the name matches your target before typing."
         )
         return [{"type": "text", "text": text}]
@@ -1598,38 +1576,36 @@ def handle_uia_element_at(args: dict) -> list:
     y       = int(args.get("y", 0))
     monitor = int(args.get("monitor", 1))
     try:
-        # Translate monitor-relative to global using mss (always available, no server needed)
+        # Translate monitor-relative → global using mss
         gx, gy = x, y
         try:
             import mss as _mss
             with _mss.mss() as sct:
-                mons = sct.monitors  # [0]=virtual, [1..N]=real
+                mons = sct.monitors
                 if 1 <= monitor < len(mons):
                     gx = x + mons[monitor]["left"]
                     gy = y + mons[monitor]["top"]
         except Exception:
-            pass  # fallback: treat x,y as global
+            pass
 
-        import ctypes.wintypes as _wt
-        pt = _wt.POINT(gx, gy)
-
-        uia, _UIA = _uia_init()
-        elem = uia.ElementFromPoint(pt)
-        if not elem:
+        from iluminaty.uia_backend import get_element_at, os_name
+        info = get_element_at(gx, gy)
+        if not info:
             return [{"type": "text", "text": f"uia_element_at({x},{y}): no element found"}]
 
-        info = _uia_element_info(elem)
-        mon  = info.get("center_monitor_relative", {})
+        cx  = info["center_global"]["x"]
+        cy  = info["center_global"]["y"]
+        mid, rx, ry = _uia_mon_rel(cx, cy)
+        r   = info["bounding_rect"]
         text = (
-            f"[ELEMENT AT ({x},{y}) monitor={monitor} — OS verified]\n"
+            f"[ELEMENT AT ({x},{y}) monitor={monitor} — OS verified | {os_name()}]\n"
             f"  Global coords used: ({gx}, {gy})\n"
             f"  Name:         {repr(info['name'])}\n"
             f"  ControlType:  {info['control_type']}\n"
-            f"  BoundingRect: L={info['bounding_rect']['left']} T={info['bounding_rect']['top']} "
-            f"R={info['bounding_rect']['right']} B={info['bounding_rect']['bottom']}\n"
-            f"  Center global: ({info['center_global']['x']}, {info['center_global']['y']})\n"
-            f"  Center M{mon.get('monitor','?')}-relative: ({mon.get('x','?')}, {mon.get('y','?')})\n\n"
-            f"Use center coords above for precise clicking — they are the exact center of this element."
+            f"  BoundingRect: L={r['left']} T={r['top']} R={r['right']} B={r['bottom']}\n"
+            f"  Center global: ({cx}, {cy})\n"
+            f"  Center M{mid}-relative: ({rx}, {ry})\n\n"
+            f"Use center coords above for precise clicking — exact center of this element."
         )
         return [{"type": "text", "text": text}]
     except Exception as e:
@@ -1639,122 +1615,41 @@ def handle_uia_element_at(args: dict) -> list:
 
 def handle_uia_find_all(args: dict) -> list:
     """List all interactive UI elements in the active (or specified) window — OS verified."""
-    window_title = args.get("window_title", "").strip()
+    window_title  = args.get("window_title", "").strip()
     force_monitor = args.get("monitor", None)
-
-    # Interactive control types to include
-    INTERACTIVE = {
-        50000: "Button",
-        50002: "CheckBox",
-        50003: "ComboBox",
-        50004: "Edit/Input",
-        50005: "Hyperlink",
-        50009: "RadioButton",
-        50011: "Slider",
-        50012: "Spinner",
-        50013: "RadioButton",
-        50016: "Spinner",
-        50028: "SplitButton",
-    }
-
     try:
-        import ctypes, ctypes.wintypes as _wt
-        uia, _UIA = _uia_init()
+        from iluminaty.uia_backend import find_all_interactive, os_name
+        elems = find_all_interactive(window_title)
 
-        # Resolve target window
-        if window_title:
-            # Search all top-level windows for title match
-            root = uia.GetRootElement()
-            cond = uia.CreatePropertyCondition(
-                _UIA.UIA_NamePropertyId, window_title
-            )
-            # Try exact first, then fall back to scanning children
-            target = None
-            cond_win = uia.CreatePropertyCondition(
-                _UIA.UIA_ControlTypePropertyId, 50029  # Window
-            )
-            wins = root.FindAll(_UIA.TreeScope_Children, cond_win)
-            for i in range(wins.Length):
-                w = wins.GetElement(i)
-                if window_title.lower() in (w.CurrentName or "").lower():
-                    target = w
-                    break
-            if target is None:
-                return [{"type": "text", "text": f"uia_find_all: no window matching '{window_title}' found"}]
-        else:
-            # Use foreground window
-            fg_hwnd = ctypes.windll.user32.GetForegroundWindow()
-            if not fg_hwnd:
-                return [{"type": "text", "text": "uia_find_all: no foreground window"}]
-            target = uia.ElementFromHandle(fg_hwnd)
+        if not elems:
+            msg = (f"uia_find_all: no interactive elements found"
+                   + (f" in window matching '{window_title}'" if window_title else ""))
+            return [{"type": "text", "text": msg}]
 
-        win_name = target.CurrentName or "(unknown)"
-
-        # Collect monitor layout once via mss
-        mon_layout = []
-        try:
-            import mss as _mss
-            with _mss.mss() as sct:
-                for idx, m in enumerate(sct.monitors[1:], start=1):
-                    mon_layout.append((idx, m["left"], m["top"], m["width"], m["height"]))
-        except Exception:
-            pass
-
-        def to_mon_rel(cx, cy):
-            if force_monitor is not None:
-                for mid, ml, mt, mw, mh in mon_layout:
-                    if mid == force_monitor:
-                        return mid, cx - ml, cy - mt
-            for mid, ml, mt, mw, mh in mon_layout:
-                if ml <= cx < ml + mw and mt <= cy < mt + mh:
-                    return mid, cx - ml, cy - mt
-            return "?", cx, cy
-
-        # Find all interactive elements
-        cond_true = uia.CreateTrueCondition()
-        all_elems = target.FindAll(_UIA.TreeScope_Descendants, cond_true)
-
+        # Resolve monitor-relative coords and sort reading order
         rows = []
-        seen_rects = set()  # deduplicate overlapping elements
-        for i in range(all_elems.Length):
-            e = all_elems.GetElement(i)
-            ct = e.CurrentControlType
-            if ct not in INTERACTIVE:
-                continue
-            try:
-                name = (e.CurrentName or "").strip()
-                r    = e.CurrentBoundingRectangle
-                # Skip zero-size elements
-                if r.right <= r.left or r.bottom <= r.top:
-                    continue
-                cx = (r.left + r.right) // 2
-                cy = (r.top + r.bottom) // 2
-                key = (r.left, r.top, r.right, r.bottom)
-                if key in seen_rects:
-                    continue
-                seen_rects.add(key)
-                mid, rx, ry = to_mon_rel(cx, cy)
-                rows.append((INTERACTIVE[ct], name, mid, rx, ry, r.left, r.top, r.right, r.bottom))
-            except Exception:
-                continue
+        for e in elems:
+            cx  = e["center_global"]["x"]
+            cy  = e["center_global"]["y"]
+            mid, rx, ry = _uia_mon_rel(cx, cy, force_monitor)
+            rows.append((e["control_type"], e["name"], mid, rx, ry))
+        rows.sort(key=lambda r: (r[4], r[3]))  # top→bottom, left→right
 
-        if not rows:
-            return [{"type": "text", "text": f"uia_find_all: no interactive elements found in '{win_name}'"}]
-
-        # Sort top-to-bottom, left-to-right (reading order)
-        rows.sort(key=lambda r: (r[4], r[3]))
-
-        lines = [f"[INTERACTIVE ELEMENTS — '{win_name}'] ({len(rows)} found, OS verified)\n"]
-        lines.append(f"  {'Type':<18} {'Name':<40} {'Coords'}")
-        lines.append(f"  {'-'*18} {'-'*40} {'-'*20}")
-        for ct_name, name, mid, rx, ry, l, t, rr, b in rows:
-            name_str = repr(name)[:38] if name else "(no name)"
+        # Infer window name from first element's monitor context
+        win_label = f"'{window_title}'" if window_title else "active window"
+        lines = [
+            f"[INTERACTIVE ELEMENTS — {win_label}] "
+            f"({len(rows)} found, OS verified | {os_name()})\n",
+            f"  {'Type':<18} {'Name':<40} {'Coords'}",
+            f"  {'-'*18} {'-'*40} {'-'*20}",
+        ]
+        for ct_name, name, mid, rx, ry in rows:
+            name_str = repr(name.strip())[:38] if name.strip() else "(no name)"
             lines.append(f"  {ct_name:<18} {name_str:<40} M{mid}({rx}, {ry})")
 
-        lines.append(f"\nUse the M#(x, y) coords directly with act(click, x=..., y=..., monitor=...).")
+        lines.append("\nUse the M#(x, y) coords directly with act(click, x=..., y=..., monitor=...).")
         lines.append("Verify with uia_focused() after each click before typing.")
         return [{"type": "text", "text": "\n".join(lines)}]
-
     except Exception as e:
         import traceback
         return [{"type": "text", "text": f"uia_find_all error: {e}\n{traceback.format_exc()}"}]
