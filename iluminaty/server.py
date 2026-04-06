@@ -6900,48 +6900,86 @@ async def vision_smart(
         }, status_code=429)
 
     slot, resolved_mid = _latest_slot_for_monitor(monitor_id)
-    if not slot and monitor_id is not None:
-        # On-demand capture: buffer has no frame for this monitor yet.
-        # Take an immediate screenshot rather than failing the agent.
+
+    # Staleness guard: if the slot is older than 2s, force a live mss capture.
+    # skip_if_unchanged keeps the same slot when screen is static — the timestamp
+    # stops updating even though the frame is correct. For agents calling see_now
+    # to verify an action, a 2s-old frame is stale enough to cause wrong decisions.
+    import time as _t
+    _STALE_THRESHOLD_S = 2.0
+    if slot is not None:
+        slot_age = _t.time() - float(getattr(slot, "timestamp", 0) or 0)
+        if slot_age > _STALE_THRESHOLD_S:
+            slot = None  # force on-demand capture below
+
+    if not slot:
+        # On-demand capture: buffer empty OR frame stale (>2s old on static screen).
+        # Always take a live mss screenshot rather than serving stale content.
+        _mid_for_snap = int(monitor_id) if monitor_id is not None else (resolved_mid or 1)
         try:
-            import mss as _mss
-            _mid = int(monitor_id)
+            import mss as _mss, asyncio as _aio, base64 as _b64
             monitors_info = (_state.monitor_mgr.monitors
                              if _state.monitor_mgr else [])
             _mon = next((m for m in monitors_info
-                         if int(m.id) == _mid), None)
+                         if int(m.id) == _mid_for_snap), None)
+
+            # Fallback: resolve monitor geometry from mss directly
+            if _mon is None:
+                with _mss.mss() as _s:
+                    _mss_mons = _s.monitors  # [0]=virtual, [1..N]=real
+                    if 1 <= _mid_for_snap < len(_mss_mons):
+                        class _M:
+                            pass
+                        _mon = _M()
+                        _mon.left   = _mss_mons[_mid_for_snap]["left"]
+                        _mon.top    = _mss_mons[_mid_for_snap]["top"]
+                        _mon.width  = _mss_mons[_mid_for_snap]["width"]
+                        _mon.height = _mss_mons[_mid_for_snap]["height"]
+
             if _mon:
+                _mon_left, _mon_top = _mon.left, _mon.top
+                _mon_w, _mon_h = _mon.width, _mon.height
+
                 def _snap_sync():
                     import io as _io
                     from PIL import Image as _Img
                     with _mss.mss() as _s:
-                        raw = _s.grab({"left": _mon.left, "top": _mon.top,
-                                       "width": _mon.width,
-                                       "height": _mon.height})
+                        raw = _s.grab({"left": _mon_left, "top": _mon_top,
+                                       "width": _mon_w, "height": _mon_h})
                         img = _Img.frombytes("RGB", raw.size,
                                              raw.bgra, "raw", "BGRX")
+                        # Resize to requested mode resolution
+                        if active_mode == "low_res":
+                            ratio = 320 / img.width
+                            img = img.resize((320, int(img.height * ratio)),
+                                             _Img.LANCZOS)
+                        elif active_mode == "medium_res":
+                            ratio = 768 / img.width
+                            img = img.resize((768, int(img.height * ratio)),
+                                             _Img.LANCZOS)
                         buf = _io.BytesIO()
-                        img.save(buf, format="WEBP", quality=75)
+                        img.save(buf, format="WEBP",
+                                 quality=75 if active_mode != "full_res" else 90)
                         return buf.getvalue()
-                import asyncio as _aio, base64 as _b64, time as _t
+
                 webp = await _aio.get_running_loop().run_in_executor(None, _snap_sync)
                 if webp:
                     return JSONResponse({
                         "mode": active_mode,
-                        "monitor_id": _mid,
+                        "monitor_id": _mid_for_snap,
                         "image_base64": _b64.b64encode(webp).decode(),
                         "mime_type": "image/webp",
                         "timestamp": _t.time(),
                         "active_window": "",
                         "ocr_text": "",
                         "ai_prompt": (
-                            f"[On-demand snapshot M{_mid} — "
-                            "buffer empty, captured live]"
+                            f"[Live snapshot M{_mid_for_snap} — "
+                            "captured on-demand, always fresh]"
                         ),
                         "on_demand": True,
                     })
         except Exception as _ode:
-            log.warning(f"on-demand snapshot M{monitor_id} failed: {_ode}")
+            log.warning(f"on-demand snapshot M{_mid_for_snap} failed: {_ode}")
     if not slot:
         _raise_no_frame_available(monitor_id)
 
