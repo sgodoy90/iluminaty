@@ -2518,19 +2518,29 @@ def handle_run_command(args: dict) -> list:
             f"[PROTOCOL] All UI actions → operate_cycle → act → watch_and_notify (verify). Never run_command for UI."
         )}]
 
-    timeout = args.get("timeout", 30)
-    data = _api_post(f"/terminal/exec?cmd={urllib.parse.quote(cmd)}&timeout={timeout}")
-    lines = [
-        f"## Command: `{cmd}`",
-        f"**Status**: {'SUCCESS' if data.get('success') else 'FAILED'} (exit: {data.get('return_code', '?')}, {data.get('duration_ms', 0):.0f}ms)",
-    ]
-    stdout = data.get("stdout", "")
-    stderr = data.get("stderr", "")
-    if stdout:
-        lines.append(f"\n**stdout**:\n```\n{stdout[:3000]}\n```")
-    if stderr:
-        lines.append(f"\n**stderr**:\n```\n{stderr[:1000]}\n```")
-    lines.append("\n[PROTOCOL] For UI actions use operate_cycle, not run_command.")
+    import subprocess as _sp, time as _time
+    timeout = min(int(args.get("timeout", 30)), 120)
+    t0 = _time.time()
+    try:
+        result = _sp.run(
+            cmd, shell=True, capture_output=True, text=True, timeout=timeout,
+            encoding="utf-8", errors="replace"
+        )
+        elapsed_ms = int((_time.time() - t0) * 1000)
+        success = result.returncode == 0
+        lines = [
+            f"## Command: `{cmd}`",
+            f"**Status**: {'SUCCESS' if success else 'FAILED'} (exit: {result.returncode}, {elapsed_ms}ms)",
+        ]
+        if result.stdout.strip():
+            lines.append(f"\n**stdout**:\n```\n{result.stdout.strip()[:3000]}\n```")
+        if result.stderr.strip():
+            lines.append(f"\n**stderr**:\n```\n{result.stderr.strip()[:1000]}\n```")
+    except _sp.TimeoutExpired:
+        elapsed_ms = int((_time.time() - t0) * 1000)
+        lines = [f"## Command: `{cmd}`", f"**Status**: TIMEOUT after {timeout}s"]
+    except Exception as e:
+        lines = [f"## Command: `{cmd}`", f"**Status**: ERROR — {e}"]
     return [{"type": "text", "text": "\n".join(lines)}]
 
 
