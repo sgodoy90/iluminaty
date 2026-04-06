@@ -12,7 +12,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/version-0.3.0-00ff88?style=flat-square&labelColor=0a0a12" alt="Version"/>
   <img src="https://img.shields.io/badge/IPA-v3-00ff88?style=flat-square&labelColor=0a0a12" alt="IPA v3"/>
-  <img src="https://img.shields.io/badge/MCP_tools-41-00ff88?style=flat-square&labelColor=0a0a12" alt="MCP Tools"/>
+  <img src="https://img.shields.io/badge/MCP_tools-47-00ff88?style=flat-square&labelColor=0a0a12" alt="MCP Tools"/>
   <img src="https://img.shields.io/badge/multi--monitor-3%2B-00ff88?style=flat-square&labelColor=0a0a12" alt="Multi-Monitor"/>
   <img src="https://github.com/sgodoy90/iluminaty/actions/workflows/tests.yml/badge.svg" alt="Tests"/>
   <img src="https://img.shields.io/badge/license-MIT-00ff88?style=flat-square&labelColor=0a0a12" alt="License"/>
@@ -62,7 +62,7 @@ Server starts on `:8420`, auto-detects all monitors:
 }
 ```
 
-> **No registration, no license key, no account.** All 41 tools work immediately.
+> **No registration, no license key, no account.** All 47 tools work immediately.
 >
 > The optional `--api-key` flag is a local auth token — it protects the server
 > if you expose it on a network. On localhost it's not needed.
@@ -238,9 +238,9 @@ IPA v3 uses only `numpy + pillow + imagehash`. No Google SigLIP, no TurboQuant, 
 
 ---
 
-## MCP Tools (41)
+## MCP Tools (47)
 
-All 41 tools available to everyone. No tiers, no registration.
+All 47 tools available to everyone. No tiers, no registration.
 
 ### Vision — *what the AI sees*
 
@@ -346,6 +346,28 @@ All 41 tools available to everyone. No tiers, no registration.
 | `agent_dispatch` | Assign a task to a specific agent role (observer / planner / executor / verifier). |
 | `agent_inbox` | Read pending tasks assigned to this agent's role. |
 | `agent_report` | Report task completion or failure back to the coordinator. |
+
+### OS-Native UI Automation — *zero-coordinate element targeting*
+
+> Works in any app that exposes accessibility: browsers, Office, Electron, Win32, WPF, WinForms.
+> Cross-platform backend: Windows (UIA), macOS (AXUIElement), Linux (AT-SPI2).
+
+| Tool | Description |
+|---|---|
+| `act_on` | **The new default for UI interaction.** Click, type, check, or select any element **by name** — no coordinates. `act_on(target="Submit order", action="click")`. Finds the element via OS, verifies focus after click, retries if autocomplete delays focus. Handles `@` on non-US keyboards automatically. |
+| `uia_find_all` | List every interactive element (inputs, buttons, checkboxes, radios) in the active window with OS-verified coords. One call maps an entire form. ~100–300ms. |
+| `uia_focused` | Ask the OS: what element has keyboard focus right now? Use after every click to confirm the correct field before typing. ~3–5ms warm. |
+| `uia_element_at` | Ask the OS: what element is at pixel (x, y)? Identifies exactly what is under any screen coordinate — eliminates bookmark/toolbar mis-clicks. ~5ms. |
+
+**Example — fill a form with zero coordinates:**
+```python
+act_on(target="Customer name",         action="type", text="ILUMINATY Agent")
+act_on(target="E-mail address",        action="type", text="agent@iluminaty.dev")
+act_on(target="Small",                 action="check")
+act_on(target="Bacon",                 action="check")
+act_on(target="Delivery instructions", action="type", text="Leave at door")
+act_on(target="Submit order",          action="click")
+```
 
 ---
 
@@ -550,7 +572,8 @@ macOS and Linux: partial support (screen capture + perception work; some window 
 iluminaty/
 ├── main.py              # Entry point — argparse, server init
 ├── server.py            # FastAPI app — all HTTP/WS endpoints
-├── mcp_server.py        # MCP stdio server — 41 tool handlers
+├── mcp_server.py        # MCP stdio server — 47 tool handlers
+├── uia_backend.py       # Cross-platform UI Automation (Windows/macOS/Linux)
 ├── perception.py        # IPA 4-gate pipeline — 7 classes
 ├── vision.py            # OCR proxy + enriched frame builder
 ├── ocr_worker.py        # RapidOCR in isolated subprocess (spawn)
