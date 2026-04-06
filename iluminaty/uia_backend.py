@@ -44,7 +44,7 @@ CT_NAMES_WIN = {
     50018: "ToolBar",       50019: "ToolTip",       50020: "Tree/ListItem",
     50021: "TreeItem",      50022: "Custom",        50023: "Group",
     50024: "Thumb",         50025: "DataGrid",      50026: "DataItem",
-    50027: "Document",      50028: "SplitButton",   50029: "Window",
+    50027: "Document/TextArea", 50028: "SplitButton", 50029: "Window",
     50030: "Pane",          50031: "Header",        50032: "HeaderItem",
     50033: "Table",         50034: "TitleBar",      50035: "Separator",
 }
@@ -52,6 +52,8 @@ CT_NAMES_WIN = {
 INTERACTIVE_WIN = {
     50000, 50002, 50003, 50004, 50005,
     50009, 50011, 50012, 50013, 50016, 50028,
+    50027,  # Document (RichEdit, code editors)
+    50030,  # Pane — included only when it has a non-empty name (e.g. 'Editor de texto')
 }
 
 def _make_elem(name, ct_name, ct_id, left, top, right, bottom) -> dict:
@@ -117,52 +119,62 @@ def _win_element_at(gx: int, gy: int) -> Optional[dict]:
 
 def _win_find_all(window_title: str = "") -> list[dict]:
     import ctypes
+    import ctypes.wintypes as _cwt
+    _u32 = ctypes.windll.user32
     uia, UIA = _win_init()
 
-    if window_title:
-        # Enumerate all top-level hwnds via EnumWindows and match by title
-        # Also searches UIA Name property for browser tabs (title changes with active tab)
-        user32 = ctypes.windll.user32
-        tl = window_title.lower()
-        candidates = []
+    def _best_hwnd_for_pid(seed_hwnd: int) -> int:
+        """Given any hwnd, find the hwnd in the same process with most UIA descendants."""
+        pid_buf = ctypes.c_ulong()
+        _u32.GetWindowThreadProcessId(seed_hwnd, ctypes.byref(pid_buf))
+        target_pid = pid_buf.value
+        proc_hwnds: list = []
 
         @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_int, ctypes.c_int)
-        def enum_cb(hwnd, lParam):
-            if not user32.IsWindowVisible(hwnd):
+        def _enum(hwnd, _):
+            p = ctypes.c_ulong()
+            _u32.GetWindowThreadProcessId(hwnd, ctypes.byref(p))
+            if p.value == target_pid:
+                proc_hwnds.append(hwnd)
+            return True
+        _u32.EnumWindows(_enum, 0)
+
+        best, best_n = seed_hwnd, -1
+        cond = uia.CreateTrueCondition()
+        for h in proc_hwnds:
+            try:
+                e = uia.ElementFromHandle(h)
+                n = e.FindAll(UIA.TreeScope_Descendants, cond).Length
+                if n > best_n:
+                    best_n, best = n, h
+            except Exception:
+                continue
+        return best
+
+    if window_title:
+        tl = window_title.lower()
+        candidates: list = []
+
+        @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_int, ctypes.c_int)
+        def _enum_title(hwnd, _):
+            if not _u32.IsWindowVisible(hwnd):
                 return True
             buf = ctypes.create_unicode_buffer(512)
-            user32.GetWindowTextW(hwnd, buf, 512)
+            _u32.GetWindowTextW(hwnd, buf, 512)
             if tl in buf.value.lower():
                 candidates.append(hwnd)
             return True
-
-        user32.EnumWindows(enum_cb, 0)
-
-        # If no title match, fall back to UIA Name search (catches browser tabs)
-        if not candidates:
-            root = uia.GetRootElement()
-            cond_all = uia.CreateTrueCondition()
-            # Walk only one level to find windows
-            all_top = root.FindAll(UIA.TreeScope_Children, cond_all)
-            for i in range(all_top.Length):
-                w = all_top.GetElement(i)
-                name = (w.CurrentName or "").lower()
-                if tl in name:
-                    try:
-                        h = w.CurrentNativeWindowHandle
-                        if h:
-                            candidates.append(h)
-                    except Exception:
-                        pass
+        _u32.EnumWindows(_enum_title, 0)
 
         if not candidates:
             return []
-        target = uia.ElementFromHandle(candidates[0])
+
+        target = uia.ElementFromHandle(_best_hwnd_for_pid(candidates[0]))
     else:
-        fg = ctypes.windll.user32.GetForegroundWindow()
+        fg = _u32.GetForegroundWindow()
         if not fg:
             return []
-        target = uia.ElementFromHandle(fg)
+        target = uia.ElementFromHandle(_best_hwnd_for_pid(fg))
 
     cond_all = uia.CreateTrueCondition()
     all_e    = target.FindAll(UIA.TreeScope_Descendants, cond_all)
@@ -173,6 +185,9 @@ def _win_find_all(window_title: str = "") -> list[dict]:
             e  = all_e.GetElement(i)
             ct = e.CurrentControlType
             if ct not in INTERACTIVE_WIN:
+                continue
+            # Skip unnamed Panes — too generic, causes false positives
+            if ct == 50030 and not (e.CurrentName or "").strip():
                 continue
             d = _win_elem_to_dict(e)
             if d is None:

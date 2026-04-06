@@ -1742,7 +1742,10 @@ def handle_act_on(args: dict) -> list:
 
         # 2. Find matches by name substring (case-insensitive)
         tl = target.lower()
-        matches = [e for e in elems if tl in (e["name"] or "").lower()]
+        # Exact match first, then substring — avoids 'Cerrar' matching 'Cerrar pestaña'
+        exact   = [e for e in elems if (e["name"] or "").lower() == tl]
+        partial = [e for e in elems if tl in (e["name"] or "").lower() and (e["name"] or "").lower() != tl]
+        matches = exact + partial
         if not matches:
             # Fallback: try control type match for generic targets
             available = [e["name"] for e in elems if e["name"].strip()][:20]
