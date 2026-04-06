@@ -574,16 +574,19 @@ TOOLS = [
     {
         "name": "see_now",
         "description": (
-            "PRIMARY VISION TOOL — your eyes. See what is ACTUALLY on screen right now. "
-            "Returns the real screen image that you (the AI) see directly. "
-            "WHEN TO USE: (1) Before any action — confirm current state visually. "
-            "(2) After any action — confirm it worked visually. "
-            "(3) When list_windows or OCR gives unexpected results — see_now is ground truth. "
-            "(4) Before closing any window — check for unsaved content. "
-            "(5) Before typing — confirm focus is on the right element. "
-            "NEVER assume a window is open/closed/focused without seeing it first. "
-            "Modes: low_res (~5K tokens, use for spatial checks), "
-            "medium_res (~15K, use for reading text), full_res (~30K, use for detail)."
+            "👁 PRIMARY VISION TOOL — MANDATORY BEFORE EVERY ACTION SEQUENCE.\n\n"
+            "This is your eyes. Call this FIRST, always, before doing anything. "
+            "Without it you are blind — you will click wrong elements, type in wrong fields, "
+            "minimize windows by accident, and waste tokens fixing avoidable mistakes.\n\n"
+            "MANDATORY RULE: see_now → map_environment → act → map_environment (verify). "
+            "If you skip see_now and act blind, you WILL fail. No exceptions.\n\n"
+            "USE FOR: (1) Start of every task — know what's on screen before touching anything. "
+            "(2) After navigation — confirm page loaded. "
+            "(3) After any action — confirm it had the expected effect. "
+            "(4) When something unexpected happens — diagnose from the image, don't guess. "
+            "(5) Before closing/typing/clicking anything — confirm focus and context first.\n\n"
+            "Modes: low_res (~5K tokens, spatial awareness), "
+            "medium_res (~15K, reading text), full_res (~30K, fine detail)."
         ),
         "inputSchema": {
             "type": "object",
@@ -4239,13 +4242,19 @@ def run_mcp_stdio():
                     try:
                         content = handler(tool_args)
                         # ── Pipeline reminder injected into every tool response ──────
-                        # Keeps the AI from drifting to run_command for UI actions.
+                        # Keeps the AI from drifting to run_command for UI actions
+                        # and enforces mandatory visual check before every action.
                         _PIPELINE_REMINDER = (
                             "\n\n---\n"
-                            "**[ILUMINATY PROTOCOL]** "
-                            "UI actions (open file/folder/app, click, type, close window) → "
-                            "`open_path` or `operate_cycle` → `act` → `watch_and_notify` (verify). "
-                            "Never `run_command` for UI. One pipeline. Always verify."
+                            "**[ILUMINATY PROTOCOL — MANDATORY]**\n"
+                            "1. 👁 **SEE BEFORE YOU ACT** — `see_now` FIRST, always. "
+                            "No exceptions. If you don't know what's on screen RIGHT NOW, you will fail.\n"
+                            "2. 📍 **MAP COORDS** — After `see_now`, call `map_environment(monitor=N)` "
+                            "to get exact pixel coords with crosshair + grid before any click.\n"
+                            "3. 🎯 **ACT** — `open_path` / `operate_cycle` / `act` with the verified coords.\n"
+                            "4. ✅ **VERIFY** — `map_environment` again after the action. "
+                            "Crosshair must land on target. If it didn't, diagnose before retrying.\n"
+                            "⛔ Never skip step 1. Never click without step 2. Never assume — always verify with eyes."
                         )
                         # Append to last text block only — avoid polluting image/binary content
                         if content and content[-1].get("type") == "text":
