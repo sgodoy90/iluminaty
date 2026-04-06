@@ -28,7 +28,7 @@ import time
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, Header, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, Header, HTTPException, Request
 from fastapi.responses import Response, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -2938,6 +2938,80 @@ def init_server(
 
 
 # ─── Vision / AI-ready endpoints ───
+
+@app.get("/vision/stream")
+async def vision_stream(
+    request: Request,
+    monitor_id: Optional[int] = Query(None),
+    fps: float = Query(5.0, ge=0.1, le=30.0),
+    quality: int = Query(80, ge=10, le=100),
+    token: Optional[str] = Query(None),  # api key via query for browser <img src>
+    x_api_key: Optional[str] = Header(None),
+):
+    """
+    MJPEG stream directly from RAM buffer — no disk I/O.
+    Open in browser: http://localhost:8420/vision/stream?monitor_id=1&token=ILUM-dev-local
+    Works with browser_navigate() for real-time visual verification.
+    """
+    from fastapi.responses import StreamingResponse
+    import asyncio, io as _io
+    from PIL import Image as _Image
+
+    _check_auth(x_api_key or token)
+
+    async def _generate():
+        interval = 1.0 / fps
+        last_phash = None
+        while True:
+            try:
+                slot, _ = _latest_slot_for_monitor(monitor_id)
+                if slot and slot.frame_bytes:
+                    # Only send if frame changed (phash diff)
+                    if slot.phash != last_phash:
+                        last_phash = slot.phash
+                        # Convert to JPEG in memory — no disk
+                        img = _Image.open(_io.BytesIO(slot.frame_bytes))
+                        buf = _io.BytesIO()
+                        img.convert("RGB").save(buf, format="JPEG", quality=quality)
+                        frame = buf.getvalue()
+                        yield (
+                            b"--frame\r\n"
+                            b"Content-Type: image/jpeg\r\n\r\n"
+                            + frame +
+                            b"\r\n"
+                        )
+            except Exception:
+                pass
+            await asyncio.sleep(interval)
+
+    return StreamingResponse(
+        _generate(),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.get("/vision/view")
+async def vision_view(
+    monitor_id: Optional[int] = Query(None),
+    fps: float = Query(5.0),
+    quality: int = Query(80),
+    token: Optional[str] = Query(None),
+    x_api_key: Optional[str] = Header(None),
+):
+    """HTML viewer — embeds MJPEG stream. Open in browser for real-time view."""
+    from fastapi.responses import HTMLResponse
+    _check_auth(x_api_key or token)
+    t = token or x_api_key or ""
+    mid = monitor_id or 1
+    html = f"""<!DOCTYPE html>
+<html><head><title>ILUMINATY M{mid}</title>
+<style>body{{margin:0;background:#000;display:flex;align-items:center;justify-content:center;height:100vh}}
+img{{max-width:100%;max-height:100vh;object-fit:contain}}</style></head>
+<body><img src="/vision/stream?monitor_id={mid}&fps={fps}&quality={quality}&token={t}"
+     onerror="setTimeout(()=>location.reload(),2000)"/></body></html>"""
+    return HTMLResponse(html)
+
 
 @app.get("/vision/snapshot")
 async def vision_snapshot(
