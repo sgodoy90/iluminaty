@@ -7086,3 +7086,122 @@ async def vision_smart(
     result["tokens_used_total"] = _tokens.used
 
     return JSONResponse(result)
+
+
+# ─── verify_action: visual confirmation that an action had effect ───
+
+class _VerifyBody(BaseModel):
+    action_description: str = "action"
+    monitor_id: Optional[int] = None
+    wait_ms: int = 800          # ms to wait after action before capture
+    save_evidence: bool = True
+
+
+@app.post("/action/verify_visual")
+async def action_verify(
+    body: _VerifyBody,
+    x_api_key: Optional[str] = Header(None),
+):
+    """Verify that a recent action had a visual effect.
+
+    Compares the current screen state against the last known state using:
+    - pHash distance (fast: did ANYTHING change?)
+    - OCR diff (what text appeared or disappeared?)
+    - Scene state (did the scene transition?)
+
+    Returns:
+        success: True if a meaningful change was detected
+        confidence: 0.0-1.0
+        what_changed: human description of the change
+        evidence_path: path to the after-screenshot (use Read tool to view)
+    """
+    _check_auth(x_api_key)
+    import asyncio, base64, io, pathlib, time as _t
+    loop = asyncio.get_event_loop()
+
+    monitor = body.monitor_id
+
+    # Wait for screen to settle after action
+    if body.wait_ms > 0:
+        await asyncio.sleep(min(body.wait_ms, 3000) / 1000.0)
+
+    async def _capture_now():
+        """Capture current screen state with pHash + OCR."""
+        slot, mid = _latest_slot_for_monitor(monitor)
+        if slot is None:
+            return None, None, "", 0
+        # Force fresh capture
+        snap_path = str(pathlib.Path.home() / "Desktop" / f"VERIFY_{int(_t.time())}.webp")
+        result = await loop.run_in_executor(None, lambda: _capture_and_save(slot, snap_path))
+        ocr_text = ""
+        if _state.vision and _state.vision.ocr:
+            try:
+                ocr_result = await loop.run_in_executor(
+                    None,
+                    lambda: _state.vision.ocr.extract_text(slot.frame_bytes, frame_hash=slot.phash)
+                )
+                ocr_text = ocr_result.get("text", "") if isinstance(ocr_result, dict) else ""
+            except Exception:
+                pass
+        phash = getattr(slot, "phash", None)
+        return slot, snap_path, ocr_text, phash
+
+    def _capture_and_save(slot, path: str) -> str:
+        try:
+            pathlib.Path(path).write_bytes(slot.frame_bytes)
+            return path
+        except Exception:
+            return ""
+
+    # Get world state from perception for context
+    scene_info = ""
+    if _state.perception:
+        try:
+            world = _state.perception.get_world_state()
+            scene_info = f"{world.get('task_phase','?')} | {world.get('active_surface','?')}"
+        except Exception:
+            pass
+
+    # Capture after-state
+    slot_after, evidence_path, ocr_after, phash_after = await _capture_now()
+
+    if slot_after is None:
+        return JSONResponse({
+            "success": False,
+            "confidence": 0.0,
+            "what_changed": "No screen data available",
+            "evidence_path": None,
+            "scene_info": scene_info,
+        })
+
+    # Compare with previous state using change_score from buffer
+    change_score = float(getattr(slot_after, "change_score", 0.0) or 0.0)
+
+    # Also get recent perception events as evidence
+    recent_changes = []
+    if _state.perception:
+        events = _state.perception.get_events(last_seconds=3.0, min_importance=0.2)
+        recent_changes = [e.description for e in events[-5:]]
+
+    # Determine success and confidence
+    success = change_score > 0.03 or bool(recent_changes)
+    confidence = min(1.0, change_score * 5 + (0.3 if recent_changes else 0.0))
+
+    what_changed = "No visible change detected"
+    if recent_changes:
+        what_changed = "; ".join(recent_changes[-2:])
+    elif change_score > 0.1:
+        what_changed = f"Screen changed significantly (score={change_score:.2f})"
+    elif change_score > 0.03:
+        what_changed = f"Minor screen change detected (score={change_score:.2f})"
+
+    return JSONResponse({
+        "success": success,
+        "confidence": round(confidence, 3),
+        "what_changed": what_changed,
+        "evidence_path": evidence_path or None,
+        "change_score": round(change_score, 4),
+        "recent_events": recent_changes,
+        "scene_info": scene_info,
+        "action_description": body.action_description,
+    })

@@ -587,7 +587,7 @@ def _resolve_blocking_interrupt(strategy: str, focus_handle: int | None, detect:
 
 
 # ─── Token Mode (default: cheapest) ───
-VISION_MODE = os.environ.get("ILUMINATY_VISION_MODE", "text_only")
+VISION_MODE = os.environ.get("ILUMINATY_VISION_MODE", "medium_res")
 
 # ─── MCP Tool Definitions ───
 
@@ -745,20 +745,8 @@ TOOLS = [
             },
         },
     },
-    {
-        "name": "vision_query",
-        "description": "Ask a visual question over IPA memory (e.g. 'what was on screen 30s ago?').",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "question": {"type": "string", "description": "Natural language visual question"},
-                "at_ms": {"type": "integer", "description": "Target timestamp in ms"},
-                "window_seconds": {"type": "number", "description": "Lookback window", "default": 30},
-                "monitor_id": {"type": "integer"},
-            },
-            "required": ["question"],
-        },
-    },
+    # vision_query removed: always returns confidence=0, not useful
+    # Use see_now + Read(path) instead for visual queries
     # ── Perception / context ──────────────────────────────────────────────────
     {
         "name": "get_context",
@@ -910,26 +898,8 @@ TOOLS = [
             "required": ["instruction"],
         },
     },
-    {
-        "name": "operate_cycle",
-        "description": (
-            "Full human-like operation cycle: orient → locate → focus → read → act → verify. "
-            "Handles dialogs/modals automatically. Best for complex multi-step tasks."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "goal": {"type": "string"},
-                "target_window": {"type": "string"},
-                "monitor": {"type": "integer"},
-                "include_ocr": {"type": "boolean", "default": True},
-                "resolve_interrupts": {"type": "boolean", "default": True},
-                "interrupt_strategy": {"type": "string", "enum": ["accept_first", "dismiss_first", "none"], "default": "accept_first"},
-                "action": {"type": "object", "description": "Action descriptor {kind, x, y, text, keys, ...}"},
-                "verify_contains": {"type": "string"},
-            },
-        },
-    },
+    # operate_cycle removed: use see_now + act_on + verify_action instead
+    # The manual pipeline is more reliable and gives the AI full control
     {
         "name": "act",
         "description": (
@@ -1355,6 +1325,33 @@ TOOLS = [
         "name": "screen_status",
         "description": "System status: buffer stats, capture state, FPS, active window.",
         "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "verify_action",
+        "description": (
+            "Verify that a recent action (click, type, submit, open) actually had a visual effect. "
+            "Call AFTER every action to confirm it worked. Returns success/confidence/what_changed + evidence screenshot path. "
+            "Use Read(path=evidence_path) to see the after-state. "
+            "For IAs without Computer Use: this is your primary way to confirm actions worked."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action_description": {
+                    "type": "string",
+                    "description": "What action was just performed (e.g. 'clicked Save button', 'typed email address')"
+                },
+                "monitor_id": {
+                    "type": "integer",
+                    "description": "Monitor to verify on (default: active monitor)"
+                },
+                "wait_ms": {
+                    "type": "integer",
+                    "description": "Milliseconds to wait before capturing (default 800, use 2000 for slow apps)",
+                    "default": 800
+                },
+            },
+        },
     },
     {
         "name": "agent_status",
@@ -2822,6 +2819,46 @@ def handle_get_clipboard(args: dict) -> list:
     data = _api_get("/clipboard/read")
     text = data.get("text", "")
     return [{"type": "text", "text": f"Clipboard ({len(text)} chars):\n```\n{text[:2000]}\n```" if text else "Clipboard is empty."}]
+
+
+def handle_verify_action(args: dict) -> list:
+    """Verify that a recent action had a visual effect on screen.
+
+    Call this AFTER performing an action (click, type, submit) to confirm
+    it actually worked. Returns success/failure with visual evidence.
+    """
+    action_desc = str(args.get("action_description") or args.get("action") or "action")
+    monitor_id  = args.get("monitor_id") or args.get("monitor")
+    wait_ms     = int(args.get("wait_ms", 800))
+
+    body: dict = {"action_description": action_desc, "wait_ms": wait_ms}
+    if monitor_id is not None:
+        body["monitor_id"] = int(monitor_id)
+
+    data = _api_post("/action/verify_visual", body=body)
+    unavail = _server_unavailable_response(data)
+    if unavail:
+        return unavail
+
+    success     = data.get("success", False)
+    confidence  = data.get("confidence", 0.0)
+    what        = data.get("what_changed", "unknown")
+    ev_path     = data.get("evidence_path")
+    events      = data.get("recent_events", [])
+    score       = data.get("change_score", 0.0)
+
+    status = "✅ SUCCESS" if success else "❌ NO CHANGE DETECTED"
+    lines = [
+        f"{status} — {action_desc}",
+        f"Confidence: {confidence:.0%} | Change score: {score:.3f}",
+        f"What changed: {what}",
+    ]
+    if events:
+        lines.append(f"Recent events: {'; '.join(events[:3])}")
+    if ev_path:
+        lines.append(f"📸 Evidence: Read(path='{ev_path}')")
+
+    return [{"type": "text", "text": "\n".join(lines)}]
 
 
 def handle_agent_status(args: dict) -> list:
@@ -4477,6 +4514,8 @@ def handle_agent_report(args: dict) -> list:
 
 
 HANDLERS = {
+    # ── Verification ──
+    "verify_action": handle_verify_action,
     # ── Vision (IPA v3 + OCR) ──
     "see_screen": handle_see_screen,
     "see_now":    handle_see_now,
