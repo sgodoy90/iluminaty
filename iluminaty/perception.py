@@ -726,7 +726,6 @@ class PerceptionEngine:
         max_events: int = 200,
         monitor_mgr=None,
         smart_diff=None,
-        context=None,
         visual_profile: str = "core_ram",
         enable_disk_spool: bool = False,
         deep_loop_hz: float = 1.0,
@@ -747,7 +746,6 @@ class PerceptionEngine:
         # External references (IPA Phase 1.3)
         self._monitor_mgr = monitor_mgr
         self._smart_diff = smart_diff
-        self._context = context
         self._agent_coordinator = None  # IPA v2: set by server.py for multi-agent fan-out
 
         # Global window/context state (visual state itself is per-monitor)
@@ -1295,13 +1293,6 @@ class PerceptionEngine:
             name = win.get("name") or win.get("app_name") or "unknown"
             title = win.get("window_title") or win.get("title") or "unknown"
 
-            # Keep context engine warm continuously (not only via endpoint pulls)
-            if self._context:
-                try:
-                    self._context.update(name, title)
-                except Exception as e:
-                    logger.debug("Context engine update failed for window change: %s", e)
-
             self._last_window_info = {
                 "name": name,
                 "app_name": name,
@@ -1753,12 +1744,6 @@ class PerceptionEngine:
             return
 
         workflow = "unknown"
-        if self._context:
-            try:
-                workflow = self._context.get_state().current_workflow
-            except Exception:
-                workflow = "unknown"
-
         info = window_info or self._last_window_info
         app_name = info.get("name") or info.get("app_name") or self._last_window
         title = info.get("window_title") or info.get("title") or self._last_title
