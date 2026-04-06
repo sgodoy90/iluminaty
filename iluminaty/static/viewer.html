@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>ILUMINATY — Live View</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #0a0a0a; color: #fff; font-family: monospace; }
+    header { 
+      padding: 8px 16px; background: #111; border-bottom: 1px solid #222;
+      display: flex; align-items: center; gap: 16px;
+    }
+    header h1 { font-size: 14px; color: #0f0; letter-spacing: 2px; }
+    header span { font-size: 11px; color: #666; }
+    .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; padding: 4px; height: calc(100vh - 40px); }
+    .monitor { position: relative; background: #111; border: 1px solid #222; border-radius: 4px; overflow: hidden; }
+    .monitor img { width: 100%; height: 100%; object-fit: contain; display: block; }
+    .monitor label { 
+      position: absolute; top: 6px; left: 8px;
+      background: rgba(0,0,0,0.7); padding: 2px 8px; border-radius: 3px;
+      font-size: 11px; color: #0f0; pointer-events: none;
+    }
+    .monitor .price {
+      position: absolute; bottom: 6px; left: 8px;
+      background: rgba(0,0,0,0.7); padding: 2px 8px; border-radius: 3px;
+      font-size: 11px; color: #aaa; pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>⬡ ILUMINATY</h1>
+    <span>Continuous Perception Layer</span>
+    <span id="ts" style="margin-left:auto"></span>
+  </header>
+  <div class="grid" id="grid"></div>
+
+  <script>
+    const TOKEN = new URLSearchParams(location.search).get('token') || 'ILUM-dev-local';
+    const BASE  = `${location.protocol}//${location.host}`;
+    const MONITORS = [1, 2, 3];
+
+    const grid = document.getElementById('grid');
+
+    MONITORS.forEach(mid => {
+      const div = document.createElement('div');
+      div.className = 'monitor';
+
+      const img = document.createElement('img');
+      img.src = `${BASE}/vision/stream?monitor_id=${mid}&fps=5&quality=80&token=${TOKEN}`;
+      img.onerror = () => setTimeout(() => { img.src = img.src.split('?')[0] + '?' + img.src.split('?')[1]; }, 2000);
+
+      const label = document.createElement('label');
+      label.textContent = `M${mid}`;
+
+      div.appendChild(img);
+      div.appendChild(label);
+      grid.appendChild(div);
+    });
+
+    // Timestamp
+    setInterval(() => {
+      document.getElementById('ts').textContent = new Date().toLocaleTimeString();
+    }, 1000);
+  </script>
+</body>
+</html>

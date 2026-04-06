@@ -2187,6 +2187,13 @@ class LicenseGateMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(LicenseGateMiddleware)
 
+# Static files — viewer UI
+import pathlib as _pathlib
+_static_dir = _pathlib.Path(__file__).parent / "static"
+if _static_dir.exists():
+    from fastapi.staticfiles import StaticFiles
+    app.mount("/ui", StaticFiles(directory=str(_static_dir), html=True), name="static")
+
 
 # ─── Endpoints ───
 
