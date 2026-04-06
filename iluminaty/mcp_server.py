@@ -607,7 +607,8 @@ _ALLOWED_TOOLS = {
     "watch_and_notify", # wait until condition (window_changed, text_visible, idle...)
     # Actions — no coordinates needed
     "act_on",           # click/type by element name via UIA (most reliable)
-    "act",              # click/type by coordinates (fallback)
+    "click_at",         # Computer-Use style: click at image coords from see_now
+    "act",              # click/type by global coordinates (last resort)
     # UI inspection
     "uia_find_all",     # list all interactive elements in active window
     "uia_focused",      # which element has keyboard focus right now
@@ -1315,6 +1316,33 @@ _TOOLS_RAW = [
                     "description": "Monitor number for relative coords (optional, auto-detected)",
                 },
             },
+        },
+    },
+    {
+        "name": "click_at",
+        "description": (
+            "🎯 COMPUTER-USE STYLE CLICK — point at what you see in the image.\n\n"
+            "Workflow:\n"
+            "1. Call see_now() → get image\n"
+            "2. Look at image → identify target pixel coords (x, y)\n"
+            "3. Call click_at(x=..., y=..., monitor_id=..., image_w=..., image_h=...)\n"
+            "4. ILUMINATY scales image coords → real monitor coords → clicks\n\n"
+            "No coord guessing. No scaling math. Just point at what you see.\n"
+            "image_w/image_h: dimensions of the image from see_now (check the response).\n"
+            "If omitted, assumes 1:1 scale (full_res capture)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "x": {"type": "integer", "description": "Pixel X in the see_now image"},
+                "y": {"type": "integer", "description": "Pixel Y in the see_now image"},
+                "monitor_id": {"type": "integer", "description": "Monitor id (1..N)", "default": 1},
+                "image_w": {"type": "integer", "description": "Width of the see_now image in pixels"},
+                "image_h": {"type": "integer", "description": "Height of the see_now image in pixels"},
+                "button": {"type": "string", "enum": ["left", "right", "middle"], "default": "left"},
+                "double": {"type": "boolean", "description": "Double-click", "default": False},
+            },
+            "required": ["x", "y"],
         },
     },
     {
@@ -3232,6 +3260,42 @@ def _post_action_context(monitor=None, action_type="", result_ok=True) -> str:
     return "\n".join(parts) if parts else ""
 
 
+def handle_click_at(args: dict) -> list:
+    """
+    Computer-Use style click: provide image coords from see_now screenshot.
+    ILUMINATY converts image coords → real monitor coords → executes click.
+    No coord guessing needed — just point at what you see in the image.
+    """
+    x = args.get("x", 0)
+    y = args.get("y", 0)
+    monitor_id = args.get("monitor_id", 1)
+    image_w = args.get("image_w")
+    image_h = args.get("image_h")
+    button = args.get("button", "left")
+    double = args.get("double", False)
+
+    body = {"x": x, "y": y, "monitor_id": monitor_id, "button": button, "double": double}
+    if image_w:
+        body["image_w"] = image_w
+    if image_h:
+        body["image_h"] = image_h
+
+    data = _api_post("/vision/click_at", body=body)
+    if not data or data.get("error"):
+        return [{"type": "text", "text": f"click_at failed: {data}"}]
+
+    gc = data.get("global_coords", {})
+    mc = data.get("monitor_coords", {})
+    sc = data.get("scale", {})
+    return [{"type": "text", "text": (
+        f"✓ Clicked at image({x},{y}) → "
+        f"M{monitor_id}({mc.get('x')},{mc.get('y')}) → "
+        f"global({gc.get('x')},{gc.get('y')})\n"
+        f"Scale: {sc.get('x',1):.2f}x / {sc.get('y',1):.2f}y\n\n"
+        f"Usage: see_now() → look at image → click_at(x=..., y=..., monitor_id=..., image_w=..., image_h=...)"
+    )}]
+
+
 def handle_act(args: dict) -> list:
     """
     Direct action executor. Claude sees screen via see_now, decides what to do.
@@ -4575,6 +4639,7 @@ HANDLERS = {
     "watch_and_notify":    handle_watch_and_notify,
     # Actions
     "act_on":              handle_act_on,
+    "click_at":            handle_click_at,
     "act":                 handle_act,
     # UI inspection
     "uia_find_all":        handle_uia_find_all,

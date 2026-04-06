@@ -2946,6 +2946,93 @@ def init_server(
 
 # ─── Vision / AI-ready endpoints ───
 
+@app.post("/vision/click_at")
+async def vision_click_at(
+    request: Request,
+    x_api_key: Optional[str] = Header(None),
+):
+    """
+    Computer-Use style: click at image coordinates.
+
+    Send a screenshot coordinate (from /vision/smart image) and this endpoint
+    converts it to real monitor coordinates and executes the click.
+
+    Body:
+      {
+        "x": 197,          // pixel x in the image returned by /vision/smart
+        "y": 101,          // pixel y in the image returned by /vision/smart
+        "monitor_id": 1,   // which monitor the image came from
+        "image_w": 1456,   // width of the image (from vision/smart)
+        "image_h": 816,    // height of the image
+        "button": "left",  // left | right | middle
+        "double": false
+      }
+
+    The endpoint maps image coords → monitor-relative coords → global coords
+    using the monitor's actual resolution and offset.
+    """
+    _check_auth(x_api_key)
+    body = await request.json()
+
+    img_x = int(body.get("x", 0))
+    img_y = int(body.get("y", 0))
+    monitor_id = body.get("monitor_id", 1)
+    image_w = body.get("image_w")
+    image_h = body.get("image_h")
+    button = body.get("button", "left")
+    double = bool(body.get("double", False))
+
+    # Get monitor geometry
+    mon_geo = _monitor_geometry(monitor_id)
+    if not mon_geo:
+        raise HTTPException(404, f"Monitor {monitor_id} not found")
+
+    mon_w = mon_geo["width"]
+    mon_h = mon_geo["height"]
+    mon_left = mon_geo["left"]
+    mon_top = mon_geo["top"]
+
+    # If image dimensions provided, scale from image space → monitor space
+    # If not provided, assume image is 1:1 with monitor (full_res capture)
+    if image_w and image_h and image_w > 0 and image_h > 0:
+        scale_x = mon_w / image_w
+        scale_y = mon_h / image_h
+        mon_x = round(img_x * scale_x)
+        mon_y = round(img_y * scale_y)
+    else:
+        mon_x = img_x
+        mon_y = img_y
+
+    # Clamp to monitor bounds
+    mon_x = max(0, min(mon_x, mon_w - 1))
+    mon_y = max(0, min(mon_y, mon_h - 1))
+
+    # Convert to global coords
+    global_x = mon_left + mon_x
+    global_y = mon_top + mon_y
+
+    # Execute click
+    if not _state.actions:
+        raise HTTPException(503, "Actions not initialized")
+
+    import pyautogui as _pag
+    _pag.FAILSAFE = False
+
+    if double:
+        _pag.doubleClick(global_x, global_y, button=button)
+    else:
+        _pag.click(global_x, global_y, button=button)
+
+    return {
+        "clicked": True,
+        "image_coords": {"x": img_x, "y": img_y},
+        "monitor_coords": {"x": mon_x, "y": mon_y},
+        "global_coords": {"x": global_x, "y": global_y},
+        "monitor_id": monitor_id,
+        "scale": {"x": round(mon_w / image_w, 4) if image_w else 1.0,
+                  "y": round(mon_h / image_h, 4) if image_h else 1.0},
+    }
+
 @app.get("/vision/stream")
 async def vision_stream(
     request: Request,

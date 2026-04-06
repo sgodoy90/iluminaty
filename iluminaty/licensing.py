@@ -63,6 +63,8 @@ ALL_MCP_TOOLS = {
     "os_dialog_status", "os_dialog_resolve",
     # Verification (M003 S03)
     "verify_action",
+    # Computer-Use style precision click (M003 S05)
+    "click_at",
 }
 
 # Aliases for backward compat (code that imports these)
