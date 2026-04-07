@@ -218,62 +218,65 @@ Frame
 
 ## MCP Tools (22 active)
 
-All tools available to everyone. No registration required.
+All 22 tools available to everyone. No registration required.
 
-### Vision
+### 👁 Vision — seeing the screen
 
-| Tool | Description |
-|---|---|
-| `see_now` | **Start here.** Current screen image + IPA context. Modes: `low_res` (320px, ~5K tokens), `medium_res` (768px, ~15K tokens), `full_res` (native res, ~30K tokens). Returns `width`/`height` for coordinate scaling. |
-| `see_region` | Crop any monitor region at 1–4× upscale. Read tooltips, menus, fields without a full screenshot. ~500–1,500 tokens. |
-| `what_changed` | What changed in the last N seconds. IPA gate events + image of the most significant moment. |
-| `zoom` | Computer-Use style region zoom with coordinate grid. Use after `see_now` for pixel-perfect coordinate identification. |
-| `click_at` | Click at image-space coordinates. Pass `image_w`/`image_h` from `see_now` — auto-scales to native monitor coords. |
+| Tool | Params | Description |
+|---|---|---|
+| `see_now` | `mode`, `monitor` | **Primary vision tool.** Current screen image + IPA scene context. `mode`: `low_res` (320px), `medium_res` (768px, default), `full_res` (native). Always returns `width`/`height` for coordinate scaling. |
+| `see_region` | `x`, `y`, `width`, `height`, `monitor`, `scale` | Full-resolution crop of any screen region at 1–4× upscale. Read tooltips, menus, small text. ~500–1,500 tokens vs ~15K for full frame. |
+| `what_changed` | `seconds`, `monitor` | What changed in the last N seconds. IPA gate events (`motion_start`, `content_loaded`) + image of the most significant moment. |
+| `zoom` | `x1`, `y1`, `x2`, `y2`, `monitor_id`, `image_w`, `image_h` | Zoom into a region with a pixel coordinate grid overlay. Use after `see_now` to identify exact pixel positions before clicking. |
+| `click_at` | `x`, `y`, `monitor_id`, `image_w`, `image_h`, `button`, `double` | Click at image-space coords from `see_now`. Pass `image_w`/`image_h` — auto-scales to native monitor resolution (e.g. 768px→1920px = 2.5×). |
 
-### Perception & Spatial
+### 🗺 Spatial & Perception
 
-| Tool | Description |
-|---|---|
-| `get_spatial_context` | **Run at session start.** Full workspace map: monitor layout, windows per monitor, cursor position, active app, user activity phase. |
-| `map_environment` | Snapshot of monitor layout + active windows. Faster than `get_spatial_context`. |
-| `watch_and_notify` | Block until a screen condition is met. Zero tokens while waiting. Conditions: `text_appeared`, `window_opened`, `motion_stopped`, `build_passed`, `element_visible`, `idle`, etc. |
-| `screen_status` | Buffer stats: FPS, slots used, memory, frames captured, capture state. |
-| `verify_action` | Verify a recent action had the expected visual effect. Returns confidence + evidence screenshot path. Call after every action. |
+| Tool | Params | Description |
+|---|---|---|
+| `get_spatial_context` | _(none)_ | **Call at session start.** Full workspace map: physical monitor layout with positions/resolutions, all visible windows per monitor, cursor position, active app, user activity phase. |
+| `map_environment` | `monitor`, `scale`, `grid` | Visual grounding snapshot — monitor layout + active windows annotated with grid overlay. Use before acting on multi-monitor setups. |
+| `watch_and_notify` | `condition`, `timeout`, `text`, `element`, `window_title`, `idle_seconds`, `monitor` | Wait for a screen condition without consuming tokens. Returns when triggered. Conditions: `text_appeared`, `text_disappeared`, `window_opened`, `window_closed`, `motion_stopped`, `motion_started`, `build_passed`, `build_failed`, `element_visible`, `idle`, `page_loaded`. |
+| `verify_action` | `action_description`, `monitor_id`, `wait_ms` | Verify a recent action had a visual effect. Returns `success`, `confidence`, and path to an evidence screenshot. Call after every action. |
+| `screen_status` | _(none)_ | Buffer stats: FPS, slots used, memory MB, frames captured, capture running state, active window. |
 
-### OS-Native UI Automation
+### 🎯 OS-Native UI Automation — zero-coordinate targeting
 
-| Tool | Description |
-|---|---|
-| `act_on` | **Default for UI interaction.** Click, type, check, or select any element **by name** — no coordinates. OS resolves exact position, verifies focus after click. Works in any Windows app with accessibility support. |
-| `uia_find_all` | List every interactive element in the active window with OS-verified coords. Maps an entire form in one call. |
-| `uia_focused` | Ask the OS which element has keyboard focus. Use before typing to confirm the correct field. |
+Works in any Windows app with accessibility support (Win32, WPF, WinForms, Electron, Chrome, Office).
 
-**Example — fill a form with zero coordinates:**
-```python
+| Tool | Params | Description |
+|---|---|---|
+| `act_on` | `target`, `action`, `text`, `option`, `window_title`, `nth`, `submit` | **Best for UI interaction.** Click, type, check, uncheck, or select an element **by name** — no coordinates. OS finds it, verifies focus after click, retries if autocomplete delays. Actions: `click`, `type`, `check`, `uncheck`, `select`. |
+| `uia_find_all` | `window_title`, `monitor` | List all interactive elements (buttons, inputs, checkboxes, combos) in the active window with OS-verified coords. Maps an entire form in one call. |
+| `uia_focused` | _(none)_ | Ask the OS which element has keyboard focus right now. Use before typing to confirm the correct field. ~3–5ms. |
+| `find_on_screen` | `query`, `monitor` | Locate an element by text description via UIAutomation + OCR. Returns global `(x, y)` ready to pass to `act`. |
+
+**Example — fill a form without touching a single coordinate:**
+```
 act_on(target="Customer name",   action="type",  text="ILUMINATY Agent")
 act_on(target="Email",           action="type",  text="agent@iluminaty.dev")
 act_on(target="Small",           action="check")
+act_on(target="Bacon",           action="check")
 act_on(target="Submit order",    action="click")
 ```
 
-### Actions
+### ⚡ Actions — direct OS control
 
-| Tool | Description |
-|---|---|
-| `act` | Direct action executor. `click`, `double_click`, `triple_click`, `right_click`, `type`, `key`, `scroll`, `move_mouse`, `mouse_down`, `mouse_up`, `hold_key`, `wait`. Pass `target=` for smart-locate via UITree+OCR, or `x,y,monitor,image_w,image_h` for image-coord click. |
-| `find_on_screen` | Locate an element by description via UIAutomation + OCR. Returns global `(x, y)` ready for `act`. |
+| Tool | Params | Description |
+|---|---|---|
+| `act` | `action`, `target`, `x`, `y`, `image_w`, `image_h`, `text`, `keys`, `button`, `amount`, `duration`, `direction`, `role`, `monitor` | Direct mouse + keyboard executor. Actions: `click`, `double_click`, `triple_click`, `right_click`, `middle_click`, `mouse_down`, `mouse_up`, `type`, `key`, `hold_key`, `scroll`, `move_mouse`, `focus`, `wait`. Pass `target=` for UITree+OCR locate, or `x,y,monitor,image_w,image_h` for image-coord click (auto-scaled). |
 
-### Windows & System
+### 🪟 Windows & System
 
-| Tool | Description |
-|---|---|
-| `list_windows` | All visible windows with handle, title, position, size, monitor assignment. |
-| `focus_window` | Bring a window to front by handle or title substring. |
-| `open_path` | Open a file or folder via Win+R pipeline. Always use this instead of `run_command` for opening files. |
-| `run_command` | Execute a shell command. Returns stdout/stderr/exit code. 38+ blocked destructive patterns. |
-| `read_file` | Read file contents (sandboxed to safe paths). |
-| `write_file` | Write file with auto-backup (sandboxed). |
-| `os_dialog_resolve` | Dismiss or confirm a system dialog (save/open/confirm) by button name. |
+| Tool | Params | Description |
+|---|---|---|
+| `list_windows` | `monitor`, `title_contains`, `exclude_minimized` | All visible windows with handle, title, position, size, monitor ID. Use for handle lookup — always cross-check with `see_now` for visual reality. |
+| `focus_window` | `title`, `handle`, `prefer_active_monitor` | Bring a window to front by handle or title substring. |
+| `open_path` | `path`, `monitor` | Open a file or folder via Win+R → type → Enter → verify. Use this instead of `run_command` for opening files. |
+| `run_command` | `command`, `timeout` | Execute a shell command. Returns stdout/stderr/exit code. 38+ destructive patterns blocked. For terminal commands only — not for opening files. |
+| `read_file` | `path` | Read file contents. Sandboxed to `~/Documents`, `~/Desktop`, `~/iluminaty-workspace`. |
+| `write_file` | `path`, `content` | Write file with auto-backup. Same sandbox as `read_file`. |
+| `os_dialog_resolve` | `strategy` | Dismiss or confirm a blocking system dialog (save/open/confirm) by strategy name. |
 
 ---
 
