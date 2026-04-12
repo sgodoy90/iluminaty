@@ -126,6 +126,7 @@ class _ServerState:
         self.recording_engine = None   # Opt-in recording (disabled by default)
         self.cursor_tracker: Optional[CursorTracker] = None
         self.action_watcher: Optional[ActionCompletionWatcher] = None
+        self.trading_engine = None   # TradingEngine (lazy init on first /trading/ call)
         self.operating_mode: str = _normalize_operating_mode(os.environ.get("ILUMINATY_OPERATING_MODE"))  # SAFE | RAW | HYBRID
         self.runtime_profile: str = os.environ.get("ILUMINATY_RUNTIME_PROFILE", "standard").strip().lower() or "standard"
         self.bootstrap_warnings: list[str] = []
@@ -2374,8 +2375,11 @@ async def ws_stream(ws: WebSocket, token: Optional[str] = Query(None)):
     # C-2 fix: authenticate before accepting
     if not _NO_AUTH:
         provided = token or ws.headers.get("x-api-key") or ws.headers.get("authorization", "").removeprefix("Bearer ")
-        if _state.api_key and provided != _state.api_key:
-            await ws.close(code=4401, reason="Unauthorized: invalid or missing API key")
+        try:
+            _check_auth(provided)
+        except HTTPException as e:
+            code = 4401 if int(getattr(e, "status_code", 401) or 401) == 401 else 4403
+            await ws.close(code=code, reason="Unauthorized: invalid/missing API key or server not configured")
             return
     await ws.accept()
     _state.ws_clients.add(ws)
@@ -2417,8 +2421,11 @@ async def perception_stream(
     # C-2 fix: authenticate before accepting
     if not _NO_AUTH:
         provided = token or ws.headers.get("x-api-key") or ws.headers.get("authorization", "").removeprefix("Bearer ")
-        if _state.api_key and provided != _state.api_key:
-            await ws.close(code=4401, reason="Unauthorized: invalid or missing API key")
+        try:
+            _check_auth(provided)
+        except HTTPException as e:
+            code = 4401 if int(getattr(e, "status_code", 401) or 401) == 401 else 4403
+            await ws.close(code=code, reason="Unauthorized: invalid/missing API key or server not configured")
             return
     await ws.accept()
     try:
@@ -3673,13 +3680,13 @@ from iluminaty.routes import (
     audio, perception, grounding, monitors, workers,
     os_surface, annotations, watchdog, ipa, watch,
     safety, actions, windows, clipboard, process,
-    ui, files, agent, system, tokens,
+    ui, files, agent, system, tokens, trading,
 )
 for _mod in (
     audio, perception, grounding, monitors, workers,
     os_surface, annotations, watchdog, ipa, watch,
     safety, actions, windows, clipboard, process,
-    ui, files, agent, system, tokens,
+    ui, files, agent, system, tokens, trading,
 ):
     app.include_router(_mod.router)
 

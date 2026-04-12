@@ -610,6 +610,7 @@ _ALLOWED_TOOLS = {
     "zoom",             # Computer-Use style: zoom region to full-res for precision
     "click_at",         # Computer-Use style: click at image coords from see_now
     "act",              # click/type by global coordinates (last resort)
+    "drag_screen",      # explicit drag primitive for workflows that need drag gesture
     # UI inspection
     "uia_find_all",     # list all interactive elements in active window
     "uia_focused",      # which element has keyboard focus right now
@@ -621,11 +622,21 @@ _ALLOWED_TOOLS = {
     "open_path",        # open file / app / URL
     "run_command",      # run a shell command
     "os_dialog_resolve", # close blocking system dialogs (save/open/error)
+    "get_clipboard",    # clipboard text for quick context transfer
     # Files
     "read_file",        # read a file
     "write_file",       # write a file
     # Status
     "screen_status",    # ILUMINATY server status
+    # Trading
+    "trading_status",       # trading bot status, positions, P&L
+    "trading_start",        # start the trading engine
+    "trading_stop",         # stop the trading engine
+    "trading_balance",      # exchange account balance
+    "trading_place_order",  # place a manual order
+    "trading_cancel_order", # cancel an open order
+    "trading_read_chart",   # read TradingView indicators via OCR
+    "trading_set_alert",    # set price/signal alert
 }
 
 _TOOLS_RAW = [
@@ -1480,6 +1491,126 @@ _TOOLS_RAW = [
             "properties": {
                 "strategy": {"type": "string", "enum": ["accept_first", "dismiss_first"], "default": "accept_first"},
             },
+        },
+    },
+    # ── Trading Bot ──────────────────────────────────────────────────────────
+    {
+        "name": "trading_status",
+        "description": (
+            "Get trading bot status: running state, open positions, P&L, "
+            "active strategies, recent signals, and alerts.\n\n"
+            "Call this to check if the bot is running and how it's performing."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "trading_start",
+        "description": (
+            "Start the trading engine. Connects to exchange (Binance), loads "
+            "strategies, and begins the evaluation loop.\n\n"
+            "Requires TRADING_API_KEY and TRADING_API_SECRET env vars.\n"
+            "Uses testnet by default (set TRADING_TESTNET=0 for live)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "strategies": {
+                    "type": "array", "items": {"type": "string"},
+                    "description": "Strategy names to activate. Available: ema_crossover, rsi_divergence, bollinger_bounce",
+                },
+                "symbol": {
+                    "type": "string",
+                    "description": "Trading pair (default: BTC/USDT)",
+                    "default": "BTC/USDT",
+                },
+            },
+        },
+    },
+    {
+        "name": "trading_stop",
+        "description": "Stop the trading engine gracefully. Keeps positions open.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "trading_balance",
+        "description": "Get exchange account balance. Shows free, used, and total per currency.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "currency": {
+                    "type": "string",
+                    "description": "Specific currency (e.g. 'USDT', 'BTC'). Omit for all.",
+                },
+            },
+        },
+    },
+    {
+        "name": "trading_place_order",
+        "description": (
+            "Place a manual order on the exchange.\n\n"
+            "Types: market (instant), limit (at specific price).\n"
+            "The risk manager validates the order before execution."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string", "description": "Trading pair (e.g. BTC/USDT)"},
+                "side": {"type": "string", "enum": ["buy", "sell"]},
+                "type": {"type": "string", "enum": ["market", "limit"], "default": "market"},
+                "amount": {"type": "number", "description": "Amount in base currency"},
+                "price": {"type": "number", "description": "Limit price (required for limit orders)"},
+            },
+            "required": ["side", "amount"],
+        },
+    },
+    {
+        "name": "trading_cancel_order",
+        "description": "Cancel an open order on the exchange.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "order_id": {"type": "string", "description": "Exchange order ID"},
+                "symbol": {"type": "string", "description": "Trading pair"},
+            },
+            "required": ["order_id"],
+        },
+    },
+    {
+        "name": "trading_read_chart",
+        "description": (
+            "Read TradingView indicators from screen via OCR.\n\n"
+            "Returns detected values for: price, RSI, MACD, Bollinger Bands, "
+            "EMA, volume, and chart patterns.\n\n"
+            "TradingView must be visible on screen for this to work."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "indicators": {
+                    "type": "array", "items": {"type": "string"},
+                    "description": "Specific indicators to read (e.g. ['rsi', 'macd']). Omit for all.",
+                },
+                "monitor_id": {"type": "integer", "description": "Monitor to read from"},
+            },
+        },
+    },
+    {
+        "name": "trading_set_alert",
+        "description": (
+            "Set a price alert. Triggers when price crosses the threshold.\n"
+            "Uses both exchange data and visual monitoring (TradingView OCR)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string", "description": "Trading pair"},
+                "price": {"type": "number", "description": "Price threshold"},
+                "direction": {
+                    "type": "string", "enum": ["above", "below"],
+                    "description": "Trigger when price goes above or below threshold",
+                },
+            },
+            "required": ["price", "direction"],
         },
     },
 ]
@@ -3636,7 +3767,7 @@ def handle_act(args: dict) -> list:
             x, y = int(args.get("x", 0)), int(args.get("y", 0))
             data = _api_post(f"/action/mouse_down?x={x}&y={y}")
             ok = data.get("success", False)
-            msg = f"mouse_down ({x},{y}): {'OK' if ok else 'FAIL (endpoint may not exist — use drag_screen for drag operations)'}"
+            msg = f"mouse_down ({x},{y}): {'OK' if ok else 'FAIL'}"
             return [{"type": "text", "text": msg}]
 
         elif action == "mouse_up":
@@ -3652,10 +3783,17 @@ def handle_act(args: dict) -> list:
             if not keys:
                 return [{"type": "text", "text": "Error: keys is required for hold_key"}]
             # Press, sleep, release
-            _api_post(f"/action/key_down?key={urllib.parse.quote(keys)}")
+            down = _api_post(f"/action/key_down?key={urllib.parse.quote(keys)}")
             import time as _t; _t.sleep(duration)
-            _api_post(f"/action/key_up?key={urllib.parse.quote(keys)}")
-            msg = f"hold_key '{keys}' for {duration}s: OK"
+            up = _api_post(f"/action/key_up?key={urllib.parse.quote(keys)}")
+            down_ok = bool(down.get("success", False))
+            up_ok = bool(up.get("success", False))
+            ok = down_ok and up_ok
+            msg = (
+                f"hold_key '{keys}' for {duration}s: OK"
+                if ok
+                else f"hold_key '{keys}' for {duration}s: FAIL (down={down_ok}, up={up_ok})"
+            )
             return [{"type": "text", "text": msg}]
 
         elif action == "wait":
@@ -4020,7 +4158,39 @@ def handle_os_dialog_resolve(args: dict) -> list:
     for key in ("label", "x", "y", "monitor_id", "mode", "verify", "context_tick_id", "max_staleness_ms"):
         if key in args and args[key] is not None:
             body[key] = args[key]
+    strategy = str(args.get("strategy") or "").strip().lower()
+
+    # Backward compatibility: schema exposes strategy-only resolution.
+    # If no explicit target is provided, try keyboard-first dialog resolve.
     if not body:
+        if strategy in {"accept_first", "dismiss_first", "none"}:
+            try:
+                active = _api_get("/windows/active") or {}
+            except Exception:
+                active = {}
+            focus_handle = active.get("handle")
+            if not isinstance(focus_handle, int):
+                focus_handle = None
+
+            try:
+                status = _api_get("/os/dialog/status") or {}
+            except Exception:
+                status = {}
+
+            affordances = " ".join(str(a).lower() for a in (status.get("affordances") or []))
+            detect = {
+                "has_accept": any(t in affordances for t in ("ok", "yes", "si", "accept", "aceptar", "continue", "continuar")),
+                "has_dismiss": any(t in affordances for t in ("cancel", "cancelar", "no", "close", "cerrar")),
+            }
+            resolved = _resolve_blocking_interrupt(strategy, focus_handle, detect)
+            return [{
+                "type": "text",
+                "text": (
+                    f"OS dialog resolve (strategy={strategy}): "
+                    f"{'SUCCESS' if resolved.get('resolved') else 'FAILED'} "
+                    f"method={resolved.get('method', 'n/a')}"
+                ),
+            }]
         return [{"type": "text", "text": "Error: provide label and/or x,y coordinates"}]
     try:
         data = _api_post("/os/dialog/resolve", body=body)
@@ -4787,6 +4957,151 @@ def handle_agent_report(args: dict) -> list:
     )}]
 
 
+# ── Trading handlers ──────────────────────────────────────────────────────────
+
+def handle_trading_status(args: dict) -> list:
+    data = _api_get("/trading/status")
+    unavail = _server_unavailable_response(data)
+    if unavail:
+        return unavail
+    lines = [f"Trading Bot Status: {'RUNNING' if data.get('running') else 'STOPPED'}"]
+    cfg = data.get("config", {})
+    lines.append(f"Symbol: {cfg.get('default_symbol')}  Testnet: {cfg.get('testnet')}")
+    lines.append(f"Strategies active: {', '.join(data.get('strategies', []))}")
+    lines.append(f"Available: {', '.join(data.get('available_strategies', []))}")
+    lines.append(f"Cycles: {data.get('cycle_count', 0)}")
+    positions = data.get("positions", [])
+    if positions:
+        lines.append(f"\nOpen Positions ({len(positions)}):")
+        for p in positions:
+            lines.append(f"  {p['side'].upper()} {p['symbol']} {p['amount']} @ {p['entry_price']}"
+                         f"  SL={p.get('stop_loss')}  TP={p.get('take_profit')}  PnL={p.get('unrealized_pnl')}")
+    stats = data.get("stats", {})
+    today = stats.get("today", {})
+    if today:
+        lines.append(f"\nToday: {today.get('total_trades', 0)} trades, "
+                      f"PnL={today.get('total_pnl', 0)}, WR={today.get('win_rate', 0):.0%}")
+    alerts = data.get("alerts", [])
+    if alerts:
+        lines.append(f"\nActive Alerts: {len(alerts)}")
+    errors = data.get("errors", [])
+    if errors:
+        lines.append(f"\nRecent Errors: {'; '.join(errors[-3:])}")
+    last_sig = data.get("last_signal")
+    if last_sig:
+        lines.append(f"\nLast Signal: {last_sig.get('direction')} ({last_sig.get('source')}) "
+                      f"conf={last_sig.get('confidence')} — {last_sig.get('reason')}")
+    return [{"type": "text", "text": "\n".join(lines)}]
+
+
+def handle_trading_start(args: dict) -> list:
+    body = {}
+    if args.get("strategies"):
+        body["strategies"] = args["strategies"]
+    if args.get("symbol"):
+        body["symbol"] = args["symbol"]
+    data = _api_post("/trading/start", body)
+    if data.get("status") == "started":
+        return [{"type": "text", "text": (
+            f"Trading engine STARTED\n"
+            f"Symbol: {data.get('symbol')}\n"
+            f"Strategies: {', '.join(data.get('strategies', []))}\n"
+            f"Testnet: {data.get('testnet')}\n"
+            f"Current price: {data.get('price')}"
+        )}]
+    return [{"type": "text", "text": f"Start failed: {data.get('reason', data.get('status'))}"}]
+
+
+def handle_trading_stop(args: dict) -> list:
+    data = _api_post("/trading/stop")
+    return [{"type": "text", "text": (
+        f"Trading engine STOPPED\n"
+        f"Total cycles: {data.get('total_cycles', 0)}\n"
+        f"Positions still open: {data.get('positions_open', 0)}"
+    )}]
+
+
+def handle_trading_balance(args: dict) -> list:
+    qs = ""
+    if args.get("currency"):
+        qs = f"?currency={args['currency']}"
+    data = _api_get(f"/trading/balance{qs}")
+    if "currency" in data:
+        return [{"type": "text", "text": (
+            f"{data['currency']}: free={data.get('free')} used={data.get('used')} total={data.get('total')}"
+        )}]
+    lines = [f"Total USDT: {data.get('total_usd', 0)}  Free: {data.get('free_usd', 0)}"]
+    assets = data.get("assets", {})
+    if assets:
+        lines.append("Assets: " + ", ".join(f"{k}={v}" for k, v in assets.items()))
+    return [{"type": "text", "text": "\n".join(lines)}]
+
+
+def handle_trading_place_order(args: dict) -> list:
+    body = {
+        "side": args.get("side", "buy"),
+        "type": args.get("type", "market"),
+        "amount": args.get("amount", 0),
+    }
+    if args.get("symbol"):
+        body["symbol"] = args["symbol"]
+    if args.get("price"):
+        body["price"] = args["price"]
+    data = _api_post("/trading/order", body)
+    return [{"type": "text", "text": (
+        f"Order placed: {data.get('side', '?').upper()} {data.get('symbol', '?')} "
+        f"{data.get('type', '?')} amount={data.get('amount')} price={data.get('price')}\n"
+        f"Status: {data.get('status')}  ID: {data.get('id')}"
+    )}]
+
+
+def handle_trading_cancel_order(args: dict) -> list:
+    body = {"order_id": args["order_id"]}
+    if args.get("symbol"):
+        body["symbol"] = args["symbol"]
+    data = _api_post("/trading/order/cancel", body)
+    return [{"type": "text", "text": f"Order {data.get('id')}: {data.get('status')}"}]
+
+
+def handle_trading_read_chart(args: dict) -> list:
+    qs_parts = []
+    if args.get("monitor_id"):
+        qs_parts.append(f"monitor_id={args['monitor_id']}")
+    qs = f"?{'&'.join(qs_parts)}" if qs_parts else ""
+    data = _api_get(f"/trading/indicators{qs}")
+    indicators = data.get("indicators", {})
+
+    # Filter to requested indicators if specified
+    requested = args.get("indicators")
+    if requested:
+        indicators = {k: v for k, v in indicators.items() if k in requested}
+
+    if not indicators:
+        return [{"type": "text", "text": (
+            "No indicators detected. Make sure TradingView is visible on screen "
+            "with indicators enabled."
+        )}]
+
+    lines = ["TradingView Indicators (via OCR):"]
+    for k, v in indicators.items():
+        lines.append(f"  {k}: {v}")
+    return [{"type": "text", "text": "\n".join(lines)}]
+
+
+def handle_trading_set_alert(args: dict) -> list:
+    body = {
+        "price": args.get("price", 0),
+        "direction": args.get("direction", "above"),
+    }
+    if args.get("symbol"):
+        body["symbol"] = args["symbol"]
+    data = _api_post("/trading/alert", body)
+    return [{"type": "text", "text": (
+        f"Alert created: ID={data.get('alert_id')}\n"
+        f"Trigger: price {body['direction']} {body['price']}"
+    )}]
+
+
 # ── M003 S04: Only handlers for the 20 active tools ─────────────────────────
 HANDLERS = {
     # Vision
@@ -4804,6 +5119,7 @@ HANDLERS = {
     "zoom":                handle_zoom,
     "click_at":            handle_click_at,
     "act":                 handle_act,
+    "drag_screen":         handle_drag_screen,
     # UI inspection
     "uia_find_all":        handle_uia_find_all,
     "uia_focused":         handle_uia_focused,
@@ -4815,11 +5131,21 @@ HANDLERS = {
     "open_path":           handle_open_path,
     "run_command":         handle_run_command,
     "os_dialog_resolve":   handle_os_dialog_resolve,
+    "get_clipboard":       handle_get_clipboard,
     # Files
     "read_file":           handle_read_file,
     "write_file":          handle_write_file,
     # Status
     "screen_status":       handle_status,
+    # Trading
+    "trading_status":       handle_trading_status,
+    "trading_start":        handle_trading_start,
+    "trading_stop":         handle_trading_stop,
+    "trading_balance":      handle_trading_balance,
+    "trading_place_order":  handle_trading_place_order,
+    "trading_cancel_order": handle_trading_cancel_order,
+    "trading_read_chart":   handle_trading_read_chart,
+    "trading_set_alert":    handle_trading_set_alert,
 }
 
 

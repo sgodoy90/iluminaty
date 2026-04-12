@@ -51,9 +51,13 @@ vlm = [
     "accelerate>=0.33",
     "sentencepiece>=0.2",
 ]
+trading = [
+    "ccxt>=4.0",
+]
 all = [
     "iluminaty[ocr]",
     "iluminaty[vlm]",
+    "iluminaty[trading]",
 ]
 
 [project.scripts]

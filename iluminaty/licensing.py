@@ -66,6 +66,10 @@ ALL_MCP_TOOLS = {
     # Computer-Use style precision (M003 S05)
     "zoom",
     "click_at",
+    # Trading bot
+    "trading_status", "trading_start", "trading_stop",
+    "trading_balance", "trading_place_order", "trading_cancel_order",
+    "trading_read_chart", "trading_set_alert",
 }
 
 # Aliases for backward compat (code that imports these)
