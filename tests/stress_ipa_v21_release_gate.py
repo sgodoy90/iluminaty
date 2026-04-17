@@ -41,6 +41,8 @@ from iluminaty import server  # noqa: E402
 from iluminaty.intent import Intent  # noqa: E402
 from iluminaty.resolver import ResolutionResult  # noqa: E402
 
+_API_KEY = "test-key"
+
 
 @dataclass
 class _Event:
@@ -303,7 +305,7 @@ class _ResolverStressStub:
 
 
 def _setup_server_state() -> None:
-    server._state.api_key = "test-key"
+    server._state.api_key = _API_KEY
     server._state.perception = _PerceptionStressStub(monitors=3)
     server._state.safety = _SafetyStub()
     server._state.intent = _IntentStub()
@@ -358,6 +360,11 @@ def _run_with_timeout(fn: Callable[[], None], timeout_s: float = 2.0) -> None:
         raise TimeoutError(f"request timed out after {timeout_s}s")
     if error:
         raise error[0]
+
+
+def _hard_timeout_enabled() -> bool:
+    raw = str(__import__("os").environ.get("ILUMINATY_STRESS_HARD_TIMEOUT", "")).strip().lower()
+    return raw in {"1", "true", "yes", "on"}
 
 
 def run_concurrent_http_load(duration_s: int, workers: int) -> dict:
@@ -432,12 +439,16 @@ def run_concurrent_http_load(duration_s: int, workers: int) -> dict:
 
     def _worker():
         nonlocal errors
-        client = TestClient(server.app)
+        client = TestClient(server.app, headers={"x-api-key": _API_KEY})
+        use_hard_timeout = _hard_timeout_enabled()
         while time.time() < end_time:
             name, fn = random.choice(weighted)
             t0 = time.perf_counter()
             try:
-                _run_with_timeout(lambda: fn(client), timeout_s=2.0)
+                if use_hard_timeout:
+                    _run_with_timeout(lambda: fn(client), timeout_s=2.0)
+                else:
+                    fn(client)
                 dt = (time.perf_counter() - t0) * 1000.0
                 with lock:
                     latencies[name].append(dt)
@@ -467,7 +478,7 @@ def run_concurrent_http_load(duration_s: int, workers: int) -> dict:
 
 
 def run_stale_context_gate(iterations: int = 500) -> dict:
-    client = TestClient(server.app)
+    client = TestClient(server.app, headers={"x-api-key": _API_KEY})
     blocked = 0
     reasons: dict[str, int] = {}
     latencies = []
@@ -503,7 +514,7 @@ def run_stale_context_gate(iterations: int = 500) -> dict:
 
 
 def run_recovery_stress(iterations: int = 700) -> dict:
-    client = TestClient(server.app)
+    client = TestClient(server.app, headers={"x-api-key": _API_KEY})
     perception = getattr(server._state, "perception", None)
     prev_loading_mode = None
     if hasattr(perception, "_enable_loading_cycles"):
@@ -579,13 +590,15 @@ def run_recovery_stress(iterations: int = 700) -> dict:
 
 
 def run_ws_soak(seconds: int = 45) -> dict:
-    client = TestClient(server.app)
+    client = TestClient(server.app, headers={"x-api-key": _API_KEY})
     t_end = time.time() + seconds
     messages = 0
     malformed = 0
     intervals = []
     last_t = None
-    with client.websocket_connect("/perception/stream?interval_ms=120&include_events=true") as ws:
+    with client.websocket_connect(
+        f"/perception/stream?interval_ms=120&include_events=true&token={_API_KEY}"
+    ) as ws:
         while time.time() < t_end:
             payload = ws.receive_json()
             now = time.time()

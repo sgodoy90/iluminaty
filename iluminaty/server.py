@@ -39,6 +39,7 @@ from .vision import VisionIntelligence, Annotation
 from .dashboard import DASHBOARD_HTML
 from .smart_diff import SmartDiff
 from .audio import AudioRingBuffer, AudioCapture, TranscriptionEngine, AudioInterruptDetector
+from .voice import VoiceSynth, AutoNarrator
 from .monitors import MonitorManager
 from .watchdog import Watchdog
 from .ipa_bridge import IPABridge
@@ -127,6 +128,8 @@ class _ServerState:
         self.cursor_tracker: Optional[CursorTracker] = None
         self.action_watcher: Optional[ActionCompletionWatcher] = None
         self.trading_engine = None   # TradingEngine (lazy init on first /trading/ call)
+        self.voice: Optional[VoiceSynth] = None
+        self.auto_narrator: Optional[AutoNarrator] = None
         self.operating_mode: str = _normalize_operating_mode(os.environ.get("ILUMINATY_OPERATING_MODE"))  # SAFE | RAW | HYBRID
         self.runtime_profile: str = os.environ.get("ILUMINATY_RUNTIME_PROFILE", "standard").strip().lower() or "standard"
         self.bootstrap_warnings: list[str] = []
@@ -787,9 +790,9 @@ def _extract_target_xy(intent: Intent) -> tuple[Optional[int], Optional[int]]:
     if "x" not in params or "y" not in params:
         return None, None
     try:
+        # Keep raw coordinates as provided by caller.
+        # Bounds are validated later by _target_check against real monitor layout.
         x, y = int(params.get("x")), int(params.get("y"))
-        if not (-16384 <= x <= 32768) or not (-16384 <= y <= 32768):
-            return None, None
         return x, y
     except Exception:
         return None, None
@@ -2497,6 +2500,8 @@ def init_server(
     vision_plus_disk: bool = False,
     deep_loop_hz: float = 1.0,
     fast_loop_hz: float = 10.0,
+    enable_voice: bool = False,
+    voice_model: Optional[str] = None,
 ):
     """Inyecta las dependencias al modulo del server (thread-safe)."""
     with _state.lock:
@@ -2540,6 +2545,24 @@ def init_server(
         except Exception as e:
             _state.behavior_cache = None
             _state.bootstrap_warnings.append(f"app_behavior_cache_init_failed: {e}")
+        # ─── Voice TTS (optional) ───
+        _voice_enabled = enable_voice or os.environ.get("ILUMINATY_VOICE", "0") == "1"
+        if _voice_enabled:
+            try:
+                _force = (voice_model or os.environ.get("ILUMINATY_VOICE_ENGINE") or "").lower() or None
+                _state.voice = VoiceSynth(force_engine=_force)
+                _state.auto_narrator = AutoNarrator(voice_synth=_state.voice)
+                if _state.voice.available:
+                    logger.info("Voice engine ready: %s", _state.voice.engine_name)
+                else:
+                    _state.bootstrap_warnings.append(
+                        "voice: no TTS engine found. Install: pip install edge-tts"
+                    )
+            except Exception as e:
+                _state.voice = None
+                _state.auto_narrator = None
+                _state.bootstrap_warnings.append(f"voice_init_failed: {e}")
+
         _state.monitor_mgr = MonitorManager()
         _state.monitor_mgr.refresh()
 
@@ -3680,13 +3703,15 @@ from iluminaty.routes import (
     audio, perception, grounding, monitors, workers,
     os_surface, annotations, watchdog, ipa, watch,
     safety, actions, windows, clipboard, process,
-    ui, files, agent, system, tokens, trading,
+    ui, files, agent, system, tokens, trading, operating,
+    voice,
 )
 for _mod in (
     audio, perception, grounding, monitors, workers,
     os_surface, annotations, watchdog, ipa, watch,
     safety, actions, windows, clipboard, process,
-    ui, files, agent, system, tokens, trading,
+    ui, files, agent, system, tokens, trading, operating,
+    voice,
 ):
     app.include_router(_mod.router)
 

@@ -741,7 +741,9 @@ class PerceptionEngine:
         self._deep_thread: Optional[threading.Thread] = None
         self._fast_loop_interval = max(0.08, min(0.25, 1.0 / max(1.0, fast_loop_hz)))
         self._deep_loop_interval = max(0.5, min(2.0, 1.0 / max(0.5, deep_loop_hz)))
-        self._vlm_mode = os.environ.get("ILUMINATY_VLM_MODE", "on_demand").strip().lower()
+        # Default to continuous so deep-loop visual scheduling works out of the box.
+        # Use ILUMINATY_VLM_MODE=on_demand to disable enqueue until explicitly requested.
+        self._vlm_mode = os.environ.get("ILUMINATY_VLM_MODE", "continuous").strip().lower()
 
         # External references (IPA Phase 1.3)
         self._monitor_mgr = monitor_mgr

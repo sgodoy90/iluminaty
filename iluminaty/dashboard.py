@@ -301,7 +301,7 @@ async function pollWorld() {
   // Surface — strip full exe paths
   const rawSurf = (d.active_surface||'');
   const surfParts = rawSurf.split(/[\\/]/);
-  const surface = (surfParts[surfParts.length-1]||rawSurf).replace(/\.exe.*/i,'');
+  const surface = (surfParts[surfParts.length-1]||rawSurf).replace(/\\.exe.*/i,'');
   setText('ctx-surface', surface.substring(0,40) || '--');
   setText('ctx-phase', d.task_phase || '--');
   setText('ctx-domain', d.domain_pack || '--');

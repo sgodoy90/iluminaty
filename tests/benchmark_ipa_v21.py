@@ -31,6 +31,8 @@ from iluminaty import server
 from iluminaty.intent import Intent
 from iluminaty.resolver import ResolutionResult
 
+_API_KEY = "test-key"
+
 
 class _PerceptionBenchStub:
     def __init__(self):
@@ -168,7 +170,7 @@ class _ResolverStub:
 
 
 def _setup_server_state() -> None:
-    server._state.api_key = "test-key"
+    server._state.api_key = _API_KEY
     server._state.perception = _PerceptionBenchStub()
     server._state.safety = _SafetyStub()
     server._state.intent = _IntentStub()
@@ -211,7 +213,7 @@ def _bench_sync(name: str, fn, iterations: int, warmup: int) -> dict:
 
 
 def _worker_endpoint(path: str, method: str, iterations: int, warmup: int) -> list[float]:
-    client = TestClient(server.app)
+    client = TestClient(server.app, headers={"x-api-key": _API_KEY})
     payload_execute = {"instruction": "click save", "mode": "SAFE", "verify": True, "max_staleness_ms": 2000}
     payload_precheck = {"instruction": "click save", "mode": "SAFE", "max_staleness_ms": 2000}
     payload_query = {"question": "que hay en pantalla", "window_seconds": 30}
@@ -267,7 +269,7 @@ def _bench_concurrent(name: str, path: str, method: str, total_iterations: int, 
 
 def run_benchmarks(iterations: int, warmup: int, workers: int) -> list[dict]:
     _setup_server_state()
-    client = TestClient(server.app)
+    client = TestClient(server.app, headers={"x-api-key": _API_KEY})
     results = []
 
     results.append(
